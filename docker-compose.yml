@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  # Main MongoDB container for the application
+  mongodb:
+    image: mongo:latest
+    container_name: chatbot-mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+    environment:
+      - MONGO_INITDB_DATABASE=chatbot
+    restart: unless-stopped
+    networks:
+      - chatbot-network
+
+  # MongoDB container for testing
+  mongodb-test:
+    image: mongo:latest
+    container_name: chatbot-mongodb-test
+    ports:
+      - "27018:27017"
+    volumes:
+      - mongodb_test_data:/data/db
+    environment:
+      - MONGO_INITDB_DATABASE=chatbot-test
+    restart: unless-stopped
+    networks:
+      - chatbot-network
+
+networks:
+  chatbot-network:
+    driver: bridge
+
+volumes:
+  mongodb_data:
+  mongodb_test_data:

@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin Login | Chatbot</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body {
+            height: 100vh;
+            display: flex;
+            align-items: center;
+            background-color: #f5f5f5;
+        }
+        .login-container {
+            max-width: 400px;
+            padding: 15px;
+            margin: auto;
+        }
+        .form-signin {
+            width: 100%;
+            max-width: 330px;
+            padding: 15px;
+            margin: auto;
+        }
+        .form-signin .form-floating:focus-within {
+            z-index: 2;
+        }
+        .form-signin input[type="text"] {
+            margin-bottom: -1px;
+            border-bottom-right-radius: 0;
+            border-bottom-left-radius: 0;
+        }
+        .form-signin input[type="password"] {
+            margin-bottom: 10px;
+            border-top-left-radius: 0;
+            border-top-right-radius: 0;
+        }
+        .login-error {
+            display: none;
+            color: #dc3545;
+            margin-bottom: 15px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="login-container">
+            <div class="text-center mb-4">
+                <h1 class="h3 mb-3 fw-normal">Chatbot Admin</h1>
+                <p>Please sign in to access the admin dashboard</p>
+            </div>
+            
+            <div id="login-error" class="login-error text-center">
+                Invalid username or password
+            </div>
+            
+            <form id="login-form" class="form-signin">
+                <div class="form-floating mb-3">
+                    <input type="text" class="form-control" id="username" placeholder="Username" required>
+                    <label for="username">Username</label>
+                </div>
+                <div class="form-floating mb-3">
+                    <input type="password" class="form-control" id="password" placeholder="Password" required>
+                    <label for="password">Password</label>
+                </div>
+                <button class="w-100 btn btn-lg btn-primary" type="submit">Sign in</button>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            // Check if user is already logged in
+            const token = localStorage.getItem('chatbot-auth-token');
+            if (token) {
+                // Verify token
+                fetch('/api/auth/verify', {
+                    method: 'GET',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'x-auth-token': token
+                    }
+                })
+                .then(response => {
+                    if (response.ok) {
+                        // Token is valid, redirect to dashboard
+                        window.location.href = '/admin/index.html';
+                    } else {
+                        // Token is invalid, clear it
+                        localStorage.removeItem('chatbot-auth-token');
+                    }
+                })
+                .catch(error => {
+                    console.error('Error verifying token:', error);
+                    localStorage.removeItem('chatbot-auth-token');
+                });
+            }
+            
+            // Handle login form submission
+            const loginForm = document.getElementById('login-form');
+            const loginError = document.getElementById('login-error');
+            
+            loginForm.addEventListener('submit', function(e) {
+                e.preventDefault();
+                
+                const username = document.getElementById('username').value;
+                const password = document.getElementById('password').value;
+                
+                // Hide error message
+                loginError.style.display = 'none';
+                
+                // Send login request
+                fetch('/api/auth/login', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ username, password })
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.token) {
+                        // Store token in local storage
+                        localStorage.setItem('chatbot-auth-token', data.token);
+                        localStorage.setItem('chatbot-user', JSON.stringify(data.user));
+                        
+                        // Redirect to dashboard
+                        window.location.href = '/admin/index.html';
+                    } else {
+                        // Show error message
+                        loginError.style.display = 'block';
+                    }
+                })
+                .catch(error => {
+                    console.error('Login error:', error);
+                    loginError.style.display = 'block';
+                });
+            });
+        });
+    </script>
+</body>
+</html>

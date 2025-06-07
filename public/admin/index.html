@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chatbot Admin Dashboard</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="/css/admin.css">
+</head>
+<body>
+    <div class="container-fluid">
+        <div class="row">
+            <!-- Sidebar -->
+            <nav id="sidebar" class="col-md-3 col-lg-2 d-md-block bg-dark sidebar collapse">
+                <div class="position-sticky pt-3">
+                    <ul class="nav flex-column">
+                        <li class="nav-item">
+                            <a class="nav-link active" href="#dashboard-section" data-section="dashboard">
+                                <span data-feather="home"></span>
+                                Dashboard
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" href="#active-chats-section" data-section="active-chats">
+                                <span data-feather="message-square"></span>
+                                Active Chats
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" href="#chat-history-section" data-section="chat-history">
+                                <span data-feather="archive"></span>
+                                Chat History
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" href="#analytics-section" data-section="analytics">
+                                <span data-feather="bar-chart-2"></span>
+                                Analytics
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" href="#settings-section" data-section="settings">
+                                <span data-feather="settings"></span>
+                                Settings
+                            </a>
+                        </li>
+                    </ul>
+                </div>
+            </nav>
+
+            <!-- Main content -->
+            <main class="col-md-9 ms-sm-auto col-lg-10 px-md-4">
+                <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+                    <h1 class="h2">Chatbot Admin Dashboard</h1>
+                    <div class="btn-toolbar mb-2 mb-md-0">
+                        <div class="btn-group me-2">
+                            <button type="button" class="btn btn-sm btn-outline-secondary">Export</button>
+                            <button type="button" class="btn btn-sm btn-outline-secondary">Settings</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Dashboard Section -->
+                <section id="dashboard-section" class="content-section active">
+                    <div class="row">
+                        <div class="col-md-4">
+                            <div class="card">
+                                <div class="card-body">
+                                    <h5 class="card-title">Active Chats</h5>
+                                    <h1 class="display-4" id="active-chats-count">0</h1>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="card">
+                                <div class="card-body">
+                                    <h5 class="card-title">Total Chats Today</h5>
+                                    <h1 class="display-4" id="total-chats-today">0</h1>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="card">
+                                <div class="card-body">
+                                    <h5 class="card-title">Average Response Time</h5>
+                                    <h1 class="display-4" id="avg-response-time">0s</h1>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="row mt-4">
+                        <div class="col-md-6">
+                            <div class="card">
+                                <div class="card-body">
+                                    <h5 class="card-title">Chat Activity (Last 7 Days)</h5>
+                                    <canvas id="chat-activity-chart"></canvas>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="card">
+                                <div class="card-body">
+                                    <h5 class="card-title">Common Topics</h5>
+                                    <canvas id="topics-chart"></canvas>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Active Chats Section -->
+                <section id="active-chats-section" class="content-section">
+                    <div class="row">
+                        <div class="col-md-4">
+                            <div class="card">
+                                <div class="card-header">
+                                    Active Conversations
+                                </div>
+                                <div class="list-group list-group-flush" id="active-chat-list">
+                                    <a href="#" class="list-group-item list-group-item-action empty-state">No active conversations</a>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-8">
+                            <div class="card">
+                                <div class="card-header">
+                                    <span id="selected-chat-title">Select a conversation</span>
+                                    <div class="float-end">
+                                        <button class="btn btn-sm btn-primary" id="join-chat-btn" disabled>Join Chat</button>
+                                        <button class="btn btn-sm btn-danger" id="end-chat-btn" disabled>End Chat</button>
+                                    </div>
+                                </div>
+                                <div class="card-body">
+                                    <div id="chat-messages" class="chat-messages">
+                                        <div class="empty-state">
+                                            <p>Select a conversation to view messages</p>
+                                        </div>
+                                    </div>
+                                    <div id="operator-input" class="mt-3" style="display: none;">
+                                        <div class="input-group">
+                                            <input type="text" class="form-control" id="operator-message" placeholder="Type your message...">
+                                            <button class="btn btn-primary" id="send-operator-message">Send</button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Chat History Section -->
+                <section id="chat-history-section" class="content-section">
+                    <div class="card">
+                        <div class="card-header">
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <h5>Chat History</h5>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="input-group">
+                                        <input type="text" class="form-control" placeholder="Search conversations...">
+                                        <button class="btn btn-outline-secondary" type="button">Search</button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="card-body">
+                            <div class="table-responsive">
+                                <table class="table table-striped table-hover">
+                                    <thead>
+                                        <tr>
+                                            <th>Session ID</th>
+                                            <th>Date</th>
+                                            <th>Duration</th>
+                                            <th>Messages</th>
+                                            <th>Status</th>
+                                            <th>Actions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="chat-history-table">
+                                        <tr>
+                                            <td colspan="6" class="text-center">No chat history available</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Analytics Section -->
+                <section id="analytics-section" class="content-section">
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="card">
+                                <div class="card-header">
+                                    <h5>Chat Volume Over Time</h5>
+                                </div>
+                                <div class="card-body">
+                                    <canvas id="chat-volume-chart"></canvas>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="card">
+                                <div class="card-header">
+                                    <h5>Average Response Time</h5>
+                                </div>
+                                <div class="card-body">
+                                    <canvas id="response-time-chart"></canvas>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="row mt-4">
+                        <div class="col-md-12">
+                            <div class="card">
+                                <div class="card-header">
+                                    <h5>Conversation Metrics</h5>
+                                </div>
+                                <div class="card-body">
+                                    <div class="table-responsive">
+                                        <table class="table table-striped">
+                                            <thead>
+                                                <tr>
+                                                    <th>Metric</th>
+                                                    <th>Today</th>
+                                                    <th>This Week</th>
+                                                    <th>This Month</th>
+                                                    <th>Change</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                <tr>
+                                                    <td>Total Conversations</td>
+                                                    <td>0</td>
+                                                    <td>0</td>
+                                                    <td>0</td>
+                                                    <td>0%</td>
+                                                </tr>
+                                                <tr>
+                                                    <td>Average Duration</td>
+                                                    <td>0 min</td>
+                                                    <td>0 min</td>
+                                                    <td>0 min</td>
+                                                    <td>0%</td>
+                                                </tr>
+                                                <tr>
+                                                    <td>Messages per Conversation</td>
+                                                    <td>0</td>
+                                                    <td>0</td>
+                                                    <td>0</td>
+                                                    <td>0%</td>
+                                                </tr>
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Settings Section -->
+                <section id="settings-section" class="content-section">
+                    <div class="card">
+                        <div class="card-header">
+                            <h5>Dashboard Settings</h5>
+                        </div>
+                        <div class="card-body">
+                            <form id="settings-form">
+                                <div class="mb-3">
+                                    <label for="notification-setting" class="form-label">Notifications</label>
+                                    <select class="form-select" id="notification-setting">
+                                        <option value="all">All notifications</option>
+                                        <option value="important">Important only</option>
+                                        <option value="none">None</option>
+                                    </select>
+                                </div>
+                                <div class="mb-3 form-check">
+                                    <input type="checkbox" class="form-check-input" id="sound-notifications">
+                                    <label class="form-check-label" for="sound-notifications">Enable sound notifications</label>
+                                </div>
+                                <div class="mb-3">
+                                    <label for="auto-refresh" class="form-label">Auto-refresh interval (seconds)</label>
+                                    <input type="number" class="form-control" id="auto-refresh" min="5" value="30">
+                                </div>
+
+                                <h5 class="mt-4">PDF Column Configuration</h5>
+                                <div class="mb-3">
+                                    <label class="form-label">Apartment Information Columns</label>
+                                    <div id="column-config-container" class="list-group">
+                                        <!-- Column items will be added here dynamically -->
+                                        <div class="list-group-item">
+                                            <div class="d-flex justify-content-between align-items-center">
+                                                <div>
+                                                    <input type="checkbox" class="form-check-input me-2" id="col-address" checked>
+                                                    <label class="form-check-label" for="col-address">Address</label>
+                                                </div>
+                                                <div>
+                                                    <button class="btn btn-sm btn-outline-secondary move-up">↑</button>
+                                                    <button class="btn btn-sm btn-outline-secondary move-down">↓</button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div class="list-group-item">
+                                            <div class="d-flex justify-content-between align-items-center">
+                                                <div>
+                                                    <input type="checkbox" class="form-check-input me-2" id="col-size" checked>
+                                                    <label class="form-check-label" for="col-size">Size (sq ft)</label>
+                                                </div>
+                                                <div>
+                                                    <button class="btn btn-sm btn-outline-secondary move-up">↑</button>
+                                                    <button class="btn btn-sm btn-outline-secondary move-down">↓</button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div class="list-group-item">
+                                            <div class="d-flex justify-content-between align-items-center">
+                                                <div>
+                                                    <input type="checkbox" class="form-check-input me-2" id="col-rooms" checked>
+                                                    <label class="form-check-label" for="col-rooms">Rooms</label>
+                                                </div>
+                                                <div>
+                                                    <button class="btn btn-sm btn-outline-secondary move-up">↑</button>
+                                                    <button class="btn btn-sm btn-outline-secondary move-down">↓</button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div class="list-group-item">
+                                            <div class="d-flex justify-content-between align-items-center">
+                                                <div>
+                                                    <input type="checkbox" class="form-check-input me-2" id="col-price" checked>
+                                                    <label class="form-check-label" for="col-price">Price</label>
+                                                </div>
+                                                <div>
+                                                    <button class="btn btn-sm btn-outline-secondary move-up">↑</button>
+                                                    <button class="btn btn-sm btn-outline-secondary move-down">↓</button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div class="list-group-item">
+                                            <div class="d-flex justify-content-between align-items-center">
+                                                <div>
+                                                    <input type="checkbox" class="form-check-input me-2" id="col-details" checked>
+                                                    <label class="form-check-label" for="col-details">Details</label>
+                                                </div>
+                                                <div>
+                                                    <button class="btn btn-sm btn-outline-secondary move-up">↑</button>
+                                                    <button class="btn btn-sm btn-outline-secondary move-down">↓</button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <button type="submit" class="btn btn-primary">Save Settings</button>
+                            </form>
+                        </div>
+                    </div>
+                </section>
+            </main>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/feather-icons@4.28.0/dist/feather.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@3.7.0/dist/chart.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/socket.io/client-dist/socket.io.min.js"></script>
+    <script src="/js/admin.js"></script>
+</body>
+</html>

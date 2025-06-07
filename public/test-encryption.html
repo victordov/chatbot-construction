@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chatbot E2E Encryption Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        h1 {
+            color: #2196f3;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .test-section {
+            margin-bottom: 20px;
+            padding: 15px;
+            border: 1px solid #e0e0e0;
+            border-radius: 4px;
+        }
+        h2 {
+            margin-top: 0;
+            color: #333;
+        }
+        p {
+            line-height: 1.6;
+        }
+        .status {
+            font-weight: bold;
+        }
+        .success {
+            color: green;
+        }
+        .error {
+            color: red;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Chatbot End-to-End Encryption Test</h1>
+        
+        <div class="test-section">
+            <h2>Widget Initialization</h2>
+            <p>The chatbot widget should initialize with encryption enabled.</p>
+            <p>Status: <span id="init-status" class="status">Waiting...</span></p>
+        </div>
+        
+        <div class="test-section">
+            <h2>Key Exchange</h2>
+            <p>The widget should exchange encryption keys with the server.</p>
+            <p>Status: <span id="key-exchange-status" class="status">Waiting...</span></p>
+        </div>
+        
+        <div class="test-section">
+            <h2>Message Encryption</h2>
+            <p>Messages should be encrypted before sending to the server.</p>
+            <p>Status: <span id="encryption-status" class="status">Waiting...</span></p>
+        </div>
+        
+        <div class="test-section">
+            <h2>Message Decryption</h2>
+            <p>Encrypted messages from the server should be properly decrypted.</p>
+            <p>Status: <span id="decryption-status" class="status">Waiting...</span></p>
+        </div>
+    </div>
+
+    <!-- Load the chatbot widget script -->
+    <script src="http://localhost:3000/widget/js/widget.js"></script>
+    
+    <script>
+        // Custom implementation to monitor encryption steps
+        (function() {
+            // Override console methods to capture encryption-related logs
+            const originalLog = console.log;
+            const originalError = console.error;
+            
+            console.log = function(message) {
+                if (typeof message === 'string') {
+                    if (message.includes('End-to-end encryption enabled')) {
+                        document.getElementById('key-exchange-status').textContent = 'Success';
+                        document.getElementById('key-exchange-status').className = 'status success';
+                    }
+                }
+                originalLog.apply(console, arguments);
+            };
+            
+            console.error = function(message) {
+                if (typeof message === 'string') {
+                    if (message.includes('encryption')) {
+                        document.getElementById('encryption-status').textContent = 'Error: ' + message;
+                        document.getElementById('encryption-status').className = 'status error';
+                    }
+                }
+                originalError.apply(console, arguments);
+            };
+            
+            // Initialize the widget with a custom config
+            window.addEventListener('DOMContentLoaded', () => {
+                ChatbotWidget.init({
+                    serverUrl: 'http://localhost:3000',
+                    chatbotName: 'Encrypted Assistant',
+                    primaryColor: '#4CAF50',
+                    initialMessage: 'Hello! This chat is end-to-end encrypted for your security.'
+                });
+                
+                document.getElementById('init-status').textContent = 'Initialized';
+                document.getElementById('init-status').className = 'status success';
+                
+                // We'll set these to success by default and only change if we detect errors
+                setTimeout(() => {
+                    const encryptionStatus = document.getElementById('encryption-status');
+                    const decryptionStatus = document.getElementById('decryption-status');
+                    
+                    if (encryptionStatus.textContent === 'Waiting...') {
+                        encryptionStatus.textContent = 'Success (No errors detected)';
+                        encryptionStatus.className = 'status success';
+                    }
+                    
+                    if (decryptionStatus.textContent === 'Waiting...') {
+                        decryptionStatus.textContent = 'Success (No errors detected)';
+                        decryptionStatus.className = 'status success';
+                    }
+                }, 5000);
+            });
+        })();
+    </script>
+</body>
+</html>

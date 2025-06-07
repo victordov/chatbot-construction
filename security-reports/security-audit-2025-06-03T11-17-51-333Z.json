@@ -1,0 +1,67 @@
+{
+  "timestamp": "2025-06-03T11:17:49.060Z",
+  "npmAudit": {
+    "auditReportVersion": 2,
+    "vulnerabilities": {},
+    "metadata": {
+      "vulnerabilities": {
+        "info": 0,
+        "low": 0,
+        "moderate": 0,
+        "high": 0,
+        "critical": 0,
+        "total": 0
+      },
+      "dependencies": {
+        "prod": 160,
+        "dev": 283,
+        "optional": 2,
+        "peer": 1,
+        "peerOptional": 0,
+        "total": 443
+      }
+    }
+  },
+  "sensitiveData": [
+    {
+      "file": "tests\\integration\\api\\auth.test.js",
+      "pattern": "/password\\s*=\\s*['\"][^'\"]+['\"]/i",
+      "match": "password = 'Pas...'",
+      "line": 85
+    },
+    {
+      "file": "tests\\integration\\api\\auth.test.js",
+      "pattern": "/secret\\s*=\\s*['\"][^'\"]+['\"]/i",
+      "match": "Secret = 'tes...'",
+      "line": 27
+    },
+    {
+      "file": "tests\\integration\\api\\auth.test.js",
+      "pattern": "/jwt[\\w]*secret\\s*=\\s*['\"][^'\"]+['\"]/i",
+      "match": "jwtSecret = 'tes...'",
+      "line": 27
+    }
+  ],
+  "insecureConfigurations": [
+    {
+      "type": "JWT",
+      "issue": "JWT configuration may be using insecure algorithms or default settings",
+      "file": "middleware\\auth.js",
+      "severity": "high"
+    }
+  ],
+  "summary": {
+    "vulnerabilities": {
+      "info": 0,
+      "low": 0,
+      "moderate": 0,
+      "high": 0,
+      "critical": 0,
+      "total": 0
+    },
+    "sensitiveData": 3,
+    "insecureConfigurations": 1,
+    "riskScore": 14,
+    "riskLevel": "Low"
+  }
+}
