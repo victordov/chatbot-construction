@@ -124,6 +124,16 @@ class EncryptionUtil {
     }
 
     try {
+      // Check if nacl and nacl.util are available
+      if (!nacl || !nacl.util || 
+          typeof nacl.util.decodeUTF8 !== 'function' || 
+          typeof nacl.util.encodeBase64 !== 'function' ||
+          typeof nacl.randomBytes !== 'function' ||
+          typeof nacl.box !== 'function') {
+        console.error('nacl or nacl.util functions are not available');
+        return null;
+      }
+
       // Generate a random nonce
       const nonce = nacl.randomBytes(nacl.box.nonceLength);
 
@@ -162,6 +172,15 @@ class EncryptionUtil {
     }
 
     try {
+      // Check if nacl and nacl.util are available
+      if (!nacl || !nacl.util || 
+          typeof nacl.util.decodeBase64 !== 'function' || 
+          typeof nacl.util.encodeUTF8 !== 'function' ||
+          typeof nacl.box.open !== 'function') {
+        console.error('nacl or nacl.util functions are not available');
+        return null;
+      }
+
       // Convert from Base64 to Uint8Array
       const encryptedMessage = nacl.util.decodeBase64(encryptedMessageBase64);
       const nonce = nacl.util.decodeBase64(nonceBase64);
