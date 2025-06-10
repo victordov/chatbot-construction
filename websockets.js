@@ -472,6 +472,14 @@ function setupWebSockets(server) {
         timestamp: new Date()
       });
 
+      // Notify all operators that an operator has joined this chat
+      io.to('operators').emit('operator-joined', {
+        sessionId,
+        operatorId: socket.user.id,
+        operatorName,
+        timestamp: new Date()
+      });
+
       // Update conversation status in database
       try {
         await Conversation.findOneAndUpdate(
@@ -522,6 +530,55 @@ function setupWebSockets(server) {
       } catch (error) {
         console.error('Error handling operator message:', error);
       }
+    });
+
+    // Handle end chat
+    socket.on('end-chat', async (data) => {
+      if (!isOperator) {
+        return;
+      }
+
+      const { sessionId } = data;
+
+      try {
+        // Update conversation status in database
+        const conversation = await Conversation.findOneAndUpdate(
+          { sessionId },
+          {
+            $set: {
+              status: 'ended',
+              endedAt: new Date(),
+              hasOperator: false,
+              operatorId: null,
+              operatorName: null
+            }
+          },
+          { new: true }
+        );
+
+        if (conversation) {
+          // Notify user that chat has ended
+          io.to(sessionId).emit('chat-ended', {
+            message: 'This conversation has been ended by the operator.',
+            timestamp: new Date()
+          });
+
+          // Notify all operators that this chat has ended
+          io.to('operators').emit('chat-ended', {
+            sessionId,
+            timestamp: new Date()
+          });
+
+          // Notify all operators that the operator has left this chat
+          io.to('operators').emit('operator-left', {
+            sessionId,
+            operatorId: socket.user.id,
+            timestamp: new Date()
+          });
+        }
+      } catch (error) {
+        console.error('Error ending chat:', error);
+      }
     });    // Handle heartbeat to keep connection alive
     socket.on('heartbeat', (data) => {
       // Respond with an acknowledgment
@@ -541,7 +598,7 @@ function setupWebSockets(server) {
     });
 
     // Handle disconnection
-    socket.on('disconnect', () => {
+    socket.on('disconnect', async () => {
       console.log('Client disconnected');
 
       // Clean up encryption keys when client disconnects
@@ -556,6 +613,42 @@ function setupWebSockets(server) {
           sessionId: clientSessionId,
           timestamp: new Date()
         });
+      }
+
+      // If it was an operator, check if they were connected to any chats
+      if (isOperator) {
+        try {
+          // Find all conversations where this operator was connected
+          const conversations = await Conversation.find({ 
+            operatorId: socket.user.id,
+            hasOperator: true,
+            status: 'active'
+          });
+
+          // For each conversation, update the status and notify other operators
+          for (const conversation of conversations) {
+            // Notify all operators that this operator has left the chat
+            io.to('operators').emit('operator-left', {
+              sessionId: conversation.sessionId,
+              operatorId: socket.user.id,
+              timestamp: new Date()
+            });
+
+            // Update the conversation in the database
+            await Conversation.findOneAndUpdate(
+              { _id: conversation._id },
+              {
+                $set: {
+                  hasOperator: false,
+                  operatorId: null,
+                  operatorName: null
+                }
+              }
+            );
+          }
+        } catch (error) {
+          console.error('Error handling operator disconnect:', error);
+        }
       }
     });
   });

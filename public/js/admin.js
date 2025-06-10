@@ -1,5 +1,5 @@
 // Admin Dashboard JavaScript
-// Add CSS for unread message indicators
+// Add CSS for unread message indicators and operator status
 const style = document.createElement('style');
 style.textContent = `
   .has-new-message {
@@ -19,6 +19,22 @@ style.textContent = `
     padding: 3px 6px;
     border-radius: 10px;
     font-size: 0.7em;
+  }
+
+  .status-indicator {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    margin-right: 5px;
+  }
+
+  .status-indicator.no-operator {
+    background-color: #ffc107; /* Amber color */
+  }
+
+  .status-indicator.has-operator {
+    background-color: #28a745; /* Green color */
   }
 `;
 document.head.appendChild(style);
@@ -63,6 +79,9 @@ function initializeDashboard(token, user) {
 
   // Set up navigation
   setupNavigation();
+
+  // Track joined chats
+  window.joinedChats = new Set();
 
   // Initialize Socket.IO connection with reconnection options
   const socket = io({
@@ -124,12 +143,22 @@ function setupEventHandlers(socket) {
   joinChatBtn.addEventListener('click', function() {
     const operatorInput = document.getElementById('operator-input');
     operatorInput.style.display = 'block';
-    this.disabled = true;
+
+    // Change button text to "Joined" instead of disabling
+    this.textContent = 'Joined';
+    this.classList.remove('btn-primary');
+    this.classList.add('btn-success');
+
+    // Store the joined status in a data attribute
+    this.setAttribute('data-joined', 'true');
 
     // Notify that operator has joined
     const sessionId = this.getAttribute('data-session-id');
     const operatorName = 'Admin'; // Use actual operator name if available
     socket.emit('operator-takeover', { sessionId, operatorName });
+
+    // Add this chat to the joined chats set
+    window.joinedChats.add(sessionId);
   });
 
   // End chat button
@@ -138,6 +167,10 @@ function setupEventHandlers(socket) {
     const sessionId = this.getAttribute('data-session-id');
     if (confirm('Are you sure you want to end this chat?')) {
       socket.emit('end-chat', { sessionId });
+
+      // Remove this chat from the joined chats set
+      window.joinedChats.delete(sessionId);
+
       resetChatView();
     }
   });
@@ -186,6 +219,15 @@ function setupEventHandlers(socket) {
     removeChatFromList(data.sessionId);
   });
 
+  // Listen for operator join/leave events
+  socket.on('operator-joined', function(data) {
+    updateChatOperatorStatus(data.sessionId, true);
+  });
+
+  socket.on('operator-left', function(data) {
+    updateChatOperatorStatus(data.sessionId, false);
+  });
+
   socket.on('new-message', function(data) {
     // Add message to chat if it's currently selected
     const selectedChatId = joinChatBtn.getAttribute('data-session-id');
@@ -207,8 +249,17 @@ function setupEventHandlers(socket) {
         if (!badge) {
           badge = document.createElement('span');
           badge.className = 'unread-badge badge bg-danger';
-          badge.style.float = 'right';
-          chatItem.appendChild(badge);
+
+          // Position the badge in the top-right of the chat item
+          const headerDiv = chatItem.querySelector('.d-flex');
+          if (headerDiv) {
+            // Add the badge to the header div which has a flex layout
+            headerDiv.appendChild(badge);
+          } else {
+            // Fallback to appending to the chat item with float right
+            badge.style.float = 'right';
+            chatItem.appendChild(badge);
+          }
         }
 
         // Increment the unread count
@@ -280,7 +331,9 @@ function initializeCharts() {
     },
     options: {
       responsive: true,
-      maintainAspectRatio: false
+      maintainAspectRatio: true,
+      aspectRatio: 2,
+      height: 300
     }
   });
 
@@ -297,7 +350,9 @@ function initializeCharts() {
     },
     options: {
       responsive: true,
-      maintainAspectRatio: false
+      maintainAspectRatio: true,
+      aspectRatio: 2,
+      height: 300
     }
   });
 
@@ -315,7 +370,9 @@ function initializeCharts() {
     },
     options: {
       responsive: true,
-      maintainAspectRatio: false
+      maintainAspectRatio: true,
+      aspectRatio: 2,
+      height: 300
     }
   });
 
@@ -335,7 +392,9 @@ function initializeCharts() {
     },
     options: {
       responsive: true,
-      maintainAspectRatio: false
+      maintainAspectRatio: true,
+      aspectRatio: 2,
+      height: 300
     }
   });
 }
@@ -460,9 +519,16 @@ function addChatToList(chat) {
 
   const startTime = new Date(chat.startedAt || Date.now()).toLocaleTimeString();
 
+  // Determine if the chat has an operator
+  const hasOperator = chat.hasOperator || window.joinedChats.has(chat.sessionId);
+  const statusClass = hasOperator ? 'has-operator' : 'no-operator';
+
   chatItem.innerHTML = `
     <div class="d-flex w-100 justify-content-between">
-      <h6 class="mb-1">Session ${chat.sessionId.substring(0, 8)}...</h6>
+      <h6 class="mb-1">
+        <span class="status-indicator ${statusClass}"></span>
+        Session ${chat.sessionId.substring(0, 8)}...
+      </h6>
       <small>${startTime}</small>
     </div>
     <p class="mb-1">Messages: ${chat.messages ? chat.messages.length : 0}</p>
@@ -494,10 +560,29 @@ function addChatToList(chat) {
     // Update selected chat title
     document.getElementById('selected-chat-title').textContent = `Session ${chat.sessionId.substring(0, 8)}...`;
 
-    // Enable the join and end buttons
+    // Update the join and end buttons
     const joinBtn = document.getElementById('join-chat-btn');
     joinBtn.disabled = false;
     joinBtn.setAttribute('data-session-id', chat.sessionId);
+
+    // Check if this chat has already been joined by the current operator
+    if (window.joinedChats.has(chat.sessionId)) {
+      joinBtn.textContent = 'Joined';
+      joinBtn.classList.remove('btn-primary');
+      joinBtn.classList.add('btn-success');
+      joinBtn.setAttribute('data-joined', 'true');
+
+      // Show the operator input
+      document.getElementById('operator-input').style.display = 'block';
+    } else {
+      joinBtn.textContent = 'Join Chat';
+      joinBtn.classList.remove('btn-success');
+      joinBtn.classList.add('btn-primary');
+      joinBtn.removeAttribute('data-joined');
+
+      // Hide the operator input if not joined
+      document.getElementById('operator-input').style.display = 'none';
+    }
 
     const endBtn = document.getElementById('end-chat-btn');
     endBtn.disabled = false;
@@ -853,6 +938,26 @@ function calculateDuration(start, end) {
   const durationMinutes = Math.floor(durationMs / 60000);
 
   return durationMinutes + ' min';
+}
+
+// Update chat operator status
+function updateChatOperatorStatus(sessionId, hasOperator) {
+  // Find the chat item
+  const chatItem = document.querySelector(`#active-chat-list a[data-session-id="${sessionId}"]`);
+  if (!chatItem) return;
+
+  // Find the status indicator
+  const statusIndicator = chatItem.querySelector('.status-indicator');
+  if (!statusIndicator) return;
+
+  // Update the status class
+  statusIndicator.classList.remove('has-operator', 'no-operator');
+  statusIndicator.classList.add(hasOperator ? 'has-operator' : 'no-operator');
+
+  // If this operator joined the chat, add it to the joined chats set
+  if (hasOperator) {
+    window.joinedChats.add(sessionId);
+  }
 }
 
 // View chat history
