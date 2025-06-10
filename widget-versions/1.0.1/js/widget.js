@@ -268,16 +268,20 @@
       });
 
       // Handle encryption key exchange
-      socket.on('encryption-init', (data) => {
+      socket.on('encryption-init', async (data) => {
         if (encryptionUtil && data.serverPublicKey) {
-          // Set server's public key
-          encryptionUtil.setServerPublicKey(data.serverPublicKey);
+          try {
+            // Set server's public key (now awaiting the async method)
+            await encryptionUtil.setServerPublicKey(data.serverPublicKey);
 
-          // Send client's public key to server
-          socket.emit('client-public-key', {
-            sessionId,
-            publicKey: encryptionUtil.getPublicKey()
-          });
+            // Send client's public key to server
+            socket.emit('client-public-key', {
+              sessionId,
+              publicKey: encryptionUtil.getPublicKey()
+            });
+          } catch (error) {
+            console.error('Error during encryption setup:', error);
+          }
         }
       });
 

@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Website Integration Example</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            margin: 0;
+            padding: 0;
+            color: #333;
+            background-color: #f4f4f4;
+        }
+        
+        header {
+            background-color: #35424a;
+            color: white;
+            padding: 30px 0;
+            text-align: center;
+        }
+        
+        .container {
+            width: 80%;
+            margin: auto;
+            overflow: hidden;
+        }
+        
+        main {
+            padding: 30px 0;
+        }
+        
+        .card {
+            background: #fff;
+            padding: 20px;
+            margin-bottom: 20px;
+            border-radius: 5px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        
+        footer {
+            background-color: #35424a;
+            color: white;
+            text-align: center;
+            padding: 20px 0;
+            margin-top: 20px;
+        }
+        
+        code {
+            background-color: #f1f1f1;
+            padding: 2px 5px;
+            border-radius: 3px;
+            font-family: monospace;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="container">
+            <h1>Widget Integration Example</h1>
+            <p>This is an example of a website with the chatbot widget integrated</p>
+        </div>
+    </header>
+    
+    <main>
+        <div class="container">
+            <div class="card">
+                <h2>About Our Company</h2>
+                <p>Welcome to our sample website. This demonstrates how the chatbot widget can be seamlessly integrated into any website.</p>
+                <p>The widget can be customized to match your brand colors and positioned on either the left or right side of the screen.</p>
+            </div>
+            
+            <div class="card">
+                <h2>Integration Instructions</h2>
+                <p>Adding the chatbot to your website is as simple as adding a single script tag:</p>
+                <pre><code>&lt;script 
+    src="https://your-server-url/widget/js/widget-loader.js" 
+    data-server-url="https://your-server-url" 
+    data-chatbot-name="Your Assistant Name" 
+    data-primary-color="#2196f3" 
+    data-position="right"
+    data-initial-message="Hello! How can I help you today?"&gt;
+&lt;/script&gt;</code></pre>
+                <p>This script should be placed just before the closing <code>&lt;/body&gt;</code> tag.</p>
+            </div>
+            
+            <div class="card">
+                <h2>Customization Options</h2>
+                <ul>
+                    <li><strong>data-server-url</strong>: The URL of your chatbot server</li>
+                    <li><strong>data-chatbot-name</strong>: The name displayed in the chat header</li>
+                    <li><strong>data-primary-color</strong>: The main color of the widget (HEX format)</li>
+                    <li><strong>data-position</strong>: Position of the widget, either "right" or "left"</li>
+                    <li><strong>data-initial-message</strong>: The first message displayed by the chatbot</li>
+                </ul>
+            </div>
+        </div>
+    </main>
+    
+    <footer>
+        <div class="container">
+            <p>&copy; 2025 Your Company. All rights reserved.</p>
+        </div>
+    </footer>
+    
+    <!-- Chatbot Widget Integration -->
+    <script 
+        src="js/widget-loader.js" 
+        data-server-url="http://localhost:3000" 
+        data-chatbot-name="Customer Support" 
+        data-primary-color="#35424a" 
+        data-position="right"
+        data-initial-message="Hello! Welcome to our website. How can I assist you today?">
+    </script>
+</body>
+</html>

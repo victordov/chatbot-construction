@@ -42,21 +42,7 @@ class EncryptionUtil {
         // Load TweetNaCl-util after TweetNaCl is loaded
         const naclUtilScript = document.createElement('script');
         naclUtilScript.src = 'https://cdnjs.cloudflare.com/ajax/libs/tweetnacl-util/0.15.1/nacl-util.min.js';
-        naclUtilScript.onload = () => {
-          // Ensure nacl.util is fully defined before resolving
-          if (typeof nacl !== 'undefined' && nacl.util && typeof nacl.util.encodeBase64 === 'function' && typeof nacl.util.decodeBase64 === 'function') {
-            resolve();
-          } else {
-            // If nacl.util is not fully defined, wait a bit and check again
-            setTimeout(() => {
-              if (typeof nacl !== 'undefined' && nacl.util && typeof nacl.util.encodeBase64 === 'function' && typeof nacl.util.decodeBase64 === 'function') {
-                resolve();
-              } else {
-                reject(new Error('nacl.util is not fully defined after loading scripts'));
-              }
-            }, 100);
-          }
-        };
+        naclUtilScript.onload = resolve;
         naclUtilScript.onerror = reject;
         document.body.appendChild(naclUtilScript);
       };
@@ -72,15 +58,10 @@ class EncryptionUtil {
    */
   async setServerPublicKey(publicKeyBase64) {
     try {
-      // Check if nacl and nacl.util are defined, if not wait for them to load
-      if (typeof nacl === 'undefined' || !nacl.util || typeof nacl.util.decodeBase64 !== 'function') {
-        console.log('nacl or nacl.util not fully loaded yet, waiting for them to load...');
+      // Check if nacl is defined, if not wait for it to load
+      if (typeof nacl === 'undefined') {
+        console.log('nacl not loaded yet, waiting for it to load...');
         await this.loadScripts();
-      }
-
-      // Double-check that nacl.util is available
-      if (!nacl.util || typeof nacl.util.decodeBase64 !== 'function') {
-        throw new Error('nacl.util.decodeBase64 is not available after loading scripts');
       }
 
       this.serverPublicKey = nacl.util.decodeBase64(publicKeyBase64);
@@ -95,21 +76,10 @@ class EncryptionUtil {
 
   /**
    * Get the client's public key in Base64 format
-   * @returns {string|null} The client's public key in Base64 format, or null if encryption is not ready
+   * @returns {string} The client's public key in Base64 format
    */
   getPublicKey() {
-    try {
-      // Check if nacl.util is available
-      if (!nacl || !nacl.util || typeof nacl.util.encodeBase64 !== 'function') {
-        console.error('nacl.util.encodeBase64 is not available');
-        return null;
-      }
-
-      return nacl.util.encodeBase64(this.keyPair.publicKey);
-    } catch (error) {
-      console.error('Error getting public key:', error);
-      return null;
-    }
+    return nacl.util.encodeBase64(this.keyPair.publicKey);
   }
 
   /**

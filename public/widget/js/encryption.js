@@ -41,8 +41,22 @@ class EncryptionUtil {
       naclScript.onload = () => {
         // Load TweetNaCl-util after TweetNaCl is loaded
         const naclUtilScript = document.createElement('script');
-        naclUtilScript.src = 'https://cdnjs.cloudflare.com/ajax/libs/tweetnacl-util/0.15.1/nacl-util.min.js';
-        naclUtilScript.onload = resolve;
+        naclUtilScript.src = 'https://cdn.jsdelivr.net/npm/tweetnacl-util@0.15.1/nacl-util.min.js';
+        naclUtilScript.onload = () => {
+          // Ensure nacl.util is fully defined before resolving
+          if (typeof nacl !== 'undefined' && nacl.util && typeof nacl.util.encodeBase64 === 'function' && typeof nacl.util.decodeBase64 === 'function') {
+            resolve();
+          } else {
+            // If nacl.util is not fully defined, wait a bit and check again
+            setTimeout(() => {
+              if (typeof nacl !== 'undefined' && nacl.util && typeof nacl.util.encodeBase64 === 'function' && typeof nacl.util.decodeBase64 === 'function') {
+                resolve();
+              } else {
+                reject(new Error('nacl.util is not fully defined after loading scripts'));
+              }
+            }, 100);
+          }
+        };
         naclUtilScript.onerror = reject;
         document.body.appendChild(naclUtilScript);
       };
@@ -54,10 +68,21 @@ class EncryptionUtil {
   /**
    * Set the server's public key
    * @param {string} publicKeyBase64 - The server's public key in Base64 format
-   * @returns {boolean} Whether the key was set successfully
+   * @returns {Promise<boolean>} Whether the key was set successfully
    */
-  setServerPublicKey(publicKeyBase64) {
+  async setServerPublicKey(publicKeyBase64) {
     try {
+      // Check if nacl and nacl.util are defined, if not wait for them to load
+      if (typeof nacl === 'undefined' || !nacl.util || typeof nacl.util.decodeBase64 !== 'function') {
+        console.log('nacl or nacl.util not fully loaded yet, waiting for them to load...');
+        await this.loadScripts();
+      }
+
+      // Double-check that nacl.util is available
+      if (!nacl.util || typeof nacl.util.decodeBase64 !== 'function') {
+        throw new Error('nacl.util.decodeBase64 is not available after loading scripts');
+      }
+
       this.serverPublicKey = nacl.util.decodeBase64(publicKeyBase64);
       this.isReady = true;
       return true;
@@ -70,10 +95,21 @@ class EncryptionUtil {
 
   /**
    * Get the client's public key in Base64 format
-   * @returns {string} The client's public key in Base64 format
+   * @returns {string|null} The client's public key in Base64 format, or null if encryption is not ready
    */
   getPublicKey() {
-    return nacl.util.encodeBase64(this.keyPair.publicKey);
+    try {
+      // Check if nacl.util is available
+      if (!nacl || !nacl.util || typeof nacl.util.encodeBase64 !== 'function') {
+        console.error('nacl.util.encodeBase64 is not available');
+        return null;
+      }
+
+      return nacl.util.encodeBase64(this.keyPair.publicKey);
+    } catch (error) {
+      console.error('Error getting public key:', error);
+      return null;
+    }
   }
 
   /**
@@ -88,6 +124,16 @@ class EncryptionUtil {
     }
 
     try {
+      // Check if nacl and nacl.util are available
+      if (!nacl || !nacl.util || 
+          typeof nacl.util.decodeUTF8 !== 'function' || 
+          typeof nacl.util.encodeBase64 !== 'function' ||
+          typeof nacl.randomBytes !== 'function' ||
+          typeof nacl.box !== 'function') {
+        console.error('nacl or nacl.util functions are not available');
+        return null;
+      }
+
       // Generate a random nonce
       const nonce = nacl.randomBytes(nacl.box.nonceLength);
 
@@ -126,6 +172,15 @@ class EncryptionUtil {
     }
 
     try {
+      // Check if nacl and nacl.util are available
+      if (!nacl || !nacl.util || 
+          typeof nacl.util.decodeBase64 !== 'function' || 
+          typeof nacl.util.encodeUTF8 !== 'function' ||
+          typeof nacl.box.open !== 'function') {
+        console.error('nacl or nacl.util functions are not available');
+        return null;
+      }
+
       // Convert from Base64 to Uint8Array
       const encryptedMessage = nacl.util.decodeBase64(encryptedMessageBase64);
       const nonce = nacl.util.decodeBase64(nonceBase64);
