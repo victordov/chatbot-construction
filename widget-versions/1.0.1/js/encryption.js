@@ -97,11 +97,27 @@ class EncryptionUtil {
    * Get the client's public key in Base64 format
    * @returns {string|null} The client's public key in Base64 format, or null if encryption is not ready
    */
-  getPublicKey() {
+  async getPublicKey() {
     try {
       // Check if nacl.util is available
       if (!nacl || !nacl.util || typeof nacl.util.encodeBase64 !== 'function') {
         console.error('nacl.util.encodeBase64 is not available');
+        return null;
+      }
+
+      // Check if keyPair is initialized
+      if (!this.keyPair) {
+        console.log('Key pair not initialized, initializing now...');
+        const success = await this.init();
+        if (!success) {
+          console.error('Failed to initialize key pair');
+          return null;
+        }
+      }
+
+      // Double-check that keyPair is available
+      if (!this.keyPair || !this.keyPair.publicKey) {
+        console.error('Key pair or public key is not available');
         return null;
       }
 

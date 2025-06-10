@@ -449,4 +449,4 @@ fabric.properties
 security-reports/
 load-test-results/
 backups/
-.idea/
+.idea/!/security-reports/

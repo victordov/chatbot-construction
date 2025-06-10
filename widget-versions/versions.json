@@ -1,14 +1,16 @@
 {
   "currentVersion": "1.0.0",
-  "latestVersion": "1.0.2",
+  "latestVersion": "1.0.3",
   "versions": [
     "1.0.0",
     "1.0.1",
-    "1.0.2"
+    "1.0.2",
+    "1.0.3"
   ],
-  "lastUpdated": "2025-06-10T17:24:58.865Z",
+  "lastUpdated": "2025-06-10T18:24:59.027Z",
   "checksums": {
     "1.0.1": "2dc3637279367ec1ac37cd0782df730d093e7fac2896c9e4995bd9353f0682c8",
-    "1.0.2": "11c8e14259ecc5be4eb5eb5653b4ab2a74fae777bb3be142318072260fe1db0e"
+    "1.0.2": "11c8e14259ecc5be4eb5eb5653b4ab2a74fae777bb3be142318072260fe1db0e",
+    "1.0.3": "f47c6c69ee226ec87f0293d2796c72fff6b90de8679c6fe6016afcbbcb97f9aa"
   }
 }

@@ -275,9 +275,10 @@
             await encryptionUtil.setServerPublicKey(data.serverPublicKey);
 
             // Send client's public key to server
+            const publicKey = await encryptionUtil.getPublicKey();
             socket.emit('client-public-key', {
               sessionId,
-              publicKey: encryptionUtil.getPublicKey()
+              publicKey
             });
           } catch (error) {
             console.error('Error during encryption setup:', error);
@@ -358,9 +359,9 @@
       });
 
       // Handle reconnection
-      socket.on('reconnect', () => {
+      socket.on('reconnect', async () => {
         // Re-establish session
-        const publicKey = encryptionUtil ? encryptionUtil.getPublicKey() : null;
+        const publicKey = encryptionUtil ? await encryptionUtil.getPublicKey() : null;
         socket.emit('resume-session', {
           sessionId,
           publicKey
