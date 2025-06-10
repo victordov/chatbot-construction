@@ -1,5 +1,4 @@
-- [ ] 1. Once the operator connected the user cannot send anymore messages.
-- [ ] 2. The user doesn't receive the operator message in realtime.
-- [ ] 3. The operator cannot receive the user message in realtime.
+- [x] 2. The user doesn't receive the operator message in realtime.
+- [x] 3. The operator cannot receive the user message in realtime.
 - [ ] 4. The operator should be able to connect to multiple active chats at once.
-- [ ] 5. The user should be able to refresh the page and view its chat history.
+- [x] 5. The user should be able to refresh the page and view its chat history.

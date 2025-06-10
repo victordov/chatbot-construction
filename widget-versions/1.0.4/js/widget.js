@@ -24,9 +24,6 @@
   // Encryption utility
   let encryptionUtil;
 
-  // User details form
-  let userDetailsForm;
-
   // DOM elements
   let chatWindow;
   let chatMessages;
@@ -35,10 +32,6 @@
   let typingIndicator;
   let fileUploadInput;
   let fileIndicator;
-  let chatMessagesContainer; // Added to reference the messages container
-  // Heartbeat interval for keeping the socket connection alive
-  let heartbeatInterval;
-
   // Initialize the widget
   function init(customConfig = {}) {
     // Merge custom configuration with defaults
@@ -74,35 +67,6 @@
     if (config.initialMessage) {
       addBotMessage(config.initialMessage);
     }
-
-    // Start heartbeat to keep connection alive
-    startHeartbeat();
-  }
-
-  // Start heartbeat to keep socket connection alive
-  function startHeartbeat() {
-    // Clear any existing interval
-    if (heartbeatInterval) {
-      clearInterval(heartbeatInterval);
-    }
-
-    // Send a heartbeat every 30 seconds
-    heartbeatInterval = setInterval(() => {
-      if (socket && socket.connected) {
-        socket.emit('heartbeat', { sessionId });
-        console.log('Heartbeat sent');
-      }
-    }, 30000);
-
-    // Handle page visibility changes
-    document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible') {
-        // When page becomes visible, restart heartbeat if needed
-        if (!heartbeatInterval) {
-          startHeartbeat();
-        }
-      }
-    });
   }
 
   // Load the encryption utility script
@@ -136,6 +100,7 @@
           case 'new-message':
             // Add message to the UI without sending to server again
             if (data.sender === 'user') {
+              // We don't need to pass the user name as it will be retrieved from localStorage
               addUserMessage(data.message, false);
             } else if (data.sender === 'bot') {
               // Use the sender name if provided, otherwise default to "AI Assistant"
@@ -193,35 +158,6 @@
     }
   }
 
-  // Create the user details form
-  function createUserDetailsForm() {
-    userDetailsForm = document.createElement('div');
-    userDetailsForm.className = 'user-details-form';
-    userDetailsForm.style.display = 'none'; // Hidden by default
-
-    const formHTML = `
-      <h3 style="margin-top: 0; color: var(--primary-color, #2196f3);">Please provide your details</h3>
-      <form id="chatbot-user-details-form">
-        <div style="margin-bottom: 15px;">
-          <label for="chatbot-user-name" style="display: block; margin-bottom: 5px;">Name:</label>
-          <input type="text" id="chatbot-user-name" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;" required>
-        </div>
-        <div style="margin-bottom: 15px;">
-          <label for="chatbot-user-email" style="display: block; margin-bottom: 5px;">Email:</label>
-          <input type="email" id="chatbot-user-email" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;" required>
-        </div>
-        <div style="margin-bottom: 15px;">
-          <label for="chatbot-user-phone" style="display: block; margin-bottom: 5px;">Phone:</label>
-          <input type="tel" id="chatbot-user-phone" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;" required>
-        </div>
-        <button type="submit" style="background-color: var(--primary-color, #2196f3); color: white; border: none; padding: 10px 15px; border-radius: 4px; cursor: pointer; width: 100%;">Start Chat</button>
-      </form>
-    `;
-
-    userDetailsForm.innerHTML = formHTML;
-    return userDetailsForm;
-  }
-
   // Create the widget DOM elements
   function createWidgetElements() {
     // Create container
@@ -250,7 +186,7 @@
     `;
 
     // Create chat messages container
-    chatMessagesContainer = document.createElement('div');
+    const chatMessagesContainer = document.createElement('div');
     chatMessagesContainer.className = 'chat-messages';
 
     // Create chat messages list
@@ -306,11 +242,7 @@
     chatMessagesContainer.appendChild(chatMessages);
     chatMessagesContainer.appendChild(typingIndicator);
 
-    // Create user details form
-    const userDetailsFormElement = createUserDetailsForm();
-
     chatWindow.appendChild(chatHeader);
-    chatWindow.appendChild(userDetailsFormElement);
     chatWindow.appendChild(chatMessagesContainer);
     chatWindow.appendChild(fileIndicator);
     chatWindow.appendChild(chatInputArea);
@@ -327,7 +259,7 @@
     cssLink.href = `${config.serverUrl}/widget/css/widget.css`;
     document.head.appendChild(cssLink);
 
-    // Add custom styles for sender names and user details form
+    // Add custom styles for sender names
     const customStyles = document.createElement('style');
     customStyles.textContent = `
       .message-sender {
@@ -349,24 +281,6 @@
       .message-content {
         word-wrap: break-word;
       }
-
-      .user-details-form {
-        padding: 15px;
-        background-color: white;
-        border-radius: 5px;
-        margin: 10px;
-        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-      }
-
-      .user-details-form h3 {
-        margin-top: 0;
-        margin-bottom: 15px;
-        font-size: 16px;
-      }
-
-      .user-details-form input {
-        margin-bottom: 10px;
-      }
     `;
     document.head.appendChild(customStyles);
   }
@@ -376,14 +290,9 @@
     const script = document.createElement('script');
     script.src = `${config.serverUrl}/socket.io/socket.io.js`;
     script.onload = () => {
-      // Connect to server with reconnection options
+      // Connect to server
       socket = io(config.serverUrl, {
-        query: { sessionId },
-        reconnection: true,
-        reconnectionAttempts: Infinity,
-        reconnectionDelay: 1000,
-        reconnectionDelayMax: 5000,
-        timeout: 20000
+        query: { sessionId }
       });
 
       // Handle encryption key exchange
@@ -430,8 +339,11 @@
           }
         }
 
-        // For bot messages, the sender is always AI Assistant
-        const sender = 'AI Assistant';
+        // Determine sender type (AI Assistant or operator)
+        let sender = 'AI Assistant';
+        if (message.senderType === 'operator' && message.senderName) {
+          sender = message.senderName;
+        }
 
         addBotMessage(messageText, true, sender);
 
@@ -458,83 +370,6 @@
             }
           });
         }
-      });
-
-      // Listen for operator messages
-      socket.on('operator-message', (message) => {
-        setTypingIndicator(false);
-
-        // Decrypt message if it's encrypted
-        let messageText = message.text;
-        if (message.encrypted && encryptionUtil && encryptionUtil.isEncryptionReady()) {
-          const decrypted = encryptionUtil.decryptMessage(message.encryptedMessage, message.nonce);
-          if (decrypted) {
-            messageText = decrypted;
-          } else {
-            console.error('Failed to decrypt message');
-            messageText = 'Error: Could not decrypt message';
-          }
-        }
-
-        // Get operator name from message
-        const sender = message.senderName || 'Operator';
-
-        addBotMessage(messageText, true, sender);
-
-        // Handle file responses if present
-        if (message.fileUrl) {
-          addFileResponse(message.fileUrl, message.fileName, sender);
-        }
-
-        // Send read receipt to server
-        socket.emit('message-read', {
-          sessionId,
-          messageId: message.id || 'latest',
-          timestamp: new Date().toISOString()
-        });
-
-        // Broadcast to other tabs/windows
-        if (broadcastChannel) {
-          broadcastChannel.postMessage({
-            type: 'new-message',
-            data: {
-              sender: 'bot',
-              senderName: sender,
-              message: messageText
-            }
-          });
-        }
-      });
-
-      // Listen for user messages (for chat history)
-      socket.on('user-message', (message) => {
-        // Decrypt message if it's encrypted
-        let messageText = message.text;
-        if (message.encrypted && encryptionUtil && encryptionUtil.isEncryptionReady()) {
-          const decrypted = encryptionUtil.decryptMessage(message.encryptedMessage, message.nonce);
-          if (decrypted) {
-            messageText = decrypted;
-          } else {
-            console.error('Failed to decrypt message');
-            messageText = 'Error: Could not decrypt message';
-          }
-        }
-
-        // Add the message to the UI without sending to server again
-        addUserMessage(messageText, false);
-
-        // Handle file responses if present
-        if (message.fileUrl) {
-          // Add file message
-          addUserMessage(`I've uploaded a file: ${message.fileName}`, false);
-        }
-
-        // Send read receipt to server
-        socket.emit('message-read', {
-          sessionId,
-          messageId: message.id || 'latest',
-          timestamp: new Date().toISOString()
-        });
       });
 
       // Listen for typing indicator
@@ -558,38 +393,9 @@
         updateMessageReadStatus(data.messageId);
       });
 
-      // Handle connection events
-      socket.on('connect', () => {
-        console.log('Socket connected');
-      });
-
-      socket.on('disconnect', (reason) => {
-        console.log('Socket disconnected:', reason);
-      });
-
-      socket.on('connect_error', (error) => {
-        console.error('Connection error:', error);
-        // Try to reconnect after a short delay
-        setTimeout(() => {
-          socket.connect();
-        }, 1000);
-      });
-
       // Handle reconnection
       socket.on('reconnect', async () => {
-        console.log('Socket reconnected');
         // Re-establish session
-        const publicKey = encryptionUtil ? await encryptionUtil.getPublicKey() : null;
-        socket.emit('resume-session', {
-          sessionId,
-          publicKey
-        });
-      });
-
-      // Load chat history when socket is connected
-      socket.on('connect', async () => {
-        console.log('Socket connected');
-        // Request chat history
         const publicKey = encryptionUtil ? await encryptionUtil.getPublicKey() : null;
         socket.emit('resume-session', {
           sessionId,
@@ -608,12 +414,6 @@
     // Close chat window on close button click
     const closeButton = chatWindow.querySelector('.close-button');
     closeButton.addEventListener('click', closeChatWindow);
-
-    // Add event listener to user details form
-    const userDetailsFormElement = userDetailsForm.querySelector('form');
-    if (userDetailsFormElement) {
-      userDetailsFormElement.addEventListener('submit', handleUserDetailsSubmit);
-    }
 
     // Send message on button click
     const sendButton = chatWindow.querySelector('button:last-child');
@@ -661,19 +461,11 @@
     // Handle visibility change to manage active state
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible') {
-        // When tab becomes visible, check socket connection and reconnect if needed
-        if (socket && !socket.connected) {
-          console.log('Reconnecting socket on visibility change');
-          socket.connect();
-        }
-
-        // Mark all messages as read
-        if (socket && socket.connected) {
-          socket.emit('mark-all-read', {
-            sessionId,
-            timestamp: new Date().toISOString()
-          });
-        }
+        // When tab becomes visible, mark all messages as read
+        socket.emit('mark-all-read', {
+          sessionId,
+          timestamp: new Date().toISOString()
+        });
       }
     });
   }
@@ -697,58 +489,12 @@
       chatWindow.style.left = '0';
     }
   }
-  // Check if user details exist in localStorage
-  function userDetailsExist() {
-    return localStorage.getItem('chatbotUserName') !== null;
-  }
-
-  // Handle user details form submission
-  function handleUserDetailsSubmit(e) {
-    e.preventDefault();
-
-    // Get form values
-    const userName = document.getElementById('chatbot-user-name').value;
-    const userEmail = document.getElementById('chatbot-user-email').value;
-    const userPhone = document.getElementById('chatbot-user-phone').value;
-
-    // Save to localStorage
-    localStorage.setItem('chatbotUserName', userName);
-    localStorage.setItem('chatbotUserEmail', userEmail);
-    localStorage.setItem('chatbotUserPhone', userPhone);
-
-    // Hide form and show chat interface
-    userDetailsForm.style.display = 'none';
-    chatMessagesContainer.style.display = 'block';
-    fileIndicator.style.display = 'block';
-
-    // Focus on chat input
-    chatInput.focus();
-  }
-
   // Toggle chat window visibility
   function toggleChatWindow() {
     chatWindow.classList.toggle('open');
 
     if (chatWindow.classList.contains('open')) {
-      // Check if user details exist
-      if (userDetailsExist()) {
-        // Show chat interface
-        userDetailsForm.style.display = 'none';
-        chatMessagesContainer.style.display = 'block';
-        fileIndicator.style.display = 'block';
-        chatInput.focus();
-      } else {
-        // Show user details form
-        userDetailsForm.style.display = 'block';
-        chatMessagesContainer.style.display = 'none';
-        fileIndicator.style.display = 'none';
-
-        // Focus on first input field
-        const nameInput = document.getElementById('chatbot-user-name');
-        if (nameInput) {
-          nameInput.focus();
-        }
-      }
+      chatInput.focus();
 
       // Emit event to the server that chat was opened
       if (socket) {

@@ -1,4 +1,28 @@
 // Admin Dashboard JavaScript
+// Add CSS for unread message indicators
+const style = document.createElement('style');
+style.textContent = `
+  .has-new-message {
+    background-color: #f8f9fa;
+    font-weight: bold;
+    animation: pulse 2s infinite;
+  }
+
+  @keyframes pulse {
+    0% { background-color: #f8f9fa; }
+    50% { background-color: #e2f0ff; }
+    100% { background-color: #f8f9fa; }
+  }
+
+  .unread-badge {
+    margin-left: 5px;
+    padding: 3px 6px;
+    border-radius: 10px;
+    font-size: 0.7em;
+  }
+`;
+document.head.appendChild(style);
+
 document.addEventListener('DOMContentLoaded', function() {
   // Check if user is logged in
   const token = localStorage.getItem('chatbot-auth-token');
@@ -40,15 +64,26 @@ function initializeDashboard(token, user) {
   // Set up navigation
   setupNavigation();
 
-  // Initialize Socket.IO connection
+  // Initialize Socket.IO connection with reconnection options
   const socket = io({
     auth: {
       token: token
-    }
+    },
+    reconnection: true,
+    reconnectionAttempts: Infinity,
+    reconnectionDelay: 1000,
+    reconnectionDelayMax: 5000,
+    timeout: 20000
   });
 
   // Set up event handlers
   setupEventHandlers(socket);
+
+  // Set up connection event handlers
+  setupConnectionHandlers(socket);
+
+  // Start heartbeat to keep connection alive
+  startHeartbeat(socket);
 
   // Initialize charts
   initializeCharts();
@@ -160,6 +195,45 @@ function setupEventHandlers(socket) {
         sender: data.sender,
         timestamp: data.timestamp
       });
+    } else {
+      // If the chat is not selected, update the chat item to indicate a new message
+      const chatItem = document.querySelector(`#active-chat-list a[data-session-id="${data.sessionId}"]`);
+      if (chatItem) {
+        // Add a visual indicator for new messages
+        chatItem.classList.add('has-new-message');
+
+        // Add or update the unread count badge
+        let badge = chatItem.querySelector('.unread-badge');
+        if (!badge) {
+          badge = document.createElement('span');
+          badge.className = 'unread-badge badge bg-danger';
+          badge.style.float = 'right';
+          chatItem.appendChild(badge);
+        }
+
+        // Increment the unread count
+        const count = badge.textContent ? parseInt(badge.textContent) + 1 : 1;
+        badge.textContent = count;
+
+        // Play a notification sound if enabled
+        const soundEnabled = localStorage.getItem('sound-notifications') === 'true';
+        if (soundEnabled) {
+          // Create a simple beep sound
+          const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+          const oscillator = audioContext.createOscillator();
+          const gainNode = audioContext.createGain();
+
+          oscillator.type = 'sine';
+          oscillator.frequency.value = 800;
+          gainNode.gain.value = 0.1;
+
+          oscillator.connect(gainNode);
+          gainNode.connect(audioContext.destination);
+
+          oscillator.start();
+          setTimeout(() => oscillator.stop(), 200);
+        }
+      }
     }
   });
 }
@@ -406,6 +480,13 @@ function addChatToList(chat) {
 
     // Select this chat
     this.classList.add('active');
+
+    // Clear unread message indicators
+    this.classList.remove('has-new-message');
+    const badge = this.querySelector('.unread-badge');
+    if (badge) {
+      badge.remove();
+    }
 
     // Load chat messages
     loadChatMessages(chat.sessionId);
@@ -672,6 +753,95 @@ function saveColumnConfig() {
     .catch(error => {
       console.error('Error saving column configuration:', error);
     });
+}
+
+// Set up connection event handlers
+function setupConnectionHandlers(socket) {
+  socket.on('connect', () => {
+    console.log('Socket connected');
+    // Join operator room when connected
+    socket.emit('join-operator-room');
+
+    // Update UI to show connected status
+    updateConnectionStatus(true);
+  });
+
+  socket.on('disconnect', (reason) => {
+    console.log('Socket disconnected:', reason);
+    // Update UI to show disconnected status
+    updateConnectionStatus(false);
+  });
+
+  socket.on('connect_error', (error) => {
+    console.error('Connection error:', error);
+    // Update UI to show error status
+    updateConnectionStatus(false, error.message);
+  });
+
+  socket.on('reconnect', (attemptNumber) => {
+    console.log(`Socket reconnected after ${attemptNumber} attempts`);
+    // Join operator room when reconnected
+    socket.emit('join-operator-room');
+
+    // Update UI to show connected status
+    updateConnectionStatus(true);
+
+    // Reload active chats to ensure we have the latest data
+    const token = localStorage.getItem('chatbot-auth-token');
+    loadActiveChats(socket, token);
+  });
+}
+
+// Start heartbeat to keep socket connection alive
+function startHeartbeat(socket) {
+  // Send a heartbeat every 30 seconds
+  const heartbeatInterval = setInterval(() => {
+    if (socket && socket.connected) {
+      socket.emit('heartbeat', { timestamp: new Date().toISOString() });
+      console.log('Heartbeat sent');
+    }
+  }, 30000);
+
+  // Handle page visibility changes
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      // When page becomes visible, check socket connection and reconnect if needed
+      if (socket && !socket.connected) {
+        console.log('Reconnecting socket on visibility change');
+        socket.connect();
+      }
+    }
+  });
+
+  // Clean up interval when window is closed
+  window.addEventListener('beforeunload', () => {
+    clearInterval(heartbeatInterval);
+  });
+}
+
+// Update connection status in UI
+function updateConnectionStatus(isConnected, errorMessage = null) {
+  const statusElement = document.getElementById('connection-status');
+  if (!statusElement) {
+    // Create status element if it doesn't exist
+    const navbarNav = document.querySelector('.navbar-nav');
+    if (navbarNav) {
+      const statusItem = document.createElement('li');
+      statusItem.className = 'nav-item ms-3';
+      statusItem.innerHTML = `<span id="connection-status" class="badge ${isConnected ? 'bg-success' : 'bg-danger'}">${isConnected ? 'Connected' : 'Disconnected'}</span>`;
+      navbarNav.appendChild(statusItem);
+    }
+  } else {
+    // Update existing status element
+    statusElement.className = `badge ${isConnected ? 'bg-success' : 'bg-danger'}`;
+    statusElement.textContent = isConnected ? 'Connected' : 'Disconnected';
+
+    if (!isConnected && errorMessage) {
+      statusElement.title = errorMessage;
+    } else {
+      statusElement.title = '';
+    }
+  }
 }
 
 // Calculate duration between two timestamps

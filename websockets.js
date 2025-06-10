@@ -169,7 +169,13 @@ function setupWebSockets(server) {
             messageData.text = message.content;
           }
 
-          socket.emit(message.sender === 'user' ? 'user-message' : 'bot-message', messageData);
+          if (message.sender === 'user') {
+            socket.emit('user-message', messageData);
+          } else if (message.sender === 'operator') {
+            socket.emit('operator-message', messageData);
+          } else {
+            socket.emit('bot-message', messageData);
+          }
         });
 
         // Mark all messages as read
@@ -460,9 +466,9 @@ function setupWebSockets(server) {
       console.log(`Operator joined session room: ${sessionId}`);
 
       // Notify user that operator has joined
-      io.to(sessionId).emit('bot-message', {
+      io.to(sessionId).emit('operator-message', {
         text: `${operatorName} has joined the conversation and will assist you.`,
-        isOperator: true,
+        senderName: operatorName,
         timestamp: new Date()
       });
 
@@ -507,17 +513,34 @@ function setupWebSockets(server) {
           await conversation.save();
 
           // Send to user
-          io.to(sessionId).emit('bot-message', {
+          io.to(sessionId).emit('operator-message', {
             text: message,
-            isOperator: true,
-            operatorName: socket.user.username,
+            senderName: socket.user.username,
             timestamp: new Date()
           });
         }
       } catch (error) {
         console.error('Error handling operator message:', error);
       }
-    });    // Handle disconnection
+    });    // Handle heartbeat to keep connection alive
+    socket.on('heartbeat', (data) => {
+      // Respond with an acknowledgment
+      socket.emit('heartbeat-ack', {
+        timestamp: new Date().toISOString(),
+        received: data.timestamp
+      });
+
+      // If this is an operator, make sure they're still in the operators room
+      if (isOperator) {
+        const rooms = Array.from(socket.rooms);
+        if (!rooms.includes('operators')) {
+          socket.join('operators');
+          console.log('Operator rejoined monitoring room during heartbeat');
+        }
+      }
+    });
+
+    // Handle disconnection
     socket.on('disconnect', () => {
       console.log('Client disconnected');
 
