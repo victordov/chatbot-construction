@@ -7,6 +7,7 @@
 
 const nodemailer = require('nodemailer');
 const { ALERT_THRESHOLDS } = require('./monitoring');
+const { logger } = require('./logging');
 
 class AlertService {
   constructor(options = {}) {
@@ -35,11 +36,11 @@ class AlertService {
    */
   start() {
     if (!this.enabled) {
-      console.log('Alerting service is disabled');
+      logger.info('Alerting service is disabled');
       return;
     }
 
-    console.log('Starting alerting service...');
+    logger.info('Starting alerting service...');
 
     // Set up interval to check metrics and trigger alerts
     this.interval = setInterval(() => this.checkMetrics(), this.checkInterval);
@@ -56,7 +57,7 @@ class AlertService {
       clearInterval(this.interval);
     }
 
-    console.log('Alerting service stopped');
+    logger.info('Alerting service stopped');
   }
 
   /**
@@ -96,7 +97,7 @@ class AlertService {
       // More checks would be added here for memory usage, CPU, disk space, etc.
 
     } catch (error) {
-      console.error('Error in alert metrics check:', error);
+      logger.error('Error in alert metrics check:', { error });
     }
   }
 
@@ -111,8 +112,8 @@ class AlertService {
         existingAlert.severity !== alertData.severity ||
         (Date.now() - existingAlert.lastNotification > this.getEscalationInterval(alertData.severity))) {
 
-      console.log(`🚨 ALERT: ${alertData.title}`);
-      console.log(alertData.message);
+      logger.info(`🚨 ALERT: ${alertData.title}`);
+      logger.info(alertData.message);
 
       // Send notification
       this.sendNotification(alertData);
@@ -134,7 +135,7 @@ class AlertService {
     const existingAlert = this.alertingState.get(alertId);
 
     if (existingAlert && existingAlert.active) {
-      console.log(`✅ RESOLVED: ${existingAlert.title}`);
+      logger.info(`✅ RESOLVED: ${existingAlert.title}`);
 
       // Send resolution notification
       this.sendNotification({
@@ -178,12 +179,12 @@ class AlertService {
                  ${alertData.metrics ? `<pre>${JSON.stringify(alertData.metrics, null, 2)}</pre>` : ''}`
         });
 
-        console.log('Alert notification email sent');
+        logger.info('Alert notification email sent');
       } catch (error) {
-        console.error('Failed to send alert email:', error);
+        logger.error('Failed to send alert email:', { error });
       }
     } else if (!this.emailEnabled) {
-      console.log('Email alerts are disabled. Alert not sent via email.');
+      logger.info('Email alerts are disabled. Alert not sent via email.');
     }
 
     // Additional notification channels could be added here (Slack, SMS, etc.)

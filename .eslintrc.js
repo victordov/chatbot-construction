@@ -30,5 +30,25 @@ module.exports = {
     'coverage/',
     'dist/',
     '*.min.js'
+  ],
+  overrides: [
+    {
+      files: [
+        'public/**/*.js',
+        'widget-versions/**/*.js'
+      ],
+      env: {
+        browser: true,
+        node: false
+      },
+      globals: {
+        io: 'readonly',
+        nacl: 'readonly',
+        Chart: 'readonly',
+        EncryptionUtil: 'readonly',
+        feather: 'readonly',
+        bootstrap: 'readonly'
+      }
+    }
   ]
 };

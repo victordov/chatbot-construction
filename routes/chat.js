@@ -1,6 +1,7 @@
 const express = require('express');
 const Conversation = require('../models/conversation');
 const socketManager = require('../socketManager');
+const { logger } = require('../services/logging');
 
 const router = express.Router();
 
@@ -29,7 +30,7 @@ router.post('/message', async (req, res) => {
     if (!req.session || !req.session.sessionId) {
       return res.status(400).json({ error: 'No active session' });
     }
-    console.log("sending message back to the client: " + req.body.message);
+    logger.info('sending message back to the client: ' + req.body.message);
     const { message } = req.body;
 
     if (!message) {

@@ -4,6 +4,7 @@
  */
 
 const Conversation = require('../models/conversation');
+const { logger } = require('./logging');
 
 class DataRetentionService {
   /**
@@ -130,9 +131,9 @@ class DataRetentionService {
       return;
     }
 
-    console.log('Starting data retention service');
-    console.log(`Active chats retention: ${this.options.activeRetention} days`);
-    console.log(`Archived chats retention: ${this.options.archivedRetention} days`);
+    logger.info('Starting data retention service');
+    logger.info(`Active chats retention: ${this.options.activeRetention} days`);
+    logger.info(`Archived chats retention: ${this.options.archivedRetention} days`);
 
     // Run immediately
     this.runCleanup();
@@ -151,7 +152,7 @@ class DataRetentionService {
       return;
     }
 
-    console.log('Stopping data retention service');
+    logger.info('Stopping data retention service');
 
     clearInterval(this.interval);
     this.initialized = false;
@@ -162,7 +163,7 @@ class DataRetentionService {
    */
   async runCleanup() {
     try {
-      console.log('Running data retention cleanup');
+      logger.info('Running data retention cleanup');
 
       // Delete old active conversations
       const activeDate = new Date();
@@ -173,7 +174,7 @@ class DataRetentionService {
         lastActivity: { $lt: activeDate }
       });
 
-      console.log(`Deleted ${activeResult.deletedCount} old active conversations`);
+      logger.info(`Deleted ${activeResult.deletedCount} old active conversations`);
 
       // Delete old archived conversations
       const archivedDate = new Date();
@@ -184,12 +185,12 @@ class DataRetentionService {
         endedAt: { $lt: archivedDate }
       });
 
-      console.log(`Deleted ${archivedResult.deletedCount} old archived conversations`);
+      logger.info(`Deleted ${archivedResult.deletedCount} old archived conversations`);
 
       // Log success
-      console.log('Data retention cleanup completed successfully');
+      logger.info('Data retention cleanup completed successfully');
     } catch (error) {
-      console.error('Error during data retention cleanup:', error);
+      logger.error('Error during data retention cleanup:', { error });
     }
   }
 

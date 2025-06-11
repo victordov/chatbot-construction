@@ -1,5 +1,37 @@
 // Admin Dashboard JavaScript
 // Add CSS for unread message indicators and operator status
+
+// Client-side logger
+const logger = {
+  info: function(message, data) {
+    if (data) {
+      console.log(message, data);
+    } else {
+      console.log(message);
+    }
+  },
+  error: function(message, error) {
+    if (error) {
+      console.error(message, error);
+    } else {
+      console.error(message);
+    }
+  },
+  warn: function(message, data) {
+    if (data) {
+      console.warn(message, data);
+    } else {
+      console.warn(message);
+    }
+  },
+  debug: function(message, data) {
+    if (data) {
+      console.debug(message, data);
+    } else {
+      console.debug(message);
+    }
+  }
+};
 const style = document.createElement('style');
 style.textContent = `
   .has-new-message {
@@ -67,7 +99,7 @@ document.addEventListener('DOMContentLoaded', function() {
       initializeDashboard(token, data.user);
     })
     .catch(error => {
-      console.error('Auth error:', error);
+      logger.error('Auth error:', error);
       localStorage.removeItem('chatbot-auth-token');
       window.location.href = '/admin/login.html';
     });
@@ -414,7 +446,7 @@ function loadDashboardData(token) {
       document.getElementById('avg-response-time').textContent = data.avgResponseTime ? `${data.avgResponseTime}s` : '0s';
     })
     .catch(error => {
-      console.error('Error loading dashboard data:', error);
+      logger.error('Error loading dashboard data:', error);
     });
 }
 
@@ -444,7 +476,7 @@ function loadActiveChats(socket, token) {
       }
     })
     .catch(error => {
-      console.error('Error loading active chats:', error);
+      logger.error('Error loading active chats:', error);
     });
 }
 
@@ -498,7 +530,7 @@ function loadChatHistory(token) {
       }
     })
     .catch(error => {
-      console.error('Error loading chat history:', error);
+      logger.error('Error loading chat history:', error);
     });
 }
 
@@ -620,7 +652,7 @@ function loadChatMessages(sessionId) {
       chatMessages.scrollTop = chatMessages.scrollHeight;
     })
     .catch(error => {
-      console.error('Error loading chat messages:', error);
+      logger.error('Error loading chat messages:', error);
     });
 }
 
@@ -706,7 +738,7 @@ function notifyNewChat(chat) {
     // Play sound if enabled
     if (soundEnabled) {
       // In a real app, this would play a notification sound
-      console.log('Playing notification sound');
+      logger.info('Playing notification sound');
     }
   }
 }
@@ -774,7 +806,7 @@ function loadColumnConfig() {
       });
     })
     .catch(error => {
-      console.error('Error loading column configuration:', error);
+      logger.error('Error loading column configuration:', error);
     });
 }
 
@@ -832,18 +864,18 @@ function saveColumnConfig() {
     .then(response => response.json())
     .then(data => {
       if (!data.success) {
-        console.error('Error saving column configuration:', data.error);
+        logger.error('Error saving column configuration:', data.error);
       }
     })
     .catch(error => {
-      console.error('Error saving column configuration:', error);
+      logger.error('Error saving column configuration:', error);
     });
 }
 
 // Set up connection event handlers
 function setupConnectionHandlers(socket) {
   socket.on('connect', () => {
-    console.log('Socket connected');
+    logger.info('Socket connected');
     // Join operator room when connected
     socket.emit('join-operator-room');
 
@@ -852,19 +884,19 @@ function setupConnectionHandlers(socket) {
   });
 
   socket.on('disconnect', (reason) => {
-    console.log('Socket disconnected:', reason);
+    logger.info('Socket disconnected:', reason);
     // Update UI to show disconnected status
     updateConnectionStatus(false);
   });
 
   socket.on('connect_error', (error) => {
-    console.error('Connection error:', error);
+    logger.error('Connection error:', error);
     // Update UI to show error status
     updateConnectionStatus(false, error.message);
   });
 
   socket.on('reconnect', (attemptNumber) => {
-    console.log(`Socket reconnected after ${attemptNumber} attempts`);
+    logger.info(`Socket reconnected after ${attemptNumber} attempts`);
     // Join operator room when reconnected
     socket.emit('join-operator-room');
 
@@ -883,7 +915,7 @@ function startHeartbeat(socket) {
   const heartbeatInterval = setInterval(() => {
     if (socket && socket.connected) {
       socket.emit('heartbeat', { timestamp: new Date().toISOString() });
-      console.log('Heartbeat sent');
+      logger.info('Heartbeat sent');
     }
   }, 30000);
 
@@ -892,7 +924,7 @@ function startHeartbeat(socket) {
     if (document.visibilityState === 'visible') {
       // When page becomes visible, check socket connection and reconnect if needed
       if (socket && !socket.connected) {
-        console.log('Reconnecting socket on visibility change');
+        logger.info('Reconnecting socket on visibility change');
         socket.connect();
       }
     }
@@ -944,11 +976,15 @@ function calculateDuration(start, end) {
 function updateChatOperatorStatus(sessionId, hasOperator) {
   // Find the chat item
   const chatItem = document.querySelector(`#active-chat-list a[data-session-id="${sessionId}"]`);
-  if (!chatItem) return;
+  if (!chatItem) {
+    return;
+  }
 
   // Find the status indicator
   const statusIndicator = chatItem.querySelector('.status-indicator');
-  if (!statusIndicator) return;
+  if (!statusIndicator) {
+    return;
+  }
 
   // Update the status class
   statusIndicator.classList.remove('has-operator', 'no-operator');
@@ -993,7 +1029,7 @@ function deleteChatHistory(sessionId) {
         }
       })
       .catch(error => {
-        console.error('Error deleting chat history:', error);
+        logger.error('Error deleting chat history:', error);
         alert('An error occurred while deleting chat history');
       });
   }

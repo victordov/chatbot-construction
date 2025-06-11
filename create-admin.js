@@ -6,6 +6,7 @@
 const mongoose = require('mongoose');
 const dotenv = require('dotenv');
 const User = require('./models/user');
+const { logger } = require('./services/logging');
 
 // Load environment variables
 dotenv.config();
@@ -26,13 +27,13 @@ async function createAdmin() {
       useUnifiedTopology: true
     });
 
-    console.log('Connected to MongoDB');
+    logger.info('Connected to MongoDB');
 
     // Check if admin user already exists
     const existingAdmin = await User.findOne({ username: DEFAULT_ADMIN.username });
 
     if (existingAdmin) {
-      console.log('Admin user already exists');
+      logger.info('Admin user already exists');
       process.exit(0);
     }
 
@@ -46,14 +47,14 @@ async function createAdmin() {
 
     await admin.save();
 
-    console.log('Admin user created successfully');
-    console.log(`Username: ${DEFAULT_ADMIN.username}`);
-    console.log(`Password: ${DEFAULT_ADMIN.password}`);
-    console.log('Please change this password after first login');
+    logger.info('Admin user created successfully');
+    logger.info(`Username: ${DEFAULT_ADMIN.username}`);
+    logger.info(`Password: ${DEFAULT_ADMIN.password}`);
+    logger.info('Please change this password after first login');
 
     process.exit(0);
   } catch (error) {
-    console.error('Error creating admin user:', error);
+    logger.error('Error creating admin user:', { error });
     process.exit(1);
   }
 }

@@ -1,6 +1,7 @@
 const { OpenAI } = require('openai');
 const { ResponseTemplateService } = require('./responseTemplates');
 const { PromptEngineeringService } = require('./promptEngineering');
+const { logger } = require('./logging');
 
 // Initialize OpenAI with API key from environment variables - only create instance if we have a key
 const openai = process.env.OPENAI_API_KEY ?
@@ -57,7 +58,7 @@ async function getChatGPTResponse(messages, options = {}) {
 
     return response.choices[0].message.content;
   } catch (error) {
-    console.error('Error getting ChatGPT response:', error);
+    logger.error('Error getting ChatGPT response:', { error });
     throw error;
   }
 }
@@ -97,7 +98,7 @@ async function isOnTopic(message, openaiClient = openai) {
     const result = response.choices[0].message.content.trim().toLowerCase();
     return result === 'true';
   } catch (error) {
-    console.error('Error checking if message is on-topic:', error);
+    logger.error('Error checking if message is on-topic:', { error });
     return true; // Default to allowing the message
   }
 }
@@ -131,7 +132,7 @@ async function summarizeConversation(messages) {
 
     return response.choices[0].message.content;
   } catch (error) {
-    console.error('Error summarizing conversation:', error);
+    logger.error('Error summarizing conversation:', { error });
     throw error;
   }
 }
@@ -182,7 +183,7 @@ class AIService {
       // Use prompt engineering for more complex or specific queries
       return await this.generateEngineeredResponse(message, messageHistory);
     } catch (error) {
-      console.error('Error generating AI response:', error);
+      logger.error('Error generating AI response:', { error });
       return 'I\'m sorry, I encountered an error processing your request. Please try again later.';
     }
   }

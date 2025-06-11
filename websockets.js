@@ -4,6 +4,7 @@ const Conversation = require('./models/conversation');
 const User = require('./models/user');
 const AIService = require('./services/ai');
 const EncryptionService = require('./services/encryption');
+const { logger } = require('./services/logging');
 
 function setupWebSockets(server) {
   // Initialize encryption service
@@ -71,7 +72,7 @@ function setupWebSockets(server) {
     }
   });  // Handle socket connections
   io.on('connection', (socket) => {
-    console.log('New client connected');
+    logger.info('New client connected');
 
     // Track client's session and role
     let clientSessionId = null;
@@ -95,7 +96,7 @@ function setupWebSockets(server) {
       if (success) {
         encryptionEnabled = true;
         socket.emit('encryption-ready', { success: true });
-        console.log(`End-to-end encryption enabled for session: ${sessionId}`);
+        logger.info(`End-to-end encryption enabled for session: ${sessionId}`);
       } else {
         socket.emit('encryption-ready', {
           success: false,
@@ -107,7 +108,7 @@ function setupWebSockets(server) {
     socket.on('join', (sessionId) => {
       clientSessionId = sessionId;
       socket.join(sessionId);
-      console.log(`Client joined room: ${sessionId}`);
+      logger.info(`Client joined room: ${sessionId}`);
       // Send confirmation that client joined the room
       socket.emit('joined-room', {
         success: true,
@@ -182,7 +183,7 @@ function setupWebSockets(server) {
         socket.emit('all-messages-read');
       }
 
-      console.log(`Session resumed: ${sessionId}`);
+      logger.info(`Session resumed: ${sessionId}`);
     });
 
     // Handle chat opened event
@@ -320,7 +321,7 @@ function setupWebSockets(server) {
             } else {
               // Fallback to unencrypted if encryption fails
               responseData.text = botResponse;
-              console.error('Encryption failed, sending unencrypted message');
+              logger.error('Encryption failed, sending unencrypted message');
             }
           } else {
             responseData.text = botResponse;
@@ -345,7 +346,7 @@ function setupWebSockets(server) {
           });
         }, 1500);
       } catch (error) {
-        console.error('Error handling message:', error);
+        logger.error('Error handling message:', { error });
         socket.emit('error', { message: 'Failed to process message' });
       }
     });// Handle file uploads
@@ -408,7 +409,7 @@ function setupWebSockets(server) {
           });
         }, 2000);
       } catch (error) {
-        console.error('Error handling file upload:', error);
+        logger.error('Error handling file upload:', { error });
       }
     });    // Handle typing indicators from users
     socket.on('user-typing', (data) => {
@@ -449,7 +450,7 @@ function setupWebSockets(server) {
     socket.on('join-operator-room', () => {
       if (isOperator) {
         socket.join('operators');
-        console.log('Operator joined monitoring room');
+        logger.info('Operator joined monitoring room');
       }
     });
 
@@ -463,7 +464,7 @@ function setupWebSockets(server) {
 
       // Join the session room to receive real-time updates
       socket.join(sessionId);
-      console.log(`Operator joined session room: ${sessionId}`);
+      logger.info(`Operator joined session room: ${sessionId}`);
 
       // Notify user that operator has joined
       io.to(sessionId).emit('operator-message', {
@@ -493,7 +494,7 @@ function setupWebSockets(server) {
           }
         );
       } catch (error) {
-        console.error('Error updating conversation:', error);
+        logger.error('Error updating conversation:', { error });
       }
     });
 
@@ -528,7 +529,7 @@ function setupWebSockets(server) {
           });
         }
       } catch (error) {
-        console.error('Error handling operator message:', error);
+        logger.error('Error handling operator message:', { error });
       }
     });
 
@@ -577,7 +578,7 @@ function setupWebSockets(server) {
           });
         }
       } catch (error) {
-        console.error('Error ending chat:', error);
+        logger.error('Error ending chat:', { error });
       }
     });    // Handle heartbeat to keep connection alive
     socket.on('heartbeat', (data) => {
@@ -592,14 +593,14 @@ function setupWebSockets(server) {
         const rooms = Array.from(socket.rooms);
         if (!rooms.includes('operators')) {
           socket.join('operators');
-          console.log('Operator rejoined monitoring room during heartbeat');
+          logger.info('Operator rejoined monitoring room during heartbeat');
         }
       }
     });
 
     // Handle disconnection
     socket.on('disconnect', async () => {
-      console.log('Client disconnected');
+      logger.info('Client disconnected');
 
       // Clean up encryption keys when client disconnects
       if (clientSessionId) {
@@ -619,7 +620,7 @@ function setupWebSockets(server) {
       if (isOperator) {
         try {
           // Find all conversations where this operator was connected
-          const conversations = await Conversation.find({ 
+          const conversations = await Conversation.find({
             operatorId: socket.user.id,
             hasOperator: true,
             status: 'active'
@@ -647,7 +648,7 @@ function setupWebSockets(server) {
             );
           }
         } catch (error) {
-          console.error('Error handling operator disconnect:', error);
+          logger.error('Error handling operator disconnect:', { error });
         }
       }
     });

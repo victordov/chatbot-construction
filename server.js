@@ -37,9 +37,9 @@ mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/chatbot',
   useNewUrlParser: true,
   useUnifiedTopology: true
 }).then(() => {
-  console.log('Connected to MongoDB');
+  logger.info('Connected to MongoDB');
 }).catch(err => {
-  console.error('MongoDB connection error:', err);
+  logger.error('MongoDB connection error:', err);
 });
 
 app.use(express.json());
@@ -148,7 +148,6 @@ app.use((req, res, next) => {
 app.post('/api/chat', (req, res) => {
   // Placeholder: echo back the message
   const { message } = req.body;
-  console.log('Will send back  to the client:', message);
   logger.info('Will send back  to the client:'+ message);
   res.json({ reply: `You said: ${message}` });
 });

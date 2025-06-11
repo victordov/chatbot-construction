@@ -5,6 +5,7 @@
 
 const nacl = require('tweetnacl');
 const naclUtil = require('tweetnacl-util');
+const { logger } = require('./logging');
 
 class EncryptionService {
   constructor() {
@@ -27,7 +28,7 @@ class EncryptionService {
       this.clientPublicKeys.set(sessionId, publicKey);
       return true;
     } catch (error) {
-      console.error('Error registering client public key:', error);
+      logger.error('Error registering client public key:', { error });
       return false;
     }
   }
@@ -51,7 +52,7 @@ class EncryptionService {
       const clientPublicKey = this.clientPublicKeys.get(sessionId);
 
       if (!clientPublicKey) {
-        console.error('No public key found for session:', sessionId);
+        logger.error('No public key found for session:', { sessionId });
         return null;
       }
 
@@ -75,7 +76,7 @@ class EncryptionService {
         nonce: naclUtil.encodeBase64(nonce)
       };
     } catch (error) {
-      console.error('Error encrypting message for client:', error);
+      logger.error('Error encrypting message for client:', { error });
       return null;
     }
   }
@@ -92,7 +93,7 @@ class EncryptionService {
       const clientPublicKey = this.clientPublicKeys.get(sessionId);
 
       if (!clientPublicKey) {
-        console.error('No public key found for session:', sessionId);
+        logger.error('No public key found for session:', { sessionId });
         return null;
       }
 

@@ -139,8 +139,8 @@ class EncryptionUtil {
 
     try {
       // Check if nacl and nacl.util are available
-      if (!nacl || !nacl.util || 
-          typeof nacl.util.decodeUTF8 !== 'function' || 
+      if (!nacl || !nacl.util ||
+          typeof nacl.util.decodeUTF8 !== 'function' ||
           typeof nacl.util.encodeBase64 !== 'function' ||
           typeof nacl.randomBytes !== 'function' ||
           typeof nacl.box !== 'function') {
@@ -187,8 +187,8 @@ class EncryptionUtil {
 
     try {
       // Check if nacl and nacl.util are available
-      if (!nacl || !nacl.util || 
-          typeof nacl.util.decodeBase64 !== 'function' || 
+      if (!nacl || !nacl.util ||
+          typeof nacl.util.decodeBase64 !== 'function' ||
           typeof nacl.util.encodeUTF8 !== 'function' ||
           typeof nacl.box.open !== 'function') {
         console.error('nacl or nacl.util functions are not available');
