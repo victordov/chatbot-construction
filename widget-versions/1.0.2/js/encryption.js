@@ -41,7 +41,7 @@ class EncryptionUtil {
       naclScript.onload = () => {
         // Load TweetNaCl-util after TweetNaCl is loaded
         const naclUtilScript = document.createElement('script');
-        naclUtilScript.src = 'https://cdnjs.cloudflare.com/ajax/libs/tweetnacl-util/0.15.1/nacl-util.min.js';
+        naclUtilScript.src = 'https://cdn.jsdelivr.net/npm/tweetnacl-util@0.15.1/nacl-util.min.js';
         naclUtilScript.onload = () => {
           // Ensure nacl.util is fully defined before resolving
           if (typeof nacl !== 'undefined' && nacl.util && typeof nacl.util.encodeBase64 === 'function' && typeof nacl.util.decodeBase64 === 'function') {
@@ -74,7 +74,6 @@ class EncryptionUtil {
     try {
       // Check if nacl and nacl.util are defined, if not wait for them to load
       if (typeof nacl === 'undefined' || !nacl.util || typeof nacl.util.decodeBase64 !== 'function') {
-        console.log('nacl or nacl.util not fully loaded yet, waiting for them to load...');
         await this.loadScripts();
       }
 
@@ -107,7 +106,6 @@ class EncryptionUtil {
 
       // Check if keyPair is initialized
       if (!this.keyPair) {
-        console.log('Key pair not initialized, initializing now...');
         const success = await this.init();
         if (!success) {
           console.error('Failed to initialize key pair');
