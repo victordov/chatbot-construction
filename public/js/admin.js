@@ -149,6 +149,34 @@ function initializeDashboard(token, user) {
 function setupNavigation() {
   const navLinks = document.querySelectorAll('.nav-link');
   const sections = document.querySelectorAll('.content-section');
+  const sidebarToggle = document.getElementById('sidebarToggle');
+  const sidebar = document.getElementById('sidebar');
+
+  // Setup sidebar toggle for small screens
+  if (sidebarToggle) {
+    sidebarToggle.addEventListener('click', function() {
+      sidebar.classList.toggle('show');
+    });
+
+    // Close sidebar when a link is clicked on small screens
+    navLinks.forEach(link => {
+      link.addEventListener('click', function() {
+        if (window.innerWidth < 768) {
+          sidebar.classList.remove('show');
+        }
+      });
+    });
+
+    // Close sidebar when clicking outside of it on small screens
+    document.addEventListener('click', function(event) {
+      if (window.innerWidth < 768 && 
+          !sidebar.contains(event.target) && 
+          event.target !== sidebarToggle &&
+          !sidebarToggle.contains(event.target)) {
+        sidebar.classList.remove('show');
+      }
+    });
+  }
 
   navLinks.forEach(link => {
     link.addEventListener('click', function(e) {
