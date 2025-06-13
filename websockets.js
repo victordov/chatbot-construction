@@ -230,6 +230,18 @@ function setupWebSockets(server) {
           });
         }
 
+        // Check if the conversation was ended and reactivate it if needed
+        if (conversation.status === 'ended') {
+          conversation.status = 'active';
+          conversation.endedAt = null;
+
+          // Notify operators that this chat has been reactivated
+          socket.to('operators').emit('chat-reactivated', {
+            sessionId,
+            timestamp: new Date()
+          });
+        }
+
         // Add the new message with messageId
         const messageDoc = {
           content: message,

@@ -109,9 +109,6 @@ function initializeDashboard(token, user) {
   // Initialize Feather icons
   feather.replace();
 
-  // Set up navigation
-  setupNavigation();
-
   // Track joined chats
   window.joinedChats = new Set();
 
@@ -143,6 +140,48 @@ function initializeDashboard(token, user) {
   loadDashboardData(token);
   loadActiveChats(socket, token);
   loadChatHistory(token);
+
+  // Set up navigation (after data is loaded)
+  setupNavigation();
+
+  // Check URL parameters for chat selection
+  const params = getUrlParams();
+  if (params.chat) {
+    // If a specific chat is in the URL, view it
+    setTimeout(() => {
+      viewChatHistory(params.chat);
+    }, 500); // Small delay to ensure data is loaded
+  }
+}
+
+// Helper function to update URL with query parameters
+function updateUrlWithParams(params) {
+  const url = new URL(window.location.href);
+
+  // Clear existing parameters
+  url.search = '';
+
+  // Add new parameters
+  Object.keys(params).forEach(key => {
+    if (params[key]) {
+      url.searchParams.set(key, params[key]);
+    }
+  });
+
+  // Update URL without reloading the page
+  window.history.pushState({}, '', url);
+}
+
+// Helper function to get query parameters from URL
+function getUrlParams() {
+  const params = {};
+  const searchParams = new URLSearchParams(window.location.search);
+
+  for (const [key, value] of searchParams.entries()) {
+    params[key] = value;
+  }
+
+  return params;
 }
 
 // Navigation setup
@@ -192,8 +231,22 @@ function setupNavigation() {
       // Show corresponding section
       const sectionId = this.getAttribute('data-section');
       document.getElementById(sectionId + '-section').classList.add('active');
+
+      // Update URL with section parameter
+      updateUrlWithParams({ section: sectionId, chat: null });
     });
   });
+
+  // Check URL parameters on page load
+  const params = getUrlParams();
+  if (params.section) {
+    // Find the link with the matching data-section attribute
+    const link = document.querySelector(`.nav-link[data-section="${params.section}"]`);
+    if (link) {
+      // Simulate a click on the link
+      link.click();
+    }
+  }
 }
 
 // Event handlers
@@ -254,6 +307,24 @@ function setupEventHandlers(socket) {
   settingsForm.addEventListener('submit', function(e) {
     e.preventDefault();
     saveSettings();
+  });
+
+  // Chat history search
+  const chatHistorySearch = document.getElementById('chat-history-search');
+  const chatHistorySearchBtn = document.getElementById('chat-history-search-btn');
+
+  // Search button click event
+  chatHistorySearchBtn.addEventListener('click', function() {
+    const searchTerm = chatHistorySearch.value.trim();
+    loadChatHistory(localStorage.getItem('chatbot-auth-token'), searchTerm);
+  });
+
+  // Search input enter key event
+  chatHistorySearch.addEventListener('keypress', function(e) {
+    if (e.key === 'Enter') {
+      const searchTerm = chatHistorySearch.value.trim();
+      loadChatHistory(localStorage.getItem('chatbot-auth-token'), searchTerm);
+    }
   });
 
   // Load column configuration
@@ -346,6 +417,36 @@ function setupEventHandlers(socket) {
         }
       }
     }
+  });
+
+  // Listen for chat reactivation events
+  socket.on('chat-reactivated', function(data) {
+    // Fetch the reactivated chat details
+    fetch(`/api/admin/chat/${data.sessionId}`, {
+      headers: {
+        'x-auth-token': localStorage.getItem('chatbot-auth-token')
+      }
+    })
+      .then(response => response.json())
+      .then(chat => {
+        if (chat) {
+          // Add to active chat list
+          addChatToList(chat);
+
+          // Update active chats count
+          updateActiveChatCount(1);
+
+          // Notify operator
+          notifyNewChat({
+            sessionId: chat.sessionId,
+            domain: chat.domain,
+            reactivated: true
+          });
+        }
+      })
+      .catch(error => {
+        logger.error('Error fetching reactivated chat:', error);
+      });
   });
 }
 
@@ -509,9 +610,13 @@ function loadActiveChats(socket, token) {
 }
 
 // Load chat history
-function loadChatHistory(token) {
+function loadChatHistory(token, search = '') {
   // In a real app, this would fetch data from the server
-  fetch('/api/admin/chat-history', {
+  const url = search 
+    ? `/api/admin/chat-history?search=${encodeURIComponent(search)}` 
+    : '/api/admin/chat-history';
+
+  fetch(url, {
     headers: {
       'x-auth-token': token
     }
@@ -532,7 +637,7 @@ function loadChatHistory(token) {
             <td>${record.sessionId.substring(0, 8)}...</td>
             <td>${new Date(record.startedAt).toLocaleString()}</td>
             <td>${calculateDuration(record.startedAt, record.endedAt)}</td>
-            <td>${record.messages.length}</td>
+            <td>${record.messages ? record.messages.length : (record['messages.length'] || 0)}</td>
             <td><span class="badge bg-${record.status === 'ended' ? 'secondary' : 'success'}">${record.status}</span></td>
             <td>
               <button class="btn btn-sm btn-primary view-chat-btn" data-session-id="${record.sessionId}">View</button>
@@ -591,7 +696,7 @@ function addChatToList(chat) {
       </h6>
       <small>${startTime}</small>
     </div>
-    <p class="mb-1">Messages: ${chat.messages ? chat.messages.length : 0}</p>
+    <p class="mb-1">Messages: ${chat.messages ? chat.messages.length : (chat['messages.length'] || 0)}</p>
     <small>From: ${chat.domain || 'Unknown'}</small>
   `;
 
@@ -647,6 +752,12 @@ function addChatToList(chat) {
     const endBtn = document.getElementById('end-chat-btn');
     endBtn.disabled = false;
     endBtn.setAttribute('data-session-id', chat.sessionId);
+
+    // Update URL with chat parameter
+    updateUrlWithParams({ 
+      section: 'active-chats', 
+      chat: chat.sessionId 
+    });
   });
 }
 
@@ -758,9 +869,13 @@ function notifyNewChat(chat) {
   if (notificationSetting !== 'none') {
     // Show browser notification if supported
     if ('Notification' in window && Notification.permission === 'granted') {
-      new Notification('New Chat', {
-        body: `New chat session started from ${chat.domain || 'Unknown'}`
-      });
+      // Different notification based on whether this is a new or reactivated chat
+      const title = chat.reactivated ? 'Chat Reactivated' : 'New Chat';
+      const body = chat.reactivated 
+        ? `Chat session from ${chat.domain || 'Unknown'} has been reactivated`
+        : `New chat session started from ${chat.domain || 'Unknown'}`;
+
+      new Notification(title, { body });
     }
 
     // Play sound if enabled
@@ -1026,8 +1141,110 @@ function updateChatOperatorStatus(sessionId, hasOperator) {
 
 // View chat history
 function viewChatHistory(sessionId) {
-  // In a real app, this would open a modal with the chat history
-  alert(`View chat history for session ${sessionId}`);
+  const token = localStorage.getItem('chatbot-auth-token');
+
+  // Fetch the chat details
+  fetch(`/api/admin/chat/${sessionId}`, {
+    headers: {
+      'x-auth-token': token
+    }
+  })
+    .then(response => response.json())
+    .then(chat => {
+      if (!chat) {
+        alert('Chat not found');
+        return;
+      }
+
+      // Switch to the active chats section
+      document.querySelectorAll('.nav-link').forEach(link => {
+        link.classList.remove('active');
+      });
+      document.querySelectorAll('.content-section').forEach(section => {
+        section.classList.remove('active');
+      });
+
+      const activeChatsLink = document.querySelector('.nav-link[data-section="active-chats"]');
+      if (activeChatsLink) {
+        activeChatsLink.classList.add('active');
+      }
+
+      const activeChatsSection = document.getElementById('active-chats-section');
+      if (activeChatsSection) {
+        activeChatsSection.classList.add('active');
+      }
+
+      // Update selected chat title
+      document.getElementById('selected-chat-title').textContent = `Session ${chat.sessionId.substring(0, 8)}...`;
+
+      // Load chat messages
+      const chatMessages = document.getElementById('chat-messages');
+      chatMessages.innerHTML = '';
+
+      if (chat.messages && chat.messages.length > 0) {
+        chat.messages.forEach(msg => {
+          addMessageToChat({
+            content: msg.content,
+            sender: msg.sender,
+            timestamp: msg.timestamp
+          });
+        });
+      } else {
+        chatMessages.innerHTML = '<div class="empty-state"><p>No messages yet</p></div>';
+      }
+
+      // Scroll to bottom
+      chatMessages.scrollTop = chatMessages.scrollHeight;
+
+      // Set up join and end buttons
+      const joinBtn = document.getElementById('join-chat-btn');
+      joinBtn.disabled = false;
+      joinBtn.setAttribute('data-session-id', chat.sessionId);
+
+      // Check if this chat is active and not already joined
+      if (chat.status === 'active') {
+        if (window.joinedChats.has(chat.sessionId)) {
+          joinBtn.textContent = 'Joined';
+          joinBtn.classList.remove('btn-primary');
+          joinBtn.classList.add('btn-success');
+          joinBtn.setAttribute('data-joined', 'true');
+
+          // Show the operator input
+          document.getElementById('operator-input').style.display = 'block';
+        } else {
+          joinBtn.textContent = 'Join Chat';
+          joinBtn.classList.remove('btn-success');
+          joinBtn.classList.add('btn-primary');
+          joinBtn.removeAttribute('data-joined');
+
+          // Hide the operator input
+          document.getElementById('operator-input').style.display = 'none';
+        }
+      } else {
+        // Chat is not active, disable join button
+        joinBtn.disabled = true;
+        joinBtn.textContent = 'Chat Ended';
+        joinBtn.classList.remove('btn-primary', 'btn-success');
+        joinBtn.classList.add('btn-secondary');
+
+        // Hide the operator input
+        document.getElementById('operator-input').style.display = 'none';
+      }
+
+      const endBtn = document.getElementById('end-chat-btn');
+      endBtn.disabled = chat.status !== 'active';
+      endBtn.setAttribute('data-session-id', chat.sessionId);
+
+      // Update URL with chat parameter
+      updateUrlWithParams({ 
+        section: 'active-chats', 
+        chat: chat.sessionId 
+      });
+    })
+    .catch(error => {
+      logger.error('Error viewing chat history:', error);
+      alert('An error occurred while loading the chat');
+    });
 }
 
 // Delete chat history

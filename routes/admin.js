@@ -27,8 +27,23 @@ router.get('/active-chats', async (req, res) => {
 // Get chat history
 router.get('/chat-history', async (req, res) => {
   try {
+    const { search } = req.query;
+    let query = {};
+
+    // If search parameter is provided, create a query to search in relevant fields
+    if (search) {
+      query = {
+        $or: [
+          { sessionId: { $regex: search, $options: 'i' } },
+          { domain: { $regex: search, $options: 'i' } },
+          { operatorName: { $regex: search, $options: 'i' } },
+          { 'messages.content': { $regex: search, $options: 'i' } }
+        ]
+      };
+    }
+
     const chatHistory = await Conversation.find(
-      {},
+      query,
       { sessionId: 1, startedAt: 1, endedAt: 1, status: 1, domain: 1, 'messages.length': { $size: '$messages' } }
     ).sort({ startedAt: -1 }).limit(100);
 
