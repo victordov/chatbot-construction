@@ -275,88 +275,56 @@ function setupWebSockets(server) {
           timestamp: new Date()
         });
 
-        // Show typing indicator to user
-        socket.emit('bot-typing');
+        // Only generate suggestions if there are operators and suggestions are enabled
+        if (conversation.hasOperator) {
+          // Check if suggestions are enabled for this conversation
+          if (conversation.suggestionsEnabled !== false) {
+            // Process with AI to get operator suggestion
+            const aiService = new AIService();
 
-        // Process with AI and get response
-        const aiService = new AIService();
+            // Get conversation history for context
+            const messageHistory = conversation.messages
+              .slice(-10) // Last 10 messages for context
+              .map(msg => ({
+                role: msg.sender === 'user' ? 'user' : 'assistant',
+                content: msg.content
+              }));
 
-        // Get conversation history for context
-        const messageHistory = conversation.messages
-          .slice(-10) // Last 10 messages for context
-          .map(msg => ({
-            role: msg.sender === 'user' ? 'user' : 'assistant',
-            content: msg.content
-          }));
+            // Get AI suggestion for operator
+            const suggestion = await aiService.generateOperatorSuggestion(message, messageHistory);
 
-        // Get AI response
-        const botResponse = await aiService.generateResponse(message, messageHistory);
-        // Add slight delay to simulate typing
-        setTimeout(() => {
-          // Create a message ID for the bot response
-          const botMessageId = 'bot_' + Date.now();
+            // Import the Suggestion model
+            const Suggestion = require('./models/suggestion');
 
-          // Save bot response
-          const botMessageDoc = {
-            content: botResponse,
-            sender: 'bot',
-            messageId: botMessageId,
-            timestamp: new Date(),
-            encrypted: encryptionEnabled // Track if message was encrypted
-          };
+            // Save suggestion to database
+            const newSuggestion = new Suggestion({
+              conversationId: conversation._id,
+              sessionId,
+              userMessageId: dbMessageId,
+              userMessage: message,
+              content: suggestion,
+              createdAt: new Date()
+            });
 
-          conversation.messages.push(botMessageDoc);
-          conversation.save();
-          // Get the database ID of the bot message
-          let dbBotMessageId = 'temp-bot-id';
-          if (conversation.messages &&
-              conversation.messages.length > 0 &&
-              conversation.messages[conversation.messages.length - 1]._id) {
-            dbBotMessageId = conversation.messages[conversation.messages.length - 1]._id.toString();
+            await newSuggestion.save();
+
+            // Send suggestion to operators
+            socket.to('operators').emit('operator-suggestion', {
+              sessionId,
+              userMessageId: dbMessageId,
+              userMessage: message,
+              suggestion,
+              suggestionId: newSuggestion._id.toString(),
+              timestamp: new Date()
+            });
           }
+        }
 
-          // Prepare response data
-          const responseData = {
-            id: dbBotMessageId,
-            clientId: botMessageId,
-            timestamp: new Date()
-          };
-
-          // Encrypt the message if encryption is enabled
-          if (encryptionEnabled && encryptionService.hasClientPublicKey(sessionId)) {
-            const encrypted = encryptionService.encryptForClient(sessionId, botResponse);
-
-            if (encrypted) {
-              responseData.encrypted = true;
-              responseData.encryptedMessage = encrypted.encryptedMessage;
-              responseData.nonce = encrypted.nonce;
-            } else {
-              // Fallback to unencrypted if encryption fails
-              responseData.text = botResponse;
-              logger.error('Encryption failed, sending unencrypted message');
-            }
-          } else {
-            responseData.text = botResponse;
-          }
-
-          // Send bot response to client
-          socket.emit('bot-message', responseData);
-
-          // Send to operators monitoring the chat (always unencrypted for operators)
-          socket.to('operators').emit('new-message', {
-            sessionId,
-            message: botResponse,
-            sender: 'bot',
-            messageId: dbBotMessageId,
-            timestamp: new Date()
-          });
-
-          // Send read receipt for the user message
-          socket.emit('message-read', {
-            messageId,
-            timestamp: new Date()
-          });
-        }, 1500);
+        // Send read receipt for the user message
+        socket.emit('message-read', {
+          messageId,
+          timestamp: new Date()
+        });
       } catch (error) {
         logger.error('Error handling message:', { error });
         socket.emit('error', { message: 'Failed to process message' });
@@ -435,6 +403,21 @@ function setupWebSockets(server) {
       });
     });
 
+    // Handle typing indicators from operators
+    socket.on('operator-typing', (data) => {
+      if (!isOperator) {
+        return;
+      }
+
+      const { sessionId, isTyping } = data;
+
+      // Broadcast typing status to users in the session
+      io.to(sessionId).emit('operator-typing', {
+        isTyping,
+        timestamp: new Date()
+      });
+    });
+
     // Handle message read receipts
     socket.on('message-read', (data) => {
       const { sessionId, messageId, timestamp } = data;
@@ -495,7 +478,7 @@ function setupWebSockets(server) {
 
       // Update conversation status in database
       try {
-        await Conversation.findOneAndUpdate(
+        const conversation = await Conversation.findOneAndUpdate(
           { sessionId },
           {
             $set: {
@@ -503,8 +486,59 @@ function setupWebSockets(server) {
               operatorId: socket.user.id,
               operatorName
             }
-          }
+          },
+          { new: true }
         );
+
+        // Generate suggestions for the operator if there are messages
+        if (conversation && conversation.messages.length > 0) {
+          // Get the last user message
+          const lastUserMessage = [...conversation.messages]
+            .reverse()
+            .find(msg => msg.sender === 'user');
+
+          if (lastUserMessage) {
+            // Get message history for context (last 5 messages)
+            const messageHistory = conversation.messages
+              .slice(-5)
+              .map(msg => ({
+                role: msg.sender === 'user' ? 'user' : 'assistant',
+                content: msg.content
+              }));
+
+            // Generate suggestions
+            const suggestionService = new AIService();
+            const suggestion = await suggestionService.generateOperatorSuggestion(
+              lastUserMessage.content,
+              messageHistory
+            );
+
+            // Import the Suggestion model
+            const Suggestion = require('./models/suggestion');
+
+            // Save suggestion to database
+            const newSuggestion = new Suggestion({
+              conversationId: conversation._id,
+              sessionId,
+              userMessageId: lastUserMessage._id,
+              userMessage: lastUserMessage.content,
+              content: suggestion,
+              createdAt: new Date()
+            });
+
+            await newSuggestion.save();
+
+            // Send suggestion to the operator
+            socket.emit('operator-suggestion', {
+              sessionId,
+              userMessageId: lastUserMessage._id.toString(),
+              userMessage: lastUserMessage.content,
+              suggestion,
+              suggestionId: newSuggestion._id.toString(),
+              timestamp: new Date()
+            });
+          }
+        }
       } catch (error) {
         logger.error('Error updating conversation:', { error });
       }
@@ -542,6 +576,209 @@ function setupWebSockets(server) {
         }
       } catch (error) {
         logger.error('Error handling operator message:', { error });
+      }
+    });
+
+    // Add a new handler for when an operator requests suggestions
+    socket.on('request-suggestions', async (data) => {
+      if (!isOperator) {
+        return;
+      }
+
+      const { sessionId, messageId } = data;
+
+      try {
+        // Find the conversation
+        const conversation = await Conversation.findOne({ sessionId });
+
+        if (!conversation) {
+          return;
+        }
+
+        // Find the specific message if messageId is provided, otherwise use the last user message
+        let targetMessage;
+        if (messageId) {
+          targetMessage = conversation.messages.find(
+            msg => msg._id.toString() === messageId && msg.sender === 'user'
+          );
+        } else {
+          targetMessage = [...conversation.messages]
+            .reverse()
+            .find(msg => msg.sender === 'user');
+        }
+
+        if (!targetMessage) {
+          return;
+        }
+
+        // Get message history for context (last 5 messages)
+        const messageHistory = conversation.messages
+          .slice(-5)
+          .map(msg => ({
+            role: msg.sender === 'user' ? 'user' : 'assistant',
+            content: msg.content
+          }));
+
+        // Generate suggestions
+        const suggestionService = new AIService();
+        const suggestion = await suggestionService.generateOperatorSuggestion(
+          targetMessage.content,
+          messageHistory
+        );
+
+        // Import the Suggestion model
+        const Suggestion = require('./models/suggestion');
+
+        // Save suggestion to database
+        const newSuggestion = new Suggestion({
+          conversationId: conversation._id,
+          sessionId,
+          userMessageId: targetMessage._id,
+          userMessage: targetMessage.content,
+          content: suggestion,
+          createdAt: new Date()
+        });
+
+        await newSuggestion.save();
+
+        // Send suggestion to the operator
+        socket.emit('operator-suggestion', {
+          sessionId,
+          userMessageId: targetMessage._id.toString(),
+          userMessage: targetMessage.content,
+          suggestion,
+          suggestionId: newSuggestion._id.toString(),
+          timestamp: new Date()
+        });
+      } catch (error) {
+        logger.error('Error generating suggestions:', { error });
+      }
+    });
+
+    // Handle operator using a suggestion
+    socket.on('use-suggestion', async (data) => {
+      if (!isOperator) {
+        return;
+      }
+
+      const { sessionId, suggestionId, edited } = data;
+
+      try {
+        // Import the Suggestion model
+        const Suggestion = require('./models/suggestion');
+
+        // Find the suggestion
+        const suggestion = await Suggestion.findById(suggestionId);
+
+        if (!suggestion) {
+          socket.emit('error', { message: 'Suggestion not found' });
+          return;
+        }
+
+        // Get the content to use (either edited or original)
+        const messageContent = edited || suggestion.content;
+
+        // Save to database
+        const conversation = await Conversation.findOne({ sessionId });
+        if (conversation) {
+          // Create the message
+          const messageDoc = {
+            content: messageContent,
+            sender: 'operator',
+            operatorId: socket.user.id,
+            operatorName: socket.user.username,
+            timestamp: new Date()
+          };
+
+          conversation.messages.push(messageDoc);
+          conversation.lastActivity = new Date();
+          await conversation.save();
+
+          // Get the database ID of the newly added message
+          let dbMessageId = 'temp-id';
+          if (conversation.messages &&
+              conversation.messages.length > 0 &&
+              conversation.messages[conversation.messages.length - 1]._id) {
+            dbMessageId = conversation.messages[conversation.messages.length - 1]._id.toString();
+          }
+
+          // Update the suggestion to mark it as used
+          suggestion.used = true;
+          suggestion.usedAt = new Date();
+          suggestion.editedContent = edited;
+          suggestion.resultingMessageId = dbMessageId;
+          await suggestion.save();
+
+          // Send to user
+          io.to(sessionId).emit('operator-message', {
+            text: messageContent,
+            senderName: socket.user.username,
+            timestamp: new Date()
+          });
+
+          // Notify all operators that the suggestion was used
+          io.to('operators').emit('suggestion-used', {
+            sessionId,
+            suggestionId,
+            operatorId: socket.user.id,
+            operatorName: socket.user.username,
+            wasEdited: !!edited,
+            timestamp: new Date()
+          });
+        }
+      } catch (error) {
+        logger.error('Error handling suggestion use:', { error });
+        socket.emit('error', { message: 'Failed to use suggestion' });
+      }
+    });
+
+    // Handle toggling suggestions for a chat
+    socket.on('toggle-suggestions', async (data) => {
+      if (!isOperator) {
+        return;
+      }
+
+      const { sessionId, enabled } = data;
+
+      try {
+        // Update conversation in database
+        const conversation = await Conversation.findOneAndUpdate(
+          { sessionId },
+          { $set: { suggestionsEnabled: enabled } },
+          { new: true }
+        );
+
+        if (conversation) {
+          // Notify all operators about the change
+          io.to('operators').emit('suggestions-status-changed', {
+            sessionId,
+            enabled,
+            timestamp: new Date()
+          });
+
+          // Send confirmation to the requesting operator
+          socket.emit('suggestions-toggled', {
+            sessionId,
+            enabled,
+            success: true,
+            timestamp: new Date()
+          });
+        } else {
+          socket.emit('suggestions-toggled', {
+            sessionId,
+            success: false,
+            error: 'Conversation not found',
+            timestamp: new Date()
+          });
+        }
+      } catch (error) {
+        logger.error('Error toggling suggestions:', { error });
+        socket.emit('suggestions-toggled', {
+          sessionId,
+          success: false,
+          error: 'Failed to toggle suggestions',
+          timestamp: new Date()
+        });
       }
     });
 

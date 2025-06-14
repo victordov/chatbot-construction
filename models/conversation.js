@@ -77,6 +77,10 @@ const ConversationSchema = new mongoose.Schema({
   operatorName: {
     type: String
   },
+  suggestionsEnabled: {
+    type: Boolean,
+    default: true
+  },
   metadata: {
     type: Map,
     of: String

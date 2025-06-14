@@ -68,6 +68,47 @@ style.textContent = `
   .status-indicator.has-operator {
     background-color: #28a745; /* Green color */
   }
+
+  .typing-indicator {
+    margin-bottom: 10px;
+  }
+
+  .message.typing {
+    opacity: 0.7;
+  }
+
+  .message.typing .message-content {
+    display: flex;
+    align-items: center;
+    padding: 5px 10px;
+  }
+
+  .message.typing .dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background-color: #777;
+    margin-right: 4px;
+    animation: typing-animation 1.4s infinite ease-in-out both;
+  }
+
+  .message.typing .dot:nth-child(1) {
+    animation-delay: 0s;
+  }
+
+  .message.typing .dot:nth-child(2) {
+    animation-delay: 0.2s;
+  }
+
+  .message.typing .dot:nth-child(3) {
+    animation-delay: 0.4s;
+  }
+
+  @keyframes typing-animation {
+    0%, 80%, 100% { transform: scale(0.7); }
+    40% { transform: scale(1); }
+  }
 `;
 document.head.appendChild(style);
 
@@ -113,7 +154,8 @@ function initializeDashboard(token, user) {
   window.joinedChats = new Set();
 
   // Initialize Socket.IO connection with reconnection options
-  const socket = io({
+  // Store socket in window object to make it globally available
+  window.adminSocket = io({
     auth: {
       token: token
     },
@@ -123,6 +165,9 @@ function initializeDashboard(token, user) {
     reconnectionDelayMax: 5000,
     timeout: 20000
   });
+
+  // For backward compatibility
+  const socket = window.adminSocket;
 
   // Set up event handlers
   setupEventHandlers(socket);
@@ -251,6 +296,65 @@ function setupNavigation() {
 
 // Event handlers
 function setupEventHandlers(socket) {
+  // Set up suggestion event handlers
+  setupSuggestionEventHandlers(socket);
+
+  // Function to update suggestion buttons based on operator join status
+  function updateSuggestionButtons(isJoined) {
+    // Get all user messages
+    const userMessages = document.querySelectorAll('.message.user');
+
+    userMessages.forEach(messageDiv => {
+      // Check if message already has actions
+      let actionDiv = messageDiv.querySelector('.message-actions');
+
+      if (isJoined) {
+        // If operator has joined, add suggestion button if not already present
+        if (!actionDiv) {
+          actionDiv = document.createElement('div');
+          actionDiv.className = 'message-actions';
+          actionDiv.style.marginTop = '5px';
+
+          const getSuggestionBtn = document.createElement('button');
+          getSuggestionBtn.className = 'btn btn-sm btn-outline-primary get-suggestion-btn';
+          getSuggestionBtn.textContent = 'Get Suggestion';
+          getSuggestionBtn.addEventListener('click', function() {
+            // Get the session ID
+            const sessionId = document.getElementById('join-chat-btn').getAttribute('data-session-id');
+
+            // Get the message ID if available
+            const messageId = messageDiv.dataset.messageId;
+
+            // Request suggestion
+            const socket = window.adminSocket;
+            socket.emit('request-suggestions', {
+              sessionId,
+              messageId
+            });
+
+            // Show loading state
+            getSuggestionBtn.disabled = true;
+            getSuggestionBtn.textContent = 'Generating...';
+
+            // Reset button after a timeout
+            setTimeout(() => {
+              getSuggestionBtn.disabled = false;
+              getSuggestionBtn.textContent = 'Get Suggestion';
+            }, 5000);
+          });
+
+          actionDiv.appendChild(getSuggestionBtn);
+          messageDiv.appendChild(actionDiv);
+        }
+      } else {
+        // If operator has left, remove suggestion button
+        if (actionDiv) {
+          actionDiv.remove();
+        }
+      }
+    });
+  }
+
   // Join chat button
   const joinChatBtn = document.getElementById('join-chat-btn');
   joinChatBtn.addEventListener('click', function() {
@@ -272,6 +376,9 @@ function setupEventHandlers(socket) {
 
     // Add this chat to the joined chats set
     window.joinedChats.add(sessionId);
+
+    // Update suggestion buttons
+    updateSuggestionButtons(true);
   });
 
   // End chat button
@@ -283,6 +390,9 @@ function setupEventHandlers(socket) {
 
       // Remove this chat from the joined chats set
       window.joinedChats.delete(sessionId);
+
+      // Update suggestion buttons before resetting the view
+      updateSuggestionButtons(false);
 
       resetChatView();
     }
@@ -300,6 +410,30 @@ function setupEventHandlers(socket) {
     if (e.key === 'Enter') {
       sendOperatorMessage(socket, messageInput);
     }
+  });
+
+  // Track operator typing
+  let typingTimeout;
+  messageInput.addEventListener('input', function() {
+    const joinChatBtn = document.getElementById('join-chat-btn');
+    const sessionId = joinChatBtn.getAttribute('data-session-id');
+
+    // Clear existing timeout
+    clearTimeout(typingTimeout);
+
+    // Send typing indicator to server
+    socket.emit('operator-typing', {
+      sessionId,
+      isTyping: true
+    });
+
+    // Set timeout to stop typing indicator after 2 seconds of inactivity
+    typingTimeout = setTimeout(() => {
+      socket.emit('operator-typing', {
+        sessionId,
+        isTyping: false
+      });
+    }, 2000);
   });
 
   // Settings form
@@ -448,6 +582,85 @@ function setupEventHandlers(socket) {
         logger.error('Error fetching reactivated chat:', error);
       });
   });
+
+  // Listen for chat activity events (opened/closed)
+  socket.on('chat-activity', function(data) {
+    const { type, sessionId } = data;
+
+    if (type === 'opened') {
+      // User opened the chat in their browser
+      // Fetch the chat details if it's not already in the list
+      const existingChat = document.querySelector(`#active-chat-list a[data-session-id="${sessionId}"]`);
+      if (!existingChat) {
+        fetch(`/api/admin/chat/${sessionId}`, {
+          headers: {
+            'x-auth-token': localStorage.getItem('chatbot-auth-token')
+          }
+        })
+          .then(response => response.json())
+          .then(chat => {
+            if (chat) {
+              // Add to active chat list
+              addChatToList(chat);
+
+              // Update active chats count
+              updateActiveChatCount(1);
+            }
+          })
+          .catch(error => {
+            logger.error('Error fetching opened chat:', error);
+          });
+      }
+    } else if (type === 'closed') {
+      // User closed the chat in their browser
+      // Remove from active chat list
+      removeChatFromList(sessionId);
+
+      // Update active chats count
+      updateActiveChatCount(-1);
+    }
+  });
+
+  // Listen for user typing events
+  socket.on('user-typing', function(data) {
+    const { sessionId, isTyping } = data;
+
+    // Only show typing indicator for the currently selected chat
+    const selectedChatId = document.getElementById('join-chat-btn').getAttribute('data-session-id');
+    if (selectedChatId === sessionId) {
+      const chatMessages = document.getElementById('chat-messages');
+
+      // Check if typing indicator already exists
+      let typingIndicator = chatMessages.querySelector('.typing-indicator');
+
+      if (isTyping) {
+        // Create typing indicator if it doesn't exist
+        if (!typingIndicator) {
+          typingIndicator = document.createElement('div');
+          typingIndicator.className = 'typing-indicator';
+          typingIndicator.innerHTML = `
+            <div class="message bot typing">
+              <div class="message-content">
+                <span class="dot"></span>
+                <span class="dot"></span>
+                <span class="dot"></span>
+              </div>
+              <div class="message-time">User is typing...</div>
+            </div>
+          `;
+          chatMessages.appendChild(typingIndicator);
+
+          // Scroll to bottom
+          chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+      } else {
+        // Remove typing indicator if it exists
+        if (typingIndicator) {
+          typingIndicator.remove();
+        }
+      }
+    }
+  });
 }
 
 // Send operator message
@@ -456,6 +669,12 @@ function sendOperatorMessage(socket, messageInput) {
   if (message) {
     const joinChatBtn = document.getElementById('join-chat-btn');
     const sessionId = joinChatBtn.getAttribute('data-session-id');
+
+    // Clear typing indicator when sending a message
+    socket.emit('operator-typing', {
+      sessionId,
+      isTyping: false
+    });
 
     socket.emit('operator-message', {
       sessionId,
@@ -731,7 +950,8 @@ function addChatToList(chat) {
     joinBtn.setAttribute('data-session-id', chat.sessionId);
 
     // Check if this chat has already been joined by the current operator
-    if (window.joinedChats.has(chat.sessionId)) {
+    const isJoined = window.joinedChats.has(chat.sessionId);
+    if (isJoined) {
       joinBtn.textContent = 'Joined';
       joinBtn.classList.remove('btn-primary');
       joinBtn.classList.add('btn-success');
@@ -748,6 +968,12 @@ function addChatToList(chat) {
       // Hide the operator input if not joined
       document.getElementById('operator-input').style.display = 'none';
     }
+
+    // Update suggestion buttons based on join status
+    // We need to wait a bit for the messages to load
+    setTimeout(() => {
+      updateSuggestionButtons(isJoined);
+    }, 500);
 
     const endBtn = document.getElementById('end-chat-btn');
     endBtn.disabled = false;
@@ -778,6 +1004,7 @@ function loadChatMessages(sessionId) {
       if (data.messages && data.messages.length > 0) {
         data.messages.forEach(msg => {
           addMessageToChat({
+            _id: msg._id,
             content: msg.content,
             sender: msg.sender,
             timestamp: msg.timestamp
@@ -808,12 +1035,67 @@ function addMessageToChat(data) {
   const messageDiv = document.createElement('div');
   messageDiv.className = `message ${data.sender}`;
 
+  // Store message ID if available
+  if (data._id) {
+    messageDiv.dataset.messageId = data._id;
+  }
+
   const timestamp = data.timestamp ? new Date(data.timestamp).toLocaleTimeString() : new Date().toLocaleTimeString();
 
-  messageDiv.innerHTML = `
-    <div class="message-content">${data.content}</div>
-    <div class="message-time">${data.sender} • ${timestamp}</div>
-  `;
+  // Create message content
+  const contentDiv = document.createElement('div');
+  contentDiv.className = 'message-content';
+  contentDiv.textContent = data.content;
+  messageDiv.appendChild(contentDiv);
+
+  // Create message time
+  const timeDiv = document.createElement('div');
+  timeDiv.className = 'message-time';
+  timeDiv.textContent = `${data.sender} • ${timestamp}`;
+  messageDiv.appendChild(timeDiv);
+
+  // Add "Get Suggestion" button for user messages if operator has joined
+  if (data.sender === 'user') {
+    const joinChatBtn = document.getElementById('join-chat-btn');
+    const isJoined = joinChatBtn.getAttribute('data-joined') === 'true';
+
+    if (isJoined) {
+      const actionDiv = document.createElement('div');
+      actionDiv.className = 'message-actions';
+      actionDiv.style.marginTop = '5px';
+
+      const getSuggestionBtn = document.createElement('button');
+      getSuggestionBtn.className = 'btn btn-sm btn-outline-primary get-suggestion-btn';
+      getSuggestionBtn.textContent = 'Get Suggestion';
+      getSuggestionBtn.addEventListener('click', function() {
+        // Get the session ID
+        const sessionId = joinChatBtn.getAttribute('data-session-id');
+
+        // Get the message ID if available
+        const messageId = data._id;
+
+        // Request suggestion
+        const socket = window.adminSocket;
+        socket.emit('request-suggestions', {
+          sessionId,
+          messageId
+        });
+
+        // Show loading state
+        getSuggestionBtn.disabled = true;
+        getSuggestionBtn.textContent = 'Generating...';
+
+        // Reset button after a timeout
+        setTimeout(() => {
+          getSuggestionBtn.disabled = false;
+          getSuggestionBtn.textContent = 'Get Suggestion';
+        }, 5000);
+      });
+
+      actionDiv.appendChild(getSuggestionBtn);
+      messageDiv.appendChild(actionDiv);
+    }
+  }
 
   chatMessages.appendChild(messageDiv);
 
@@ -1184,6 +1466,7 @@ function viewChatHistory(sessionId) {
       if (chat.messages && chat.messages.length > 0) {
         chat.messages.forEach(msg => {
           addMessageToChat({
+            _id: msg._id,
             content: msg.content,
             sender: msg.sender,
             timestamp: msg.timestamp
@@ -1278,4 +1561,341 @@ function deleteChatHistory(sessionId) {
         alert('An error occurred while deleting chat history');
       });
   }
+}
+
+// Add styles for suggestions
+const suggestionStyles = document.createElement('style');
+suggestionStyles.textContent = `
+  /* Suggestion styles */
+  .suggestions-container {
+    background-color: #f8f9fa;
+    border: 1px solid #dee2e6;
+    border-radius: 4px;
+    margin: 10px 0;
+    padding: 10px;
+    max-height: 300px;
+    overflow-y: auto;
+  }
+
+  .suggestions-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+    border-bottom: 1px solid #dee2e6;
+    padding-bottom: 5px;
+  }
+
+  .suggestions-title {
+    font-weight: bold;
+    margin: 0;
+  }
+
+  .suggestions-controls {
+    display: flex;
+    align-items: center;
+  }
+
+  .suggestion-item {
+    background-color: white;
+    border-left: 4px solid #007bff;
+    margin-bottom: 8px;
+    padding: 10px;
+    border-radius: 0 4px 4px 0;
+    transition: all 0.2s ease;
+  }
+
+  .suggestion-item.used {
+    opacity: 0.6;
+  }
+
+  .suggestion-content {
+    margin-bottom: 8px;
+    white-space: pre-wrap;
+  }
+
+  .suggestion-actions {
+    display: flex;
+    gap: 5px;
+  }
+
+  .suggestion-edit-container {
+    margin-top: 10px;
+  }
+
+  .suggestion-edit-textarea {
+    width: 100%;
+    min-height: 100px;
+    margin-bottom: 8px;
+    padding: 5px;
+  }
+
+  .suggestion-edit-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 5px;
+  }
+
+  .user-query {
+    font-style: italic;
+    color: #6c757d;
+    margin-bottom: 10px;
+    padding: 5px;
+    background-color: #f1f1f1;
+    border-radius: 4px;
+  }
+`;
+document.head.appendChild(suggestionStyles);
+
+// Function to display suggestions to operators
+function displaySuggestion(data) {
+  const { sessionId, userMessageId, userMessage, suggestion, suggestionId } = data;
+
+  // Check if this is the currently selected chat
+  const joinChatBtn = document.getElementById('join-chat-btn');
+  const selectedChatId = joinChatBtn.getAttribute('data-session-id');
+
+  if (selectedChatId !== sessionId) {
+    // Not the current chat, don't display
+    return;
+  }
+
+  // Check if suggestions container exists, create if not
+  let suggestionsContainer = document.querySelector('.suggestions-container');
+  if (!suggestionsContainer) {
+    suggestionsContainer = document.createElement('div');
+    suggestionsContainer.className = 'suggestions-container';
+
+    // Create header
+    const header = document.createElement('div');
+    header.className = 'suggestions-header';
+    header.innerHTML = `
+      <h5 class="suggestions-title">AI Suggestions</h5>
+      <div class="suggestions-controls">
+        <div class="form-check form-switch">
+          <input class="form-check-input" type="checkbox" id="suggestions-toggle" checked>
+          <label class="form-check-label" for="suggestions-toggle">Enable Suggestions</label>
+        </div>
+      </div>
+    `;
+    suggestionsContainer.appendChild(header);
+
+    // Add event listener for toggle switch
+    const toggle = header.querySelector('#suggestions-toggle');
+    toggle.addEventListener('change', function() {
+      const enabled = this.checked;
+      const sessionId = joinChatBtn.getAttribute('data-session-id');
+
+      // Emit event to toggle suggestions
+      const socket = window.adminSocket;
+      socket.emit('toggle-suggestions', {
+        sessionId,
+        enabled
+      });
+    });
+
+    // Insert after chat messages and before operator input
+    const chatMessages = document.getElementById('chat-messages');
+    chatMessages.parentNode.insertBefore(suggestionsContainer, document.getElementById('operator-input'));
+  }
+
+  // Create suggestion item
+  const suggestionItem = document.createElement('div');
+  suggestionItem.className = 'suggestion-item';
+  suggestionItem.dataset.suggestionId = suggestionId;
+
+  // Add user query
+  const userQueryEl = document.createElement('div');
+  userQueryEl.className = 'user-query';
+  userQueryEl.textContent = `User: ${userMessage}`;
+  suggestionItem.appendChild(userQueryEl);
+
+  // Add suggestion content
+  const contentEl = document.createElement('div');
+  contentEl.className = 'suggestion-content';
+  contentEl.textContent = suggestion;
+  suggestionItem.appendChild(contentEl);
+
+  // Add action buttons
+  const actionsEl = document.createElement('div');
+  actionsEl.className = 'suggestion-actions';
+  actionsEl.innerHTML = `
+    <button class="btn btn-sm btn-primary use-suggestion-btn">Use</button>
+    <button class="btn btn-sm btn-secondary edit-suggestion-btn">Edit</button>
+    <button class="btn btn-sm btn-outline-danger dismiss-suggestion-btn">Dismiss</button>
+  `;
+  suggestionItem.appendChild(actionsEl);
+
+  // Add to container
+  suggestionsContainer.appendChild(suggestionItem);
+
+  // Add event listeners
+  const useBtn = suggestionItem.querySelector('.use-suggestion-btn');
+  useBtn.addEventListener('click', function() {
+    useSuggestion(suggestionId);
+  });
+
+  const editBtn = suggestionItem.querySelector('.edit-suggestion-btn');
+  editBtn.addEventListener('click', function() {
+    editSuggestion(suggestionItem, suggestion, suggestionId);
+  });
+
+  const dismissBtn = suggestionItem.querySelector('.dismiss-suggestion-btn');
+  dismissBtn.addEventListener('click', function() {
+    suggestionItem.remove();
+  });
+}
+
+// Function to use a suggestion
+function useSuggestion(suggestionId) {
+  // Use the global socket connection with authentication
+  const socket = window.adminSocket;
+  const sessionId = document.getElementById('join-chat-btn').getAttribute('data-session-id');
+
+  // Mark suggestion as used
+  const suggestionItem = document.querySelector(`.suggestion-item[data-suggestion-id="${suggestionId}"]`);
+  if (suggestionItem) {
+    const suggestionText = suggestionItem.querySelector('.suggestion-content').textContent;
+
+    // Add message to chat window to show it's being sent
+    addMessageToChat({
+      content: suggestionText,
+      sender: 'operator',
+      timestamp: new Date()
+    });
+
+    // Emit the event to use the suggestion
+    socket.emit('use-suggestion', {
+      sessionId: sessionId,
+      suggestionId
+    });
+
+    suggestionItem.classList.add('used');
+
+    // Disable buttons
+    const buttons = suggestionItem.querySelectorAll('button');
+    buttons.forEach(btn => btn.disabled = true);
+  }
+}
+
+// Function to edit a suggestion
+function editSuggestion(suggestionItem, suggestion, suggestionId) {
+  // Create edit container
+  const editContainer = document.createElement('div');
+  editContainer.className = 'suggestion-edit-container';
+
+  // Create textarea with suggestion content
+  const textarea = document.createElement('textarea');
+  textarea.className = 'suggestion-edit-textarea form-control';
+  textarea.value = suggestion;
+  editContainer.appendChild(textarea);
+
+  // Create action buttons
+  const actionsEl = document.createElement('div');
+  actionsEl.className = 'suggestion-edit-actions';
+  actionsEl.innerHTML = `
+    <button class="btn btn-sm btn-primary save-edit-btn">Save & Use</button>
+    <button class="btn btn-sm btn-secondary cancel-edit-btn">Cancel</button>
+  `;
+  editContainer.appendChild(actionsEl);
+
+  // Hide the original content and actions
+  const contentEl = suggestionItem.querySelector('.suggestion-content');
+  const originalActionsEl = suggestionItem.querySelector('.suggestion-actions');
+  contentEl.style.display = 'none';
+  originalActionsEl.style.display = 'none';
+
+  // Add edit container
+  suggestionItem.appendChild(editContainer);
+
+  // Focus textarea
+  textarea.focus();
+
+  // Add event listeners
+  const saveBtn = editContainer.querySelector('.save-edit-btn');
+  saveBtn.addEventListener('click', function() {
+    const editedText = textarea.value;
+    const sessionId = document.getElementById('join-chat-btn').getAttribute('data-session-id');
+
+    // Add message to chat window to show it's being sent
+    addMessageToChat({
+      content: editedText,
+      sender: 'operator',
+      timestamp: new Date()
+    });
+
+    // Use the edited suggestion
+    const socket = window.adminSocket;
+    socket.emit('use-suggestion', {
+      sessionId: sessionId,
+      suggestionId,
+      edited: editedText
+    });
+
+    // Update UI
+    contentEl.textContent = editedText;
+    contentEl.style.display = 'block';
+    originalActionsEl.style.display = 'flex';
+    editContainer.remove();
+
+    // Mark as used
+    suggestionItem.classList.add('used');
+
+    // Disable buttons
+    const buttons = suggestionItem.querySelectorAll('.suggestion-actions button');
+    buttons.forEach(btn => btn.disabled = true);
+  });
+
+  const cancelBtn = editContainer.querySelector('.cancel-edit-btn');
+  cancelBtn.addEventListener('click', function() {
+    // Restore original content and actions
+    contentEl.style.display = 'block';
+    originalActionsEl.style.display = 'flex';
+    editContainer.remove();
+  });
+}
+
+// Add socket event listeners for suggestions
+function setupSuggestionEventHandlers(socket) {
+  // Listen for operator suggestions
+  socket.on('operator-suggestion', function(data) {
+    displaySuggestion(data);
+  });
+
+  // Listen for suggestion used events
+  socket.on('suggestion-used', function(data) {
+    const { suggestionId, operatorName } = data;
+
+    // Mark suggestion as used if it exists
+    const suggestionItem = document.querySelector(`.suggestion-item[data-suggestion-id="${suggestionId}"]`);
+    if (suggestionItem) {
+      suggestionItem.classList.add('used');
+
+      // Add a note about who used it
+      const noteEl = document.createElement('div');
+      noteEl.className = 'text-muted small mt-2';
+      noteEl.textContent = `Used by ${operatorName}`;
+      suggestionItem.appendChild(noteEl);
+
+      // Disable buttons
+      const buttons = suggestionItem.querySelectorAll('button');
+      buttons.forEach(btn => btn.disabled = true);
+    }
+  });
+
+  // Listen for suggestions status changed
+  socket.on('suggestions-status-changed', function(data) {
+    const { sessionId, enabled } = data;
+
+    // Update toggle if this is the current chat
+    const joinChatBtn = document.getElementById('join-chat-btn');
+    const selectedChatId = joinChatBtn.getAttribute('data-session-id');
+
+    if (selectedChatId === sessionId) {
+      const toggle = document.getElementById('suggestions-toggle');
+      if (toggle) {
+        toggle.checked = enabled;
+      }
+    }
+  });
 }

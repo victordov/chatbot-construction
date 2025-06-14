@@ -149,7 +149,10 @@ class AIService {
       }) : null);
 
     this.systemMessage = options.systemMessage || DEFAULT_SYSTEM_MESSAGE;
-    this.defaultModel = options.model || 'gpt-3.5-turbo';
+    // Use GPT-4o as the default model
+    this.defaultModel = options.model || 'gpt-4o';
+    // Set a higher token limit for GPT-4o
+    this.maxTokens = options.maxTokens || 4000;
 
     // Initialize response template service
     this.templateService = options.templateService ||
@@ -379,6 +382,75 @@ class AIService {
    */
   async summarizeConversation(messages) {
     return await summarizeConversation(messages);
+  }
+
+  /**
+   * Generate a suggestion for operators based on a user message and conversation history
+   * This is specifically for operator suggestions and not direct responses to users
+   * @param {string} userMessage - The user's message
+   * @param {Array} messageHistory - Array of previous messages for context
+   * @returns {Promise<string>} - The AI-generated suggestion for the operator
+   */
+  async generateOperatorSuggestion(userMessage, messageHistory = []) {
+    try {
+      // Check if message is on-topic
+      const onTopic = await isOnTopic(userMessage, this.openai);
+
+      if (!onTopic) {
+        // Use a template for off-topic responses
+        return this.templateService.getTemplate('offTopic');
+      }
+
+      // Check if we have a predefined template that matches the query
+      const templateResponse = this.checkForTemplateMatch(userMessage);
+      if (templateResponse) {
+        return templateResponse;
+      }
+
+      // Create a special system message for operator suggestions
+      const operatorSuggestionSystemMessage = `
+${this.systemMessage}
+
+You are generating a response suggestion for a human operator to review. 
+This suggestion will NOT be sent directly to the user - it will only be shown to the operator.
+The operator can choose to use your suggestion as-is, edit it, or ignore it completely.
+
+Provide a comprehensive, helpful response that the operator can use or modify.
+Include all relevant information that might help the user, as the operator can edit out anything unnecessary.
+`;
+
+      // Use prompt engineering for more complex or specific queries
+      // Detect the appropriate prompt type for the message
+      const promptType = this.promptService.detectPromptType(userMessage);
+
+      // Extract variables from the message
+      const variables = this.promptService.extractVariables(userMessage);
+
+      // Create the engineered prompt messages with the operator suggestion system message
+      const promptMessages = [
+        { role: 'system', content: operatorSuggestionSystemMessage },
+        ...messageHistory,
+        { role: 'user', content: userMessage }
+      ];
+
+      // If no OpenAI instance available (for testing), return a mock response
+      if (!this.openai) {
+        return 'This is a suggestion for the operator to respond to the user query.';
+      }
+
+      // Get response from ChatGPT using the engineered prompt
+      const response = await this.openai.chat.completions.create({
+        model: this.defaultModel,
+        messages: promptMessages,
+        temperature: 0.7,
+        max_tokens: this.maxTokens
+      });
+
+      return response.choices[0].message.content;
+    } catch (error) {
+      logger.error('Error generating operator suggestion:', { error });
+      return 'I encountered an error generating a suggestion. Please respond to the user directly.';
+    }
   }
 }
 
