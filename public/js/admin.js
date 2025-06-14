@@ -69,6 +69,36 @@ style.textContent = `
     background-color: #28a745; /* Green color */
   }
 
+  .user-disconnected {
+    position: relative;
+    opacity: 0.8;
+  }
+
+  .user-disconnected::after {
+    content: "Disconnected";
+    position: absolute;
+    right: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 0.8em;
+    color: #dc3545;
+    font-style: italic;
+  }
+
+  .message.system {
+    text-align: center;
+    margin: 10px 0;
+  }
+
+  .message.system .message-content {
+    display: inline-block;
+    padding: 5px 10px;
+    background-color: #f8f9fa;
+    border-radius: 10px;
+    font-style: italic;
+    color: #6c757d;
+  }
+
   .typing-indicator {
     margin-bottom: 10px;
   }
@@ -583,6 +613,9 @@ function setupEventHandlers(socket) {
       });
   });
 
+  // Store timeouts for disconnected chats
+  const disconnectedChatTimeouts = {};
+
   // Listen for chat activity events (opened/closed)
   socket.on('chat-activity', function(data) {
     const { type, sessionId } = data;
@@ -591,7 +624,30 @@ function setupEventHandlers(socket) {
       // User opened the chat in their browser
       // Fetch the chat details if it's not already in the list
       const existingChat = document.querySelector(`#active-chat-list a[data-session-id="${sessionId}"]`);
-      if (!existingChat) {
+
+      if (existingChat) {
+        // If there's an existing timeout for this chat, clear it
+        if (disconnectedChatTimeouts[sessionId]) {
+          clearTimeout(disconnectedChatTimeouts[sessionId]);
+          delete disconnectedChatTimeouts[sessionId];
+
+          // Remove the disconnected status if it exists
+          const chatItem = document.querySelector(`#active-chat-list a[data-session-id="${sessionId}"]`);
+          if (chatItem) {
+            chatItem.classList.remove('user-disconnected');
+          }
+
+          // Add a message that the user has reconnected
+          const joinChatBtn = document.getElementById('join-chat-btn');
+          if (joinChatBtn.getAttribute('data-session-id') === sessionId) {
+            addMessageToChat({
+              content: 'User has reconnected',
+              sender: 'system',
+              timestamp: new Date()
+            });
+          }
+        }
+      } else {
         fetch(`/api/admin/chat/${sessionId}`, {
           headers: {
             'x-auth-token': localStorage.getItem('chatbot-auth-token')
@@ -613,11 +669,34 @@ function setupEventHandlers(socket) {
       }
     } else if (type === 'closed') {
       // User closed the chat in their browser
-      // Remove from active chat list
-      removeChatFromList(sessionId);
 
-      // Update active chats count
-      updateActiveChatCount(-1);
+      // Add a message that the user has disconnected if this is the currently selected chat
+      const joinChatBtn = document.getElementById('join-chat-btn');
+      if (joinChatBtn.getAttribute('data-session-id') === sessionId) {
+        addMessageToChat({
+          content: 'User has disconnected. This chat will remain open for 3 minutes.',
+          sender: 'system',
+          timestamp: new Date()
+        });
+      }
+
+      // Mark the chat as disconnected
+      const chatItem = document.querySelector(`#active-chat-list a[data-session-id="${sessionId}"]`);
+      if (chatItem) {
+        chatItem.classList.add('user-disconnected');
+      }
+
+      // Set a timeout to remove the chat after 3 minutes
+      disconnectedChatTimeouts[sessionId] = setTimeout(() => {
+        // Remove from active chat list
+        removeChatFromList(sessionId);
+
+        // Update active chats count
+        updateActiveChatCount(-1);
+
+        // Remove from the timeouts object
+        delete disconnectedChatTimeouts[sessionId];
+      }, 3 * 60 * 1000); // 3 minutes
     }
   });
 
@@ -1048,52 +1127,61 @@ function addMessageToChat(data) {
   contentDiv.textContent = data.content;
   messageDiv.appendChild(contentDiv);
 
-  // Create message time
-  const timeDiv = document.createElement('div');
-  timeDiv.className = 'message-time';
-  timeDiv.textContent = `${data.sender} • ${timestamp}`;
-  messageDiv.appendChild(timeDiv);
+  // Handle system messages differently
+  if (data.sender === 'system') {
+    // For system messages, we don't need to show the sender name
+    const timeDiv = document.createElement('div');
+    timeDiv.className = 'message-time';
+    timeDiv.textContent = timestamp;
+    messageDiv.appendChild(timeDiv);
+  } else {
+    // Create message time with sender for non-system messages
+    const timeDiv = document.createElement('div');
+    timeDiv.className = 'message-time';
+    timeDiv.textContent = `${data.sender} • ${timestamp}`;
+    messageDiv.appendChild(timeDiv);
 
-  // Add "Get Suggestion" button for user messages if operator has joined
-  if (data.sender === 'user') {
-    const joinChatBtn = document.getElementById('join-chat-btn');
-    const isJoined = joinChatBtn.getAttribute('data-joined') === 'true';
+    // Add "Get Suggestion" button for user messages if operator has joined
+    if (data.sender === 'user') {
+      const joinChatBtn = document.getElementById('join-chat-btn');
+      const isJoined = joinChatBtn.getAttribute('data-joined') === 'true';
 
-    if (isJoined) {
-      const actionDiv = document.createElement('div');
-      actionDiv.className = 'message-actions';
-      actionDiv.style.marginTop = '5px';
+      if (isJoined) {
+        const actionDiv = document.createElement('div');
+        actionDiv.className = 'message-actions';
+        actionDiv.style.marginTop = '5px';
 
-      const getSuggestionBtn = document.createElement('button');
-      getSuggestionBtn.className = 'btn btn-sm btn-outline-primary get-suggestion-btn';
-      getSuggestionBtn.textContent = 'Get Suggestion';
-      getSuggestionBtn.addEventListener('click', function() {
-        // Get the session ID
-        const sessionId = joinChatBtn.getAttribute('data-session-id');
+        const getSuggestionBtn = document.createElement('button');
+        getSuggestionBtn.className = 'btn btn-sm btn-outline-primary get-suggestion-btn';
+        getSuggestionBtn.textContent = 'Get Suggestion';
+        getSuggestionBtn.addEventListener('click', function() {
+          // Get the session ID
+          const sessionId = joinChatBtn.getAttribute('data-session-id');
 
-        // Get the message ID if available
-        const messageId = data._id;
+          // Get the message ID if available
+          const messageId = data._id;
 
-        // Request suggestion
-        const socket = window.adminSocket;
-        socket.emit('request-suggestions', {
-          sessionId,
-          messageId
+          // Request suggestion
+          const socket = window.adminSocket;
+          socket.emit('request-suggestions', {
+            sessionId,
+            messageId
+          });
+
+          // Show loading state
+          getSuggestionBtn.disabled = true;
+          getSuggestionBtn.textContent = 'Generating...';
+
+          // Reset button after a timeout
+          setTimeout(() => {
+            getSuggestionBtn.disabled = false;
+            getSuggestionBtn.textContent = 'Get Suggestion';
+          }, 5000);
         });
 
-        // Show loading state
-        getSuggestionBtn.disabled = true;
-        getSuggestionBtn.textContent = 'Generating...';
-
-        // Reset button after a timeout
-        setTimeout(() => {
-          getSuggestionBtn.disabled = false;
-          getSuggestionBtn.textContent = 'Get Suggestion';
-        }, 5000);
-      });
-
-      actionDiv.appendChild(getSuggestionBtn);
-      messageDiv.appendChild(actionDiv);
+        actionDiv.appendChild(getSuggestionBtn);
+        messageDiv.appendChild(actionDiv);
+      }
     }
   }
 
