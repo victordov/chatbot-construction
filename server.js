@@ -13,6 +13,7 @@ const adminRoutes = require('./routes/admin');
 const authRoutes = require('./routes/auth');
 const gdprRoutes = require('./routes/gdpr');
 const operationsRoutes = require('./routes/operations');
+const taskRoutes = require('./routes/task');
 const { apiLimiter, chatLimiter } = require('./middleware/rateLimiter');
 const DataRetentionService = require('./services/dataRetention');
 const { logger, httpLogger } = require('./services/logging');
@@ -177,6 +178,7 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/gdpr', gdprRoutes);
 app.use('/api/operations', operationsRoutes);
+app.use('/api/tasks', taskRoutes);
 
 app.get('/', (req, res) => {
   res.send('Chatbot server is running.');

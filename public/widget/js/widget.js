@@ -732,6 +732,16 @@
     localStorage.setItem('chatbotUserEmail', userEmail);
     localStorage.setItem('chatbotUserPhone', userPhone);
 
+    // Send user details to server
+    if (socket) {
+      socket.emit('user-details', {
+        sessionId,
+        name: userName,
+        email: userEmail,
+        phone: userPhone
+      });
+    }
+
     // Hide form and show chat interface
     userDetailsForm.style.display = 'none';
     chatMessagesContainer.style.display = 'block';
@@ -841,6 +851,12 @@
           messageId,
           timestamp
         };
+
+        // Add user name if available
+        const userName = localStorage.getItem('chatbotUserName');
+        if (userName) {
+          messageData.userName = userName;
+        }
 
         // Check if encryption is available and ready
         if (encryptionUtil && encryptionUtil.isEncryptionReady()) {

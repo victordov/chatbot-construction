@@ -85,6 +85,10 @@ const ConversationSchema = new mongoose.Schema({
     type: Map,
     of: String
   },
+  tasks: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Task'
+  }],
   startedAt: {
     type: Date,
     default: Date.now

@@ -199,7 +199,56 @@ function setupWebSockets(server) {
           timestamp: new Date()
         });
       }
-    });    // Handle user messages from widget
+    });
+
+    // Handle user details from widget
+    socket.on('user-details', async (data) => {
+      try {
+        const { sessionId, name, email, phone } = data;
+        clientSessionId = sessionId;
+
+        // Save user details to conversation metadata
+        let conversation = await Conversation.findOne({ sessionId });
+
+        if (!conversation) {
+          conversation = new Conversation({
+            sessionId,
+            messages: []
+          });
+        }
+
+        // Initialize metadata if it doesn't exist
+        if (!conversation.metadata) {
+          conversation.metadata = new Map();
+        }
+
+        // Update metadata with user details
+        conversation.metadata.set('name', name || '');
+        conversation.metadata.set('email', email || '');
+        conversation.metadata.set('phone', phone || '');
+
+        // Update last activity
+        conversation.lastActivity = new Date();
+
+        await conversation.save();
+
+        // Notify operators that user details have been updated
+        socket.to('operators').emit('user-details-updated', {
+          sessionId,
+          name,
+          email,
+          phone,
+          timestamp: new Date()
+        });
+
+        logger.info(`User details updated for session: ${sessionId}`);
+      } catch (error) {
+        logger.error('Error handling user details:', error);
+        socket.emit('error', { message: 'Failed to save user details' });
+      }
+    });
+
+    // Handle user messages from widget
     socket.on('user-message', async (data) => {
       try {
         const { sessionId, messageId, timestamp } = data;
@@ -251,6 +300,13 @@ function setupWebSockets(server) {
           encrypted: encryptionEnabled // Track if message was encrypted
         };
 
+        // Add user name to message if available in data or metadata
+        if (data.userName) {
+          messageDoc.userName = data.userName;
+        } else if (conversation.metadata && conversation.metadata.get('name')) {
+          messageDoc.userName = conversation.metadata.get('name');
+        }
+
         conversation.messages.push(messageDoc);
 
         // Update last activity
@@ -266,14 +322,21 @@ function setupWebSockets(server) {
         }
 
         // Broadcast to operators (admin dashboard)
-        socket.to('operators').emit('new-message', {
+        const broadcastData = {
           sessionId,
           message,
           sender: 'user',
           messageId: dbMessageId,
           clientMessageId: messageId,
           timestamp: new Date()
-        });
+        };
+
+        // Add user name to broadcast if available
+        if (messageDoc.userName) {
+          broadcastData.userName = messageDoc.userName;
+        }
+
+        socket.to('operators').emit('new-message', broadcastData);
 
         // Only generate suggestions if there are operators and suggestions are enabled
         if (conversation.hasOperator) {

@@ -1,6 +1,7 @@
 const express = require('express');
 const Conversation = require('../models/conversation');
 const ColumnConfig = require('../models/columnConfig');
+const User = require('../models/user');
 const { auth, operator } = require('../middleware/auth');
 
 const router = express.Router();
@@ -68,6 +69,39 @@ router.get('/chat/:sessionId', async (req, res) => {
   } catch (error) {
     console.error('Error fetching chat:', error);
     res.status(500).json({ error: 'Failed to retrieve chat' });
+  }
+});
+
+// Update contact information for a chat
+router.post('/chat/:sessionId/contact-info', async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    const { name, email, phone } = req.body;
+
+    // Find the conversation
+    const conversation = await Conversation.findOne({ sessionId });
+
+    if (!conversation) {
+      return res.status(404).json({ error: 'Conversation not found' });
+    }
+
+    // Initialize metadata if it doesn't exist
+    if (!conversation.metadata) {
+      conversation.metadata = new Map();
+    }
+
+    // Update metadata with contact information
+    conversation.metadata.set('name', name || '');
+    conversation.metadata.set('email', email || '');
+    conversation.metadata.set('phone', phone || '');
+
+    // Save the conversation
+    await conversation.save();
+
+    res.json({ success: true, message: 'Contact information updated successfully' });
+  } catch (error) {
+    console.error('Error updating contact information:', error);
+    res.status(500).json({ error: 'Failed to update contact information' });
   }
 });
 
@@ -238,6 +272,240 @@ router.post('/column-config/:type', async (req, res) => {
   } catch (error) {
     console.error('Error updating column configuration:', error);
     res.status(500).json({ error: 'Failed to update column configuration' });
+  }
+});
+
+// Get operators for task assignment
+router.get('/operators', async (req, res) => {
+  try {
+    // Find all active operators
+    const operators = await User.find(
+      { role: 'operator', isActive: true },
+      { _id: 1, username: 1, email: 1 }
+    );
+
+    res.json({ operators });
+  } catch (error) {
+    console.error('Error fetching operators:', error);
+    res.status(500).json({ error: 'Failed to retrieve operators' });
+  }
+});
+
+// Get all operators (including inactive)
+router.get('/all-operators', async (req, res) => {
+  try {
+    // Find all operators regardless of active status
+    const operators = await User.find(
+      { role: 'operator' },
+      { _id: 1, username: 1, name: 1, email: 1, isActive: 1, createdAt: 1, lastLogin: 1 }
+    );
+
+    res.json({ operators });
+  } catch (error) {
+    console.error('Error fetching operators:', error);
+    res.status(500).json({ error: 'Failed to retrieve operators' });
+  }
+});
+
+// Create a new operator
+router.post('/operators', async (req, res) => {
+  try {
+    const { username, email, password, confirmPassword, name } = req.body;
+
+    // Validate input
+    if (!username || !email || !password || !confirmPassword) {
+      return res.status(400).json({ error: 'Username, email, password, and confirm password are required' });
+    }
+
+    // Check if passwords match
+    if (password !== confirmPassword) {
+      return res.status(400).json({ error: 'Passwords do not match' });
+    }
+
+    // Check if user already exists
+    const existingUser = await User.findOne({ 
+      $or: [{ username }, { email }] 
+    });
+
+    if (existingUser) {
+      return res.status(400).json({ 
+        error: 'User with this username or email already exists' 
+      });
+    }
+
+    // Create new operator
+    const operator = new User({
+      username,
+      name,
+      email,
+      password,
+      role: 'operator',
+      isActive: true
+    });
+
+    await operator.save();
+
+    res.status(201).json({ 
+      success: true, 
+      message: 'Operator created successfully',
+      operator: {
+        _id: operator._id,
+        username: operator.username,
+        name: operator.name,
+        email: operator.email,
+        isActive: operator.isActive
+      }
+    });
+  } catch (error) {
+    console.error('Error creating operator:', error);
+    res.status(500).json({ error: 'Failed to create operator' });
+  }
+});
+
+// Update operator status (active/inactive)
+router.patch('/operators/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { isActive } = req.body;
+
+    // Validate input
+    if (isActive === undefined) {
+      return res.status(400).json({ error: 'isActive status is required' });
+    }
+
+    // Find and update operator
+    const operator = await User.findById(id);
+
+    if (!operator) {
+      return res.status(404).json({ error: 'Operator not found' });
+    }
+
+    if (operator.role !== 'operator') {
+      return res.status(400).json({ error: 'User is not an operator' });
+    }
+
+    operator.isActive = isActive;
+    await operator.save();
+
+    res.json({ 
+      success: true, 
+      message: `Operator ${isActive ? 'activated' : 'deactivated'} successfully`,
+      operator: {
+        _id: operator._id,
+        username: operator.username,
+        name: operator.name,
+        email: operator.email,
+        isActive: operator.isActive
+      }
+    });
+  } catch (error) {
+    console.error('Error updating operator status:', error);
+    res.status(500).json({ error: 'Failed to update operator status' });
+  }
+});
+
+// Update operator details
+router.put('/operators/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { username, name, email } = req.body;
+
+    // Validate input
+    if (!username || !email) {
+      return res.status(400).json({ error: 'Username and email are required' });
+    }
+
+    // Find operator
+    const operator = await User.findById(id);
+
+    if (!operator) {
+      return res.status(404).json({ error: 'Operator not found' });
+    }
+
+    if (operator.role !== 'operator') {
+      return res.status(400).json({ error: 'User is not an operator' });
+    }
+
+    // Check if username or email is already taken by another user
+    const existingUser = await User.findOne({
+      $and: [
+        { _id: { $ne: id } },
+        { $or: [{ username }, { email }] }
+      ]
+    });
+
+    if (existingUser) {
+      if (existingUser.username === username) {
+        return res.status(400).json({ error: 'Username is already taken' });
+      }
+      if (existingUser.email === email) {
+        return res.status(400).json({ error: 'Email is already taken' });
+      }
+    }
+
+    // Update operator details
+    operator.username = username;
+    operator.name = name;
+    operator.email = email;
+
+    await operator.save();
+
+    res.json({ 
+      success: true, 
+      message: 'Operator details updated successfully',
+      operator: {
+        _id: operator._id,
+        username: operator.username,
+        name: operator.name,
+        email: operator.email,
+        isActive: operator.isActive
+      }
+    });
+  } catch (error) {
+    console.error('Error updating operator details:', error);
+    res.status(500).json({ error: 'Failed to update operator details' });
+  }
+});
+
+// Reset operator password
+router.post('/operators/:id/reset-password', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { password, confirmPassword } = req.body;
+
+    // Validate input
+    if (!password || !confirmPassword) {
+      return res.status(400).json({ error: 'Password and confirm password are required' });
+    }
+
+    // Check if passwords match
+    if (password !== confirmPassword) {
+      return res.status(400).json({ error: 'Passwords do not match' });
+    }
+
+    // Find operator
+    const operator = await User.findById(id);
+
+    if (!operator) {
+      return res.status(404).json({ error: 'Operator not found' });
+    }
+
+    if (operator.role !== 'operator') {
+      return res.status(400).json({ error: 'User is not an operator' });
+    }
+
+    // Update password
+    operator.password = password;
+
+    await operator.save();
+
+    res.json({ 
+      success: true, 
+      message: 'Operator password reset successfully'
+    });
+  } catch (error) {
+    console.error('Error resetting operator password:', error);
+    res.status(500).json({ error: 'Failed to reset operator password' });
   }
 });
 

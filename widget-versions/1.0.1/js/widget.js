@@ -552,6 +552,22 @@
         }
       });
 
+      // Listen for operator typing indicator
+      socket.on('operator-typing', (data) => {
+        const { isTyping } = data;
+        setTypingIndicator(isTyping);
+
+        // Broadcast typing indicator to other tabs/windows
+        if (broadcastChannel) {
+          broadcastChannel.postMessage({
+            type: 'typing-indicator',
+            data: {
+              isTyping
+            }
+          });
+        }
+      });
+
       // Listen for read receipts
       socket.on('message-read', (data) => {
         // Update read status in the UI
@@ -716,6 +732,16 @@
     localStorage.setItem('chatbotUserEmail', userEmail);
     localStorage.setItem('chatbotUserPhone', userPhone);
 
+    // Send user details to server
+    if (socket) {
+      socket.emit('user-details', {
+        sessionId,
+        name: userName,
+        email: userEmail,
+        phone: userPhone
+      });
+    }
+
     // Hide form and show chat interface
     userDetailsForm.style.display = 'none';
     chatMessagesContainer.style.display = 'block';
@@ -802,8 +828,8 @@
       // Clear input
       chatInput.value = '';
 
-      // Show typing indicator
-      setTypingIndicator(true);
+      // Don't automatically show typing indicator when user sends a message
+      // Let the server explicitly trigger it with 'bot-typing' or 'operator-typing' events
 
       // Inform the server that the user is no longer typing
       if (socket) {
@@ -825,6 +851,12 @@
           messageId,
           timestamp
         };
+
+        // Add user name if available
+        const userName = localStorage.getItem('chatbotUserName');
+        if (userName) {
+          messageData.userName = userName;
+        }
 
         // Check if encryption is available and ready
         if (encryptionUtil && encryptionUtil.isEncryptionReady()) {
@@ -886,8 +918,8 @@
           // Add message about file upload
             addUserMessage(`I've uploaded a file: ${file.name}`, true);
 
-            // Show typing indicator
-            setTypingIndicator(true);
+            // Don't automatically show typing indicator when user uploads a file
+            // Let the server explicitly trigger it with 'bot-typing' or 'operator-typing' events
 
             // Clear file input and indicator
             fileUploadInput.value = '';
