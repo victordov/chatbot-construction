@@ -25,6 +25,7 @@ const logLevels = {
   debug: 4
 };
 
+// eslint-disable-next-line no-unused-vars
 const logColors = {
   error: 'red',
   warn: 'yellow',

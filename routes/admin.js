@@ -323,13 +323,13 @@ router.post('/operators', async (req, res) => {
     }
 
     // Check if user already exists
-    const existingUser = await User.findOne({ 
-      $or: [{ username }, { email }] 
+    const existingUser = await User.findOne({
+      $or: [{ username }, { email }]
     });
 
     if (existingUser) {
-      return res.status(400).json({ 
-        error: 'User with this username or email already exists' 
+      return res.status(400).json({
+        error: 'User with this username or email already exists'
       });
     }
 
@@ -345,8 +345,8 @@ router.post('/operators', async (req, res) => {
 
     await operator.save();
 
-    res.status(201).json({ 
-      success: true, 
+    res.status(201).json({
+      success: true,
       message: 'Operator created successfully',
       operator: {
         _id: operator._id,
@@ -387,8 +387,8 @@ router.patch('/operators/:id', async (req, res) => {
     operator.isActive = isActive;
     await operator.save();
 
-    res.json({ 
-      success: true, 
+    res.json({
+      success: true,
       message: `Operator ${isActive ? 'activated' : 'deactivated'} successfully`,
       operator: {
         _id: operator._id,
@@ -450,8 +450,8 @@ router.put('/operators/:id', async (req, res) => {
 
     await operator.save();
 
-    res.json({ 
-      success: true, 
+    res.json({
+      success: true,
       message: 'Operator details updated successfully',
       operator: {
         _id: operator._id,
@@ -499,8 +499,8 @@ router.post('/operators/:id/reset-password', async (req, res) => {
 
     await operator.save();
 
-    res.json({ 
-      success: true, 
+    res.json({
+      success: true,
       message: 'Operator password reset successfully'
     });
   } catch (error) {

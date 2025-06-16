@@ -2,6 +2,7 @@
 // This service will handle authentication and file retrieval from Google Drive
 
 const { google } = require('googleapis');
+// eslint-disable-next-line no-unused-vars
 const path = require('path');
 const fs = require('fs');
 
@@ -48,4 +49,3 @@ module.exports = {
   listFiles,
   downloadFile
 };
-

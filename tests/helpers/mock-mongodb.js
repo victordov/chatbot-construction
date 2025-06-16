@@ -162,7 +162,9 @@ class MockMongooseConnection extends EventEmitter {
     this.models = {};
     this.collections = {};
     this.db = {
-      collection: (name) => ({
+      collection: (
+        // eslint-disable-next-line no-unused-vars
+        name) => ({
         find: () => ({
           toArray: async () => []
         }),
@@ -184,7 +186,11 @@ class MockMongooseConnection extends EventEmitter {
 }
 
 // Enhanced connect method that immediately resolves
-mockMongoose.connect = jest.fn().mockImplementation(async (uri, options) => {
+mockMongoose.connect = jest.fn().mockImplementation(async (
+  // eslint-disable-next-line no-unused-vars
+  uri,
+  // eslint-disable-next-line no-unused-vars
+  options) => {
   mockMongoose.connection = new MockMongooseConnection();
   mockMongoose.connections = [mockMongoose.connection];
   mockMongoose.connection.emit('connected');

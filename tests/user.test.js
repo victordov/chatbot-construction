@@ -1,7 +1,9 @@
 // Mock bcrypt for password hashing and comparison
 jest.mock('bcrypt', () => ({
   genSalt: jest.fn().mockResolvedValue('salt'),
-  hash: jest.fn().mockImplementation((password, salt) => Promise.resolve(`hashed_${password}`)),
+  hash: jest.fn().mockImplementation((password,
+    // eslint-disable-next-line no-unused-vars
+    salt) => Promise.resolve(`hashed_${password}`)),
   compare: jest.fn().mockImplementation((candidatePassword, hashedPassword) => {
     // Extract the original password from our mock hashing scheme
     const originalPassword = hashedPassword.replace('hashed_', '');

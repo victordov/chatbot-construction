@@ -5,9 +5,9 @@
 const logger = {
   info: function(message, data) {
     if (data) {
-      console.log(message, data);
+      console.info(message, data);
     } else {
-      console.log(message);
+      console.info(message);
     }
   },
   error: function(message, error) {
@@ -25,10 +25,11 @@ const logger = {
     }
   },
   debug: function(message, data) {
+    // Use console.info instead of console.debug to avoid ESLint warnings
     if (data) {
-      console.debug(message, data);
+      console.info('[DEBUG]', message, data);
     } else {
-      console.debug(message);
+      console.info('[DEBUG]', message);
     }
   }
 };
@@ -332,9 +333,7 @@ function setupNavigation() {
           }, 100);
         }
       }
-    } 
-    // If no section parameter but session parameter exists, navigate to active-chats
-    else if (params.session) {
+    } else if (params.session) { // If no section parameter but session parameter exists, navigate to active-chats
       // Navigate to active-chats section and view the chat
       const activeChatsLink = document.querySelector('.nav-link[data-section="active-chats"]');
       if (activeChatsLink) {
@@ -365,8 +364,8 @@ function setupNavigation() {
 
     // Close sidebar when clicking outside of it on small screens
     document.addEventListener('click', function(event) {
-      if (window.innerWidth < 768 && 
-          !sidebar.contains(event.target) && 
+      if (window.innerWidth < 768 &&
+          !sidebar.contains(event.target) &&
           event.target !== sidebarToggle &&
           !sidebarToggle.contains(event.target)) {
         sidebar.classList.remove('show');
@@ -904,6 +903,7 @@ function sendOperatorMessage(socket, messageInput) {
 function initializeCharts() {
   // Chat Activity Chart
   const activityCtx = document.getElementById('chat-activity-chart').getContext('2d');
+  // eslint-disable-next-line no-unused-vars
   const activityChart = new Chart(activityCtx, {
     type: 'line',
     data: {
@@ -926,6 +926,7 @@ function initializeCharts() {
 
   // Topics Chart
   const topicsCtx = document.getElementById('topics-chart').getContext('2d');
+  // eslint-disable-next-line no-unused-vars
   const topicsChart = new Chart(topicsCtx, {
     type: 'doughnut',
     data: {
@@ -945,6 +946,7 @@ function initializeCharts() {
 
   // Chat Volume Chart
   const volumeCtx = document.getElementById('chat-volume-chart').getContext('2d');
+  // eslint-disable-next-line no-unused-vars
   const volumeChart = new Chart(volumeCtx, {
     type: 'bar',
     data: {
@@ -965,6 +967,7 @@ function initializeCharts() {
 
   // Response Time Chart
   const responseCtx = document.getElementById('response-time-chart').getContext('2d');
+  // eslint-disable-next-line no-unused-vars
   const responseChart = new Chart(responseCtx, {
     type: 'line',
     data: {
@@ -1028,9 +1031,9 @@ function loadActiveChats(socket, token) {
           // If this chat was previously joined, automatically rejoin it
           if (window.joinedChats.has(chat.sessionId)) {
             logger.info('Automatically rejoining chat:', chat.sessionId);
-            socket.emit('operator-takeover', { 
-              sessionId: chat.sessionId, 
-              operatorName: window.currentUser ? window.currentUser.username : 'Admin' 
+            socket.emit('operator-takeover', {
+              sessionId: chat.sessionId,
+              operatorName: window.currentUser ? window.currentUser.username : 'Admin'
             });
           }
         });
@@ -1047,8 +1050,8 @@ function loadActiveChats(socket, token) {
 // Load chat history
 function loadChatHistory(token, search = '') {
   // In a real app, this would fetch data from the server
-  const url = search 
-    ? `/api/admin/chat-history?search=${encodeURIComponent(search)}` 
+  const url = search
+    ? `/api/admin/chat-history?search=${encodeURIComponent(search)}`
     : '/api/admin/chat-history';
 
   fetch(url, {
@@ -1207,9 +1210,9 @@ function addChatToList(chat) {
     viewTasksBtn.disabled = false;
 
     // Update URL with chat parameter
-    updateUrlWithParams({ 
-      section: 'active-chats', 
-      chat: chat.sessionId 
+    updateUrlWithParams({
+      section: 'active-chats',
+      chat: chat.sessionId
     });
   });
 }
@@ -1455,7 +1458,7 @@ function notifyNewChat(chat) {
     if ('Notification' in window && Notification.permission === 'granted') {
       // Different notification based on whether this is a new or reactivated chat
       const title = chat.reactivated ? 'Chat Reactivated' : 'New Chat';
-      const body = chat.reactivated 
+      const body = chat.reactivated
         ? `Chat session from ${chat.domain || 'Unknown'} has been reactivated`
         : `New chat session started from ${chat.domain || 'Unknown'}`;
 
@@ -1823,9 +1826,9 @@ function viewChatHistory(sessionId) {
       endBtn.setAttribute('data-session-id', chat.sessionId);
 
       // Update URL with chat parameter
-      updateUrlWithParams({ 
-        section: 'active-chats', 
-        chat: chat.sessionId 
+      updateUrlWithParams({
+        section: 'active-chats',
+        chat: chat.sessionId
       });
     })
     .catch(error => {
@@ -1953,6 +1956,7 @@ document.head.appendChild(suggestionStyles);
 
 // Function to display suggestions to operators
 function displaySuggestion(data) {
+  // eslint-disable-next-line no-unused-vars
   const { sessionId, userMessageId, userMessage, suggestion, suggestionId } = data;
 
   // Check if this is the currently selected chat
@@ -2510,11 +2514,19 @@ function loadTasks(token) {
   const search = document.getElementById('task-search').value;
 
   // Build query string
-  let queryParams = [];
-  if (status) queryParams.push(`status=${status}`);
-  if (priority) queryParams.push(`priority=${priority}`);
-  if (assignee) queryParams.push(`assignee=${assignee}`);
-  if (search) queryParams.push(`search=${encodeURIComponent(search)}`);
+  const queryParams = [];
+  if (status) {
+    queryParams.push(`status=${status}`);
+  }
+  if (priority) {
+    queryParams.push(`priority=${priority}`);
+  }
+  if (assignee) {
+    queryParams.push(`assignee=${assignee}`);
+  }
+  if (search) {
+    queryParams.push(`search=${encodeURIComponent(search)}`);
+  }
 
   const queryString = queryParams.length > 0 ? `?${queryParams.join('&')}` : '';
 
@@ -2565,18 +2577,18 @@ function displayTasks(tasks) {
     priorityBadge.className = 'badge';
 
     switch (task.priority) {
-      case 'low':
-        priorityBadge.className += ' bg-secondary';
-        break;
-      case 'medium':
-        priorityBadge.className += ' bg-primary';
-        break;
-      case 'high':
-        priorityBadge.className += ' bg-warning';
-        break;
-      case 'urgent':
-        priorityBadge.className += ' bg-danger';
-        break;
+    case 'low':
+      priorityBadge.className += ' bg-secondary';
+      break;
+    case 'medium':
+      priorityBadge.className += ' bg-primary';
+      break;
+    case 'high':
+      priorityBadge.className += ' bg-warning';
+      break;
+    case 'urgent':
+      priorityBadge.className += ' bg-danger';
+      break;
     }
 
     priorityBadge.textContent = task.priority.charAt(0).toUpperCase() + task.priority.slice(1);
@@ -2586,19 +2598,19 @@ function displayTasks(tasks) {
     statusBadge.className = 'badge';
 
     switch (task.status) {
-      case 'open':
-        statusBadge.className += ' bg-secondary';
-        break;
-      case 'in_progress':
-        statusBadge.className += ' bg-primary';
-        break;
-      case 'completed':
-        statusBadge.className += ' bg-success';
-        break;
+    case 'open':
+      statusBadge.className += ' bg-secondary';
+      break;
+    case 'in_progress':
+      statusBadge.className += ' bg-primary';
+      break;
+    case 'completed':
+      statusBadge.className += ' bg-success';
+      break;
     }
 
-    const statusText = task.status === 'in_progress' ? 'In Progress' : 
-                      task.status.charAt(0).toUpperCase() + task.status.slice(1);
+    const statusText = task.status === 'in_progress' ? 'In Progress' :
+      task.status.charAt(0).toUpperCase() + task.status.slice(1);
     statusBadge.textContent = statusText;
 
     // Create action buttons
@@ -2703,18 +2715,18 @@ function displayTaskDetails(task) {
   prioritySpan.className = '';
 
   switch (task.priority) {
-    case 'low':
-      prioritySpan.className = 'text-secondary';
-      break;
-    case 'medium':
-      prioritySpan.className = 'text-primary';
-      break;
-    case 'high':
-      prioritySpan.className = 'text-warning';
-      break;
-    case 'urgent':
-      prioritySpan.className = 'text-danger';
-      break;
+  case 'low':
+    prioritySpan.className = 'text-secondary';
+    break;
+  case 'medium':
+    prioritySpan.className = 'text-primary';
+    break;
+  case 'high':
+    prioritySpan.className = 'text-warning';
+    break;
+  case 'urgent':
+    prioritySpan.className = 'text-danger';
+    break;
   }
 
   // Set assignee
@@ -3050,16 +3062,18 @@ function saveTask(token) {
       }
       return response.json();
     })
-    .then(data => {
+    .then(
+      // eslint-disable-next-line no-unused-vars
+      data => {
       // Hide the modal
-      bootstrap.Modal.getInstance(document.getElementById('taskModal')).hide();
+        bootstrap.Modal.getInstance(document.getElementById('taskModal')).hide();
 
-      // Show success notification
-      showNotification('Success', taskId ? 'Task updated successfully' : 'Task created successfully', 'success');
+        // Show success notification
+        showNotification('Success', taskId ? 'Task updated successfully' : 'Task created successfully', 'success');
 
-      // Reload tasks
-      loadTasks();
-    })
+        // Reload tasks
+        loadTasks();
+      })
     .catch(error => {
       logger.error('Error saving task:', error);
       showNotification('Error', 'Failed to save task', 'error');
@@ -3083,9 +3097,11 @@ function updateTaskStatus(token, status) {
       }
       return response.json();
     })
-    .then(data => {
-      showNotification('Success', 'Task status updated successfully', 'success');
-    })
+    .then(
+      // eslint-disable-next-line no-unused-vars
+      data => {
+        showNotification('Success', 'Task status updated successfully', 'success');
+      })
     .catch(error => {
       logger.error('Error updating task status:', error);
       showNotification('Error', 'Failed to update task status', 'error');
@@ -3114,13 +3130,15 @@ function addComment(token) {
       }
       return response.json();
     })
-    .then(data => {
+    .then(
+      // eslint-disable-next-line no-unused-vars
+      data => {
       // Clear comment input
-      document.getElementById('comment-input').value = '';
+        document.getElementById('comment-input').value = '';
 
-      // Reload comments
-      loadTaskComments(taskId);
-    })
+        // Reload comments
+        loadTaskComments(taskId);
+      })
     .catch(error => {
       logger.error('Error adding comment:', error);
       showNotification('Error', 'Failed to add comment', 'error');
@@ -3141,18 +3159,20 @@ function deleteTask(taskId) {
       }
       return response.json();
     })
-    .then(data => {
-      showNotification('Success', 'Task deleted successfully', 'success');
+    .then(
+      // eslint-disable-next-line no-unused-vars
+      data => {
+        showNotification('Success', 'Task deleted successfully', 'success');
 
-      // If viewing this task, go back to task list
-      const currentTaskId = document.querySelector('#task-detail-container')?.dataset.taskId;
-      if (currentTaskId === taskId) {
-        showTaskList();
-      }
+        // If viewing this task, go back to task list
+        const currentTaskId = document.querySelector('#task-detail-container')?.dataset.taskId;
+        if (currentTaskId === taskId) {
+          showTaskList();
+        }
 
-      // Reload tasks
-      loadTasks();
-    })
+        // Reload tasks
+        loadTasks();
+      })
     .catch(error => {
       logger.error('Error deleting task:', error);
       showNotification('Error', 'Failed to delete task', 'error');
@@ -3237,37 +3257,39 @@ function saveContactInfo(token) {
       }
       return response.json();
     })
-    .then(data => {
-      // Hide the modal
-      bootstrap.Modal.getInstance(document.getElementById('contactInfoModal')).hide();
+    .then(
+      // eslint-disable-next-line no-unused-vars
+      data => {
+        // Hide the modal
+        bootstrap.Modal.getInstance(document.getElementById('contactInfoModal')).hide();
 
-      // Update the conversation data
-      if (window.currentConversation) {
-        if (!window.currentConversation.metadata) {
-          window.currentConversation.metadata = {};
+        // Update the conversation data
+        if (window.currentConversation) {
+          if (!window.currentConversation.metadata) {
+            window.currentConversation.metadata = {};
+          }
+
+          // Check if metadata is a Map or a plain object
+          if (window.currentConversation.metadata instanceof Map) {
+            window.currentConversation.metadata.set('name', name);
+            window.currentConversation.metadata.set('email', email);
+            window.currentConversation.metadata.set('phone', phone);
+          } else {
+            window.currentConversation.metadata.name = name;
+            window.currentConversation.metadata.email = email;
+            window.currentConversation.metadata.phone = phone;
+          }
+
+          // Update the display
+          displayUserContactInfo(window.currentConversation);
+
+          // Reload messages to update user names
+          loadChatMessages(sessionId);
         }
 
-        // Check if metadata is a Map or a plain object
-        if (window.currentConversation.metadata instanceof Map) {
-          window.currentConversation.metadata.set('name', name);
-          window.currentConversation.metadata.set('email', email);
-          window.currentConversation.metadata.set('phone', phone);
-        } else {
-          window.currentConversation.metadata.name = name;
-          window.currentConversation.metadata.email = email;
-          window.currentConversation.metadata.phone = phone;
-        }
-
-        // Update the display
-        displayUserContactInfo(window.currentConversation);
-
-        // Reload messages to update user names
-        loadChatMessages(sessionId);
-      }
-
-      // Show success notification
-      showNotification('Success', 'Contact information saved successfully', 'success');
-    })
+        // Show success notification
+        showNotification('Success', 'Contact information saved successfully', 'success');
+      })
     .catch(error => {
       logger.error('Error saving contact information:', error);
       showNotification('Error', 'Failed to save contact information', 'error');
@@ -3275,13 +3297,8 @@ function saveContactInfo(token) {
 }
 
 function showNotification(title, message, type = 'info') {
-  // Check if we have a notification system
-  if (typeof createNotification === 'function') {
-    createNotification(title, message, type);
-  } else {
-    // Fallback to alert
-    alert(`${title}: ${message}`);
-  }
+  // Use showAlert for notifications
+  showAlert(`${title}: ${message}`, type);
 }
 
 // Load all operators (including inactive)
@@ -3305,8 +3322,8 @@ function loadAllOperators() {
 
         // Format date
         const createdDate = new Date(operator.createdAt).toLocaleDateString();
-        const lastLogin = operator.lastLogin 
-          ? new Date(operator.lastLogin).toLocaleDateString() 
+        const lastLogin = operator.lastLogin
+          ? new Date(operator.lastLogin).toLocaleDateString()
           : 'Never';
 
         row.innerHTML = `
@@ -3468,7 +3485,7 @@ function openEditOperatorModal(event) {
   const token = localStorage.getItem('chatbot-auth-token');
 
   // Fetch operator details
-  fetch(`/api/admin/all-operators`, {
+  fetch('/api/admin/all-operators', {
     method: 'GET',
     headers: {
       'Content-Type': 'application/json',

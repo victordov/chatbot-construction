@@ -144,10 +144,10 @@ router.post('/', auth, operator, async (req, res) => {
 
     res.status(201).json({ task });
   } catch (error) {
-    logger.error('Error creating task', { 
-      error: error.message, 
+    logger.error('Error creating task', {
+      error: error.message,
       stack: error.stack,
-      taskData: req.body 
+      taskData: req.body
     });
     res.status(500).json({ error: 'Failed to create task' });
   }
@@ -169,12 +169,24 @@ router.put('/:id', auth, operator, async (req, res) => {
     // Create update data object
     const updateData = {};
 
-    if (title) updateData.title = title;
-    if (description) updateData.description = description;
-    if (dueDate) updateData.dueDate = dueDate;
-    if (priority) updateData.priority = priority;
-    if (status) updateData.status = status;
-    if (contactInfo) updateData.contactInfo = contactInfo;
+    if (title) {
+      updateData.title = title;
+    }
+    if (description) {
+      updateData.description = description;
+    }
+    if (dueDate) {
+      updateData.dueDate = dueDate;
+    }
+    if (priority) {
+      updateData.priority = priority;
+    }
+    if (status) {
+      updateData.status = status;
+    }
+    if (contactInfo) {
+      updateData.contactInfo = contactInfo;
+    }
 
     // Update the task
     const task = await taskService.updateTask(req.params.id, updateData);

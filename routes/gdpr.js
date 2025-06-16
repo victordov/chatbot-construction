@@ -98,6 +98,7 @@ router.get('/privacy-policy', (req, res) => {
 router.post('/consent', auth, async (req, res) => {
   try {
     const { marketing, analytics, storage } = req.body;
+    // eslint-disable-next-line no-unused-vars
     const userId = req.user.id;
 
     // In a real app, this would update the user's consent preferences in the database

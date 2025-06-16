@@ -46,7 +46,7 @@ const TaskSchema = new mongoose.Schema({
       validate: {
         validator: function(v) {
           // Basic phone validation - can be enhanced based on requirements
-          return !v || /^[\d\s\+\-\(\)]{7,20}$/.test(v);
+          return !v || /^[\d\s+\-()]{7,20}$/.test(v);
         },
         message: props => `${props.value} is not a valid phone number!`
       }

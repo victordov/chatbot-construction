@@ -421,9 +421,11 @@ Include all relevant information that might help the user, as the operator can e
 
       // Use prompt engineering for more complex or specific queries
       // Detect the appropriate prompt type for the message
+      // eslint-disable-next-line no-unused-vars
       const promptType = this.promptService.detectPromptType(userMessage);
 
       // Extract variables from the message
+      // eslint-disable-next-line no-unused-vars
       const variables = this.promptService.extractVariables(userMessage);
 
       // Create the engineered prompt messages with the operator suggestion system message

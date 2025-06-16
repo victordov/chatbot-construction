@@ -101,10 +101,10 @@ class TaskService {
 
       return task;
     } catch (error) {
-      logger.error('Error creating task', { 
-        error: error.message, 
+      logger.error('Error creating task', {
+        error: error.message,
         stack: error.stack,
-        taskData 
+        taskData
       });
       throw new Error(`Failed to create task: ${error.message}`);
     }
@@ -131,7 +131,7 @@ class TaskService {
         updateData,
         { new: true, runValidators: true }
       ).populate('assignee', 'username email')
-       .populate('createdBy', 'username email');
+        .populate('createdBy', 'username email');
 
       if (!task) {
         throw new Error('Task not found');
@@ -194,7 +194,7 @@ class TaskService {
         updateData,
         { new: true, runValidators: true }
       ).populate('assignee', 'username email')
-       .populate('createdBy', 'username email');
+        .populate('createdBy', 'username email');
 
       if (!task) {
         throw new Error('Task not found');
@@ -231,9 +231,9 @@ class TaskService {
           { 'contactInfo.phone': searchRegex }
         ]
       })
-      .populate('assignee', 'username email')
-      .populate('createdBy', 'username email')
-      .sort({ createdAt: -1 });
+        .populate('assignee', 'username email')
+        .populate('createdBy', 'username email')
+        .sort({ createdAt: -1 });
 
       return tasks;
     } catch (error) {

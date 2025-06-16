@@ -3,6 +3,7 @@
  * Provides client-side encryption functions using TweetNaCl
  */
 
+// eslint-disable-next-line no-unused-vars
 class EncryptionUtil {
   constructor() {
     this.isReady = false;

@@ -1,3 +1,4 @@
+// eslint-disable-next-line no-unused-vars
 const socketIO = require('socket.io');
 const { io: Client } = require('socket.io-client');
 const http = require('http');
@@ -13,6 +14,7 @@ jest.mock('jsonwebtoken');
 
 describe('WebSockets Test', () => {
   let io;
+  // eslint-disable-next-line no-unused-vars
   let serverSocket;
   let clientSocket;
   let httpServer;

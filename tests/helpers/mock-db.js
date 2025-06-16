@@ -23,6 +23,29 @@ const createModelInstance = (data = {}) => {
   };
 };
 
+// Define mock model functions
+const mockModelFunctions = {
+  find: jest.fn().mockReturnThis(),
+  findOne: jest.fn().mockReturnThis(),
+  findById: jest.fn().mockReturnThis(),
+  findByIdAndUpdate: jest.fn().mockReturnThis(),
+  findByIdAndDelete: jest.fn().mockReturnThis(),
+  findOneAndUpdate: jest.fn().mockReturnThis(),
+  findOneAndDelete: jest.fn().mockReturnThis(),
+  updateOne: jest.fn().mockResolvedValue({ nModified: 1 }),
+  updateMany: jest.fn().mockResolvedValue({ nModified: 1 }),
+  deleteOne: jest.fn().mockResolvedValue({ deletedCount: 1 }),
+  deleteMany: jest.fn().mockResolvedValue({ deletedCount: 1 }),
+  countDocuments: jest.fn().mockResolvedValue(0),
+  populate: jest.fn().mockReturnThis(),
+  sort: jest.fn().mockReturnThis(),
+  limit: jest.fn().mockReturnThis(),
+  skip: jest.fn().mockReturnThis(),
+  select: jest.fn().mockReturnThis(),
+  lean: jest.fn().mockReturnThis(),
+  exec: jest.fn().mockResolvedValue([])
+};
+
 // Mock implementation for mongoose.model
 mongoose.model = jest.fn().mockImplementation((modelName) => {
   const modelFunctions = { ...mockModelFunctions };
@@ -122,7 +145,10 @@ class MockMongoMemoryServer {
     return this;
   }
 
-  static async create(options = {}) {
+  static async create(
+    // eslint-disable-next-line no-unused-vars
+    options = {}
+  ) {
     return new MockMongoMemoryServer();
   }
 }

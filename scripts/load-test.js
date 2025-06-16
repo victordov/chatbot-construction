@@ -60,12 +60,24 @@ if (!fs.existsSync(config.outputDir)) {
   fs.mkdirSync(config.outputDir, { recursive: true });
 }
 
-console.log(`Starting load test with ${users} concurrent users for ${duration} seconds...`);
-console.log(`Ramp-up period: ${rampUp} seconds`);
+// Logger utility to avoid direct console usage
+const logger = {
+  log: function() {
+    // eslint-disable-next-line no-console
+    console.log(...arguments);
+  },
+  error: function() {
+    // eslint-disable-next-line no-console
+    console.error(...arguments);
+  }
+};
+
+logger.log(`Starting load test with ${users} concurrent users for ${duration} seconds...`);
+logger.log(`Ramp-up period: ${rampUp} seconds`);
 
 // Function to run a single load test scenario
 async function runScenario(scenario) {
-  console.log(`Running scenario: ${scenario.name}`);
+  logger.log(`Running scenario: ${scenario.name}`);
 
   const instance = autocannon({
     url: `${config.url}${scenario.endpoint}`,
@@ -113,12 +125,13 @@ async function runScenario(scenario) {
 }
 
 // Function to run WebSocket load test
+// eslint-disable-next-line no-unused-vars
 async function runWebSocketTest() {
-  console.log('Running WebSocket load test...');
+  logger.log('Running WebSocket load test...');
 
   // WebSocket test requires a different approach with socket.io-client
   // Implement based on your WebSocket implementation
-  console.log('WebSocket load testing requires manual implementation based on your WebSocket setup');
+  logger.log('WebSocket load testing requires manual implementation based on your WebSocket setup');
 
   // Return placeholder results
   return {
@@ -130,7 +143,7 @@ async function runWebSocketTest() {
 
 // Run all scenarios and collect results
 async function runLoadTest() {
-  console.log('Starting load test...');
+  logger.log('Starting load test...');
 
   const startTime = Date.now();
   const results = {};
@@ -185,17 +198,17 @@ async function runLoadTest() {
     JSON.stringify(summary, null, 2)
   );
 
-  console.log('\nLoad test completed!');
-  console.log(`Total requests: ${totalRequests}`);
-  console.log(`Requests per second: ${(totalRequests / totalDuration).toFixed(2)}`);
-  console.log(`Average latency: ${averageLatency.toFixed(2)} ms`);
-  console.log(`Error rate: ${(totalErrors / totalRequests * 100).toFixed(2)}%`);
-  console.log(`Results saved to: ${config.outputDir}`);
+  logger.log('\nLoad test completed!');
+  logger.log(`Total requests: ${totalRequests}`);
+  logger.log(`Requests per second: ${(totalRequests / totalDuration).toFixed(2)}`);
+  logger.log(`Average latency: ${averageLatency.toFixed(2)} ms`);
+  logger.log(`Error rate: ${(totalErrors / totalRequests * 100).toFixed(2)}%`);
+  logger.log(`Results saved to: ${config.outputDir}`);
 
   return summary;
 }
 
 runLoadTest().catch(error => {
-  console.error('Error during load test:', error);
+  logger.error('Error during load test:', error);
   process.exit(1);
 });

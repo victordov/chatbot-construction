@@ -14,6 +14,7 @@ const authRoutes = require('./routes/auth');
 const gdprRoutes = require('./routes/gdpr');
 const operationsRoutes = require('./routes/operations');
 const taskRoutes = require('./routes/task');
+// eslint-disable-next-line no-unused-vars
 const { apiLimiter, chatLimiter } = require('./middleware/rateLimiter');
 const DataRetentionService = require('./services/dataRetention');
 const { logger, httpLogger } = require('./services/logging');
