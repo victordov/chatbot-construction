@@ -181,10 +181,32 @@ function initializeDashboard(token, user) {
   feather.replace();
 
   // Track joined chats
+  // Load joined chats from localStorage if available
   window.joinedChats = new Set();
+  const savedJoinedChats = localStorage.getItem('joined-chats');
+  if (savedJoinedChats) {
+    try {
+      const chatIds = JSON.parse(savedJoinedChats);
+      chatIds.forEach(id => window.joinedChats.add(id));
+      logger.info('Restored joined chats from localStorage:', chatIds);
+    } catch (error) {
+      logger.error('Error parsing joined chats from localStorage:', error);
+    }
+  }
 
   // Store current user
   window.currentUser = user;
+
+  // Helper function to save joined chats to localStorage
+  window.saveJoinedChats = function() {
+    try {
+      const chatIds = Array.from(window.joinedChats);
+      localStorage.setItem('joined-chats', JSON.stringify(chatIds));
+      logger.info('Saved joined chats to localStorage:', chatIds);
+    } catch (error) {
+      logger.error('Error saving joined chats to localStorage:', error);
+    }
+  };
 
   // Initialize Socket.IO connection with reconnection options
   // Store socket in window object to make it globally available
@@ -508,6 +530,8 @@ function setupEventHandlers(socket) {
 
     // Add this chat to the joined chats set
     window.joinedChats.add(sessionId);
+    // Save joined chats to localStorage
+    window.saveJoinedChats();
 
     // Update suggestion buttons
     updateSuggestionButtons(true);
@@ -522,6 +546,8 @@ function setupEventHandlers(socket) {
 
       // Remove this chat from the joined chats set
       window.joinedChats.delete(sessionId);
+      // Save joined chats to localStorage
+      window.saveJoinedChats();
 
       // Update suggestion buttons before resetting the view
       updateSuggestionButtons(false);
@@ -998,6 +1024,15 @@ function loadActiveChats(socket, token) {
         // Add each chat to the list
         data.chats.forEach(chat => {
           addChatToList(chat);
+
+          // If this chat was previously joined, automatically rejoin it
+          if (window.joinedChats.has(chat.sessionId)) {
+            logger.info('Automatically rejoining chat:', chat.sessionId);
+            socket.emit('operator-takeover', { 
+              sessionId: chat.sessionId, 
+              operatorName: window.currentUser ? window.currentUser.username : 'Admin' 
+            });
+          }
         });
 
         // Update active chats count
@@ -1685,6 +1720,8 @@ function updateChatOperatorStatus(sessionId, hasOperator) {
   // If this operator joined the chat, add it to the joined chats set
   if (hasOperator) {
     window.joinedChats.add(sessionId);
+    // Save joined chats to localStorage
+    window.saveJoinedChats();
   }
 }
 
