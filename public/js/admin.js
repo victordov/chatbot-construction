@@ -598,6 +598,7 @@ function setupEventHandlers(socket) {
   settingsForm.addEventListener('submit', function(e) {
     e.preventDefault();
     saveSettings();
+    saveGoogleToken();
   });
 
   // Chat history search
@@ -3622,3 +3623,66 @@ function resetPassword() {
       showAlert('Failed to reset password', 'danger');
     });
 }
+
+// Save Google OAuth tokens
+function saveGoogleToken() {
+  const token = localStorage.getItem('chatbot-auth-token');
+  const access = document.getElementById('google-access-token').value;
+  const refresh = document.getElementById('google-refresh-token').value;
+
+  fetch('/api/google/token', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-auth-token': token
+    },
+    body: JSON.stringify({ access_token: access, refresh_token: refresh })
+  })
+    .then(res => res.json())
+    .then(() => showAlert('Google token saved', 'success'))
+    .catch(() => showAlert('Failed to save Google token', 'danger'));
+}
+
+// Load spreadsheet data and display in table
+function loadSpreadsheet() {
+  const token = localStorage.getItem('chatbot-auth-token');
+  const spreadsheetId = document.getElementById('spreadsheet-id').value;
+  const exclude = document.getElementById('exclude-columns').value;
+
+  fetch(`/api/google/sheets/${spreadsheetId}?exclude=${encodeURIComponent(exclude)}`, {
+    headers: { 'x-auth-token': token }
+  })
+    .then(res => res.json())
+    .then(data => {
+      const table = document.getElementById('spreadsheet-table');
+      table.innerHTML = '';
+      const thead = document.createElement('thead');
+      const headRow = document.createElement('tr');
+      data.header.forEach(h => {
+        const th = document.createElement('th');
+        th.textContent = h;
+        headRow.appendChild(th);
+      });
+      thead.appendChild(headRow);
+      table.appendChild(thead);
+      const tbody = document.createElement('tbody');
+      data.rows.forEach(r => {
+        const row = document.createElement('tr');
+        r.forEach(c => {
+          const td = document.createElement('td');
+          td.textContent = c;
+          row.appendChild(td);
+        });
+        tbody.appendChild(row);
+      });
+      table.appendChild(tbody);
+    })
+    .catch(() => showAlert('Failed to load spreadsheet', 'danger'));
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+  const loadBtn = document.getElementById('load-spreadsheet');
+  if (loadBtn) {
+    loadBtn.addEventListener('click', loadSpreadsheet);
+  }
+});

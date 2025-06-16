@@ -591,6 +591,26 @@
                                     </div>
                                 </div>
 
+                                <h5 class="mt-4">Google Knowledge</h5>
+                                <div class="mb-3">
+                                    <label for="google-access-token" class="form-label">Access Token</label>
+                                    <input type="text" class="form-control" id="google-access-token">
+                                </div>
+                                <div class="mb-3">
+                                    <label for="google-refresh-token" class="form-label">Refresh Token</label>
+                                    <input type="text" class="form-control" id="google-refresh-token">
+                                </div>
+                                <div class="mb-3">
+                                    <label for="spreadsheet-id" class="form-label">Spreadsheet ID</label>
+                                    <input type="text" class="form-control" id="spreadsheet-id">
+                                </div>
+                                <div class="mb-3">
+                                    <label for="exclude-columns" class="form-label">Exclude Columns (comma separated)</label>
+                                    <input type="text" class="form-control" id="exclude-columns">
+                                </div>
+                                <button type="button" class="btn btn-secondary mb-3" id="load-spreadsheet">Load Spreadsheet</button>
+                                <table class="table" id="spreadsheet-table"></table>
+
                                 <button type="submit" class="btn btn-primary">Save Settings</button>
                             </form>
                         </div>
