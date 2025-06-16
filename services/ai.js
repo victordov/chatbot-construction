@@ -149,8 +149,8 @@ class AIService {
       }) : null);
 
     this.systemMessage = options.systemMessage || DEFAULT_SYSTEM_MESSAGE;
-    // Use GPT-4o as the default model
-    this.defaultModel = options.model || 'gpt-4o';
+    // Use environment variable for model if set, otherwise use options.model or default to GPT-4o
+    this.defaultModel = options.model || process.env.OPENAI_MODEL || 'gpt-4o';
     // Set a higher token limit for GPT-4o
     this.maxTokens = options.maxTokens || 4000;
 
