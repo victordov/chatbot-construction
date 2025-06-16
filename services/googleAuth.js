@@ -16,6 +16,23 @@ class GoogleAuthService {
     );
   }
 
+  generateAuthUrl(state) {
+    const client = this.createOAuthClient();
+    const scopes = ['https://www.googleapis.com/auth/spreadsheets.readonly'];
+    return client.generateAuthUrl({
+      access_type: 'offline',
+      scope: scopes,
+      prompt: 'consent',
+      state
+    });
+  }
+
+  async handleOAuthCallback(userId, code) {
+    const client = this.createOAuthClient();
+    const { tokens } = await client.getToken(code);
+    await this.saveTokens(userId, tokens);
+  }
+
   async saveTokens(userId, tokens) {
     const data = {
       accessToken: tokens.access_token || tokens.accessToken,

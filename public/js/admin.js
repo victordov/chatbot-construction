@@ -598,7 +598,6 @@ function setupEventHandlers(socket) {
   settingsForm.addEventListener('submit', function(e) {
     e.preventDefault();
     saveSettings();
-    saveGoogleToken();
   });
 
   // Chat history search
@@ -3624,23 +3623,15 @@ function resetPassword() {
     });
 }
 
-// Save Google OAuth tokens
-function saveGoogleToken() {
+// Start Google OAuth flow
+function connectGoogleAccount() {
   const token = localStorage.getItem('chatbot-auth-token');
-  const access = document.getElementById('google-access-token').value;
-  const refresh = document.getElementById('google-refresh-token').value;
-
-  fetch('/api/google/token', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-auth-token': token
-    },
-    body: JSON.stringify({ access_token: access, refresh_token: refresh })
-  })
+  fetch('/api/google/auth/url', { headers: { 'x-auth-token': token } })
     .then(res => res.json())
-    .then(() => showAlert('Google token saved', 'success'))
-    .catch(() => showAlert('Failed to save Google token', 'danger'));
+    .then(data => {
+      window.open(data.url, '_blank');
+    })
+    .catch(() => showAlert('Failed to initiate Google OAuth', 'danger'));
 }
 
 // Load spreadsheet data and display in table
@@ -3684,5 +3675,9 @@ document.addEventListener('DOMContentLoaded', function() {
   const loadBtn = document.getElementById('load-spreadsheet');
   if (loadBtn) {
     loadBtn.addEventListener('click', loadSpreadsheet);
+  }
+  const connectBtn = document.getElementById('connect-google');
+  if (connectBtn) {
+    connectBtn.addEventListener('click', connectGoogleAccount);
   }
 });

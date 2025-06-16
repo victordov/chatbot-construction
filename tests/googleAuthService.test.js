@@ -4,6 +4,8 @@ const GoogleToken = require('../models/googleToken');
 jest.mock('../models/googleToken');
 
 const mockGetAccessToken = jest.fn().mockResolvedValue('newAccess');
+const mockGenerateAuthUrl = jest.fn().mockReturnValue('http://auth.url');
+const mockGetToken = jest.fn().mockResolvedValue({ tokens: { access_token: 'a', refresh_token: 'r' } });
 const mockOn = jest.fn();
 
 jest.mock('googleapis', () => {
@@ -13,7 +15,9 @@ jest.mock('googleapis', () => {
         OAuth2: jest.fn().mockImplementation(() => ({
           setCredentials: jest.fn(),
           on: mockOn,
-          getAccessToken: mockGetAccessToken
+          getAccessToken: mockGetAccessToken,
+          generateAuthUrl: mockGenerateAuthUrl,
+          getToken: mockGetToken
         }))
       }
     }
@@ -48,5 +52,20 @@ describe('GoogleAuthService', () => {
     const svc = new GoogleAuthService();
     await svc.getOAuthClient('u1');
     expect(mockGetAccessToken).toHaveBeenCalled();
+  });
+
+  it('generates auth url', () => {
+    const svc = new GoogleAuthService();
+    const url = svc.generateAuthUrl('state');
+    expect(mockGenerateAuthUrl).toHaveBeenCalled();
+    expect(url).toBe('http://auth.url');
+  });
+
+  it('handles callback and saves token', async () => {
+    GoogleToken.findOneAndUpdate = jest.fn().mockResolvedValue({});
+    const svc = new GoogleAuthService();
+    await svc.handleOAuthCallback('u1', 'code');
+    expect(mockGetToken).toHaveBeenCalledWith('code');
+    expect(GoogleToken.findOneAndUpdate).toHaveBeenCalled();
   });
 });

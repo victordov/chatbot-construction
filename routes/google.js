@@ -7,6 +7,30 @@ const router = express.Router();
 const authService = new GoogleAuthService();
 const sheetsService = new GoogleSheetsService();
 
+// Generate OAuth URL
+router.get('/auth/url', auth, (req, res) => {
+  try {
+    const url = authService.generateAuthUrl(req.user.id.toString());
+    res.json({ url });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to generate auth url' });
+  }
+});
+
+// OAuth callback
+router.get('/oauth2callback', async (req, res) => {
+  const { code, state } = req.query;
+  if (!code || !state) {
+    return res.status(400).send('Invalid OAuth response');
+  }
+  try {
+    await authService.handleOAuthCallback(state, code);
+    res.send('Google authorization successful. You can close this window.');
+  } catch (err) {
+    res.status(500).send('Failed to authorize with Google');
+  }
+});
+
 // Save OAuth tokens
 router.post('/token', auth, async (req, res) => {
   try {
