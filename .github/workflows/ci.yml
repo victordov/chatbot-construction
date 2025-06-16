@@ -55,7 +55,7 @@ jobs:
         with:
           name: test-results
           path: coverage/
-          
+
   security-scan:
     name: Security Scan
     runs-on: ubuntu-latest
@@ -85,7 +85,7 @@ jobs:
         with:
           name: security-report
           path: reports/
-          
+
   build:
     name: Build and Package
     runs-on: ubuntu-latest
@@ -113,13 +113,13 @@ jobs:
           cp -r public dist/
       - name: Package application
         run: |
-          tar -czf chatbot-app.tar.gz --exclude="node_modules" --exclude=".git" .
+          tar --warning=no-file-changed -czf chatbot-app.tar.gz --exclude="node_modules" --exclude=".git" --exclude="logs" --exclude="backups" --exclude="widget-versions" --exclude="uploads" --exclude="load-test-results" --exclude="security-reports" .
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: chatbot-app
           path: chatbot-app.tar.gz
-          
+
   deploy-staging:
     name: Deploy to Staging
     runs-on: ubuntu-latest
@@ -145,7 +145,7 @@ jobs:
             npm ci --production
             pm2 restart chatbot-app || pm2 start server.js --name chatbot-app
           ENDSSH
-          
+
   deploy-production:
     name: Deploy to Production
     runs-on: ubuntu-latest
