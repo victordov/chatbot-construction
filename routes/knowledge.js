@@ -6,6 +6,38 @@ const GoogleSheetsService = require('../services/googleSheets');
 const router = express.Router();
 const sheetsService = new GoogleSheetsService();
 
+// Save a new spreadsheet as knowledge
+router.post('/', auth, operator, async (req, res) => {
+  const { spreadsheetId, title, active } = req.body || {};
+  if (!spreadsheetId) {
+    return res.status(400).json({ error: 'Spreadsheet ID required' });
+  }
+  try {
+    const exists = await KnowledgeDocument.findOne({
+      userId: req.user.id,
+      spreadsheetId
+    });
+    if (exists) {
+      return res.status(409).json({ error: 'Spreadsheet already saved' });
+    }
+    const doc = new KnowledgeDocument({
+      userId: req.user.id,
+      spreadsheetId,
+      title,
+      active: active !== undefined ? !!active : true
+    });
+    await doc.save();
+    res.status(201).json({
+      _id: doc._id,
+      spreadsheetId: doc.spreadsheetId,
+      title: doc.title,
+      active: doc.active
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to save spreadsheet' });
+  }
+});
+
 // List knowledge documents belonging to the user
 router.get('/', auth, operator, async (req, res) => {
   try {

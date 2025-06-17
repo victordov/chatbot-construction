@@ -3714,7 +3714,7 @@ function renderSpreadsheetList(files) {
     checkbox.checked = !!activeSpreadsheets[file.id];
     checkbox.addEventListener('change', () => {
       if (checkbox.checked) {
-        activeSpreadsheets[file.id] = true;
+        activeSpreadsheets[file.id] = file;
       } else {
         delete activeSpreadsheets[file.id];
       }
@@ -3733,6 +3733,31 @@ function renderSpreadsheetList(files) {
     tbody.appendChild(row);
   });
   table.appendChild(tbody);
+}
+
+function saveSelectedSpreadsheets() {
+  const token = localStorage.getItem('chatbot-auth-token');
+  const files = Object.values(activeSpreadsheets);
+  if (files.length === 0) {
+    return;
+  }
+  Promise.all(
+    files.map(file =>
+      fetch('/api/knowledge', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-auth-token': token
+        },
+        body: JSON.stringify({ spreadsheetId: file.id, title: file.name })
+      })
+    )
+  )
+    .then(() => {
+      showAlert('Spreadsheets saved', 'success');
+      searchStoredSpreadsheets();
+    })
+    .catch(() => showAlert('Failed to save spreadsheets', 'danger'));
 }
 
 // Search stored spreadsheets
@@ -3843,6 +3868,10 @@ document.addEventListener('DOMContentLoaded', function() {
   const storedBtn = document.getElementById('search-stored');
   if (storedBtn) {
     storedBtn.addEventListener('click', searchStoredSpreadsheets);
+  }
+  const saveBtn = document.getElementById('save-spreadsheets');
+  if (saveBtn) {
+    saveBtn.addEventListener('click', saveSelectedSpreadsheets);
   }
   checkGoogleAuthorization().then(authorized => {
     if (authorized && searchBtn) {
