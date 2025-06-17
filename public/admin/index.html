@@ -592,9 +592,21 @@
                                 </div>
 
                                 <h5 class="mt-4">Google Knowledge</h5>
+                                <div class="mb-2" id="google-status">Google account not connected</div>
                                 <div class="mb-3">
                                     <button type="button" class="btn btn-secondary" id="connect-google">Connect Google Account</button>
                                 </div>
+
+                                <div class="mb-3">
+                                    <label for="spreadsheet-search" class="form-label">Search Spreadsheets</label>
+                                    <div class="input-group">
+                                        <input type="text" class="form-control" id="spreadsheet-search" placeholder="Search by name">
+                                        <button class="btn btn-outline-secondary" type="button" id="search-spreadsheets">Search</button>
+                                    </div>
+                                </div>
+
+                                <table class="table mb-3" id="available-spreadsheets-table"></table>
+
                                 <div class="mb-3">
                                     <label for="spreadsheet-id" class="form-label">Spreadsheet ID</label>
                                     <input type="text" class="form-control" id="spreadsheet-id">

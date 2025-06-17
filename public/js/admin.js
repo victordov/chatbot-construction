@@ -3634,6 +3634,78 @@ function connectGoogleAccount() {
     .catch(() => showAlert('Failed to initiate Google OAuth', 'danger'));
 }
 
+// Check authorization status and update UI
+function checkGoogleAuthorization() {
+  const token = localStorage.getItem('chatbot-auth-token');
+  fetch('/api/google/token', { headers: { 'x-auth-token': token } })
+    .then(res => res.json())
+    .then(data => {
+      const status = document.getElementById('google-status');
+      const btn = document.getElementById('connect-google');
+      if (!status || !btn) return;
+      if (data.authorized) {
+        status.textContent = 'Google account authorized';
+        btn.textContent = 'Reauthorize Google Account';
+      } else {
+        status.textContent = 'Google account not connected';
+        btn.textContent = 'Connect Google Account';
+      }
+    })
+    .catch(() => { /* ignore */ });
+}
+
+const activeSpreadsheets = {};
+
+// Search user's spreadsheets
+function searchSpreadsheets() {
+  const token = localStorage.getItem('chatbot-auth-token');
+  const query = document.getElementById('spreadsheet-search').value;
+  fetch(`/api/google/spreadsheets?q=${encodeURIComponent(query)}`, {
+    headers: { 'x-auth-token': token }
+  })
+    .then(res => res.json())
+    .then(renderSpreadsheetList)
+    .catch(() => showAlert('Failed to fetch spreadsheets', 'danger'));
+}
+
+function renderSpreadsheetList(files) {
+  const table = document.getElementById('available-spreadsheets-table');
+  if (!table) return;
+  table.innerHTML = '';
+  const thead = document.createElement('thead');
+  thead.innerHTML = '<tr><th>Active</th><th>Name</th><th>ID</th></tr>';
+  table.appendChild(thead);
+  const tbody = document.createElement('tbody');
+  files.forEach(file => {
+    const row = document.createElement('tr');
+    const activeCell = document.createElement('td');
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.className = 'form-check-input spreadsheet-active';
+    checkbox.checked = !!activeSpreadsheets[file.id];
+    checkbox.addEventListener('change', () => {
+      if (checkbox.checked) {
+        activeSpreadsheets[file.id] = true;
+      } else {
+        delete activeSpreadsheets[file.id];
+      }
+    });
+    activeCell.appendChild(checkbox);
+    row.appendChild(activeCell);
+
+    const nameCell = document.createElement('td');
+    nameCell.textContent = file.name;
+    row.appendChild(nameCell);
+
+    const idCell = document.createElement('td');
+    idCell.textContent = file.id;
+    row.appendChild(idCell);
+
+    tbody.appendChild(row);
+  });
+  table.appendChild(tbody);
+}
+
 // Load spreadsheet data and display in table
 function loadSpreadsheet() {
   const token = localStorage.getItem('chatbot-auth-token');
@@ -3679,5 +3751,13 @@ document.addEventListener('DOMContentLoaded', function() {
   const connectBtn = document.getElementById('connect-google');
   if (connectBtn) {
     connectBtn.addEventListener('click', connectGoogleAccount);
+  }
+  const searchBtn = document.getElementById('search-spreadsheets');
+  if (searchBtn) {
+    searchBtn.addEventListener('click', searchSpreadsheets);
+  }
+  checkGoogleAuthorization();
+  if (searchBtn) {
+    searchSpreadsheets();
   }
 });

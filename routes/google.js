@@ -2,10 +2,12 @@ const express = require('express');
 const { auth, operator } = require('../middleware/auth');
 const GoogleAuthService = require('../services/googleAuth');
 const GoogleSheetsService = require('../services/googleSheets');
+const GoogleDriveService = require('../services/googleDrive');
 
 const router = express.Router();
 const authService = new GoogleAuthService();
 const sheetsService = new GoogleSheetsService();
+const driveService = new GoogleDriveService();
 
 // Generate OAuth URL
 router.get('/auth/url', auth, (req, res) => {
@@ -41,6 +43,16 @@ router.post('/token', auth, async (req, res) => {
   }
 });
 
+// Check if Google account is authorized
+router.get('/token', auth, async (req, res) => {
+  try {
+    await authService.getOAuthClient(req.user.id);
+    res.json({ authorized: true });
+  } catch (err) {
+    res.json({ authorized: false });
+  }
+});
+
 // Get spreadsheet data
 router.get('/sheets/:spreadsheetId', auth, operator, async (req, res) => {
   try {
@@ -54,6 +66,19 @@ router.get('/sheets/:spreadsheetId', auth, operator, async (req, res) => {
     res.json(data);
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch sheet' });
+  }
+});
+
+// List spreadsheets available in user's Google Drive
+router.get('/spreadsheets', auth, operator, async (req, res) => {
+  try {
+    const files = await driveService.listSpreadsheets(
+      req.user.id,
+      req.query.q || ''
+    );
+    res.json(files);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to list spreadsheets' });
   }
 });
 
