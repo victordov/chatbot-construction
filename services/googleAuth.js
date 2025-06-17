@@ -79,6 +79,11 @@ class GoogleAuthService {
 
     return client;
   }
+
+  async hasTokens(userId) {
+    const token = await GoogleToken.findOne({ userId });
+    return !!token;
+  }
 }
 
 module.exports = GoogleAuthService;

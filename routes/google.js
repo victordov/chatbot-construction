@@ -2,10 +2,14 @@ const express = require('express');
 const { auth, operator } = require('../middleware/auth');
 const GoogleAuthService = require('../services/googleAuth');
 const GoogleSheetsService = require('../services/googleSheets');
+const UserGoogleDrive = require('../services/userGoogleDrive');
+const KnowledgeService = require('../services/knowledge');
 
 const router = express.Router();
 const authService = new GoogleAuthService();
 const sheetsService = new GoogleSheetsService();
+const driveService = new UserGoogleDrive();
+const knowledgeService = new KnowledgeService();
 
 // Generate OAuth URL
 router.get('/auth/url', auth, (req, res) => {
@@ -38,6 +42,79 @@ router.post('/token', auth, async (req, res) => {
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: 'Failed to save token' });
+  }
+});
+
+// Check if user already authorized
+router.get('/status', auth, async (req, res) => {
+  try {
+    const authorized = await authService.hasTokens(req.user.id);
+    res.json({ authorized });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to check status' });
+  }
+});
+
+// Search user drive for spreadsheets
+router.get('/drive/search', auth, async (req, res) => {
+  try {
+    const files = await driveService.searchSpreadsheets(req.user.id, req.query.q || '');
+    res.json({ files });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to search drive' });
+  }
+});
+
+// Import spreadsheet and store as knowledge document
+router.post('/knowledge/import', auth, async (req, res) => {
+  try {
+    const { spreadsheetId, exclude } = req.body;
+    const doc = await knowledgeService.importSpreadsheet(req.user.id, spreadsheetId, exclude || []);
+    res.json({ doc });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to import spreadsheet' });
+  }
+});
+
+// List stored knowledge documents
+router.get('/knowledge', auth, async (req, res) => {
+  try {
+    const docs = await knowledgeService.list(req.user.id, req.query.q || '');
+    res.json({ docs });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to list documents' });
+  }
+});
+
+// Get document with rows
+router.get('/knowledge/:id', auth, async (req, res) => {
+  try {
+    const doc = await knowledgeService.get(req.user.id, req.params.id);
+    if (!doc) return res.status(404).json({ error: 'Not found' });
+    res.json({ doc });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to get document' });
+  }
+});
+
+// Refresh document from Google
+router.post('/knowledge/:id/refresh', auth, async (req, res) => {
+  try {
+    const doc = await knowledgeService.refresh(req.user.id, req.params.id);
+    res.json({ doc });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to refresh document' });
+  }
+});
+
+// Update excluded columns
+router.post('/knowledge/:id/columns', auth, async (req, res) => {
+  try {
+    const { excluded } = req.body;
+    const doc = await knowledgeService.updateColumns(req.user.id, req.params.id, excluded || []);
+    res.json({ doc });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to update columns' });
   }
 });
 
