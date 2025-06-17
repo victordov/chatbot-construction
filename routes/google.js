@@ -4,6 +4,7 @@ const GoogleAuthService = require('../services/googleAuth');
 const GoogleSheetsService = require('../services/googleSheets');
 const UserGoogleDrive = require('../services/userGoogleDrive');
 const KnowledgeService = require('../services/knowledge');
+const { logger } = require('../services/logging');
 
 const router = express.Router();
 const authService = new GoogleAuthService();
@@ -17,6 +18,7 @@ router.get('/auth/url', auth, (req, res) => {
     const url = authService.generateAuthUrl(req.user.id.toString());
     res.json({ url });
   } catch (err) {
+    logger.error('Failed to generate auth url', { error: err });
     res.status(500).json({ error: 'Failed to generate auth url' });
   }
 });
@@ -31,6 +33,7 @@ router.get('/oauth2callback', async (req, res) => {
     await authService.handleOAuthCallback(state, code);
     res.send('Google authorization successful. You can close this window.');
   } catch (err) {
+    logger.error('Failed OAuth callback', { error: err });
     res.status(500).send('Failed to authorize with Google');
   }
 });
@@ -41,6 +44,7 @@ router.post('/token', auth, async (req, res) => {
     await authService.saveTokens(req.user.id, req.body);
     res.json({ success: true });
   } catch (err) {
+    logger.error('Failed to save Google tokens', { error: err });
     res.status(500).json({ error: 'Failed to save token' });
   }
 });
@@ -51,6 +55,7 @@ router.get('/status', auth, async (req, res) => {
     const authorized = await authService.hasTokens(req.user.id);
     res.json({ authorized });
   } catch (err) {
+    logger.error('Failed to check Google auth status', { error: err });
     res.status(500).json({ error: 'Failed to check status' });
   }
 });
@@ -61,6 +66,7 @@ router.get('/drive/search', auth, async (req, res) => {
     const files = await driveService.searchSpreadsheets(req.user.id, req.query.q || '');
     res.json({ files });
   } catch (err) {
+    logger.error('Failed to search Google Drive', { error: err });
     res.status(500).json({ error: 'Failed to search drive' });
   }
 });
@@ -72,6 +78,7 @@ router.post('/knowledge/import', auth, async (req, res) => {
     const doc = await knowledgeService.importSpreadsheet(req.user.id, spreadsheetId, exclude || []);
     res.json({ doc });
   } catch (err) {
+    logger.error('Failed to import spreadsheet', { error: err });
     res.status(500).json({ error: 'Failed to import spreadsheet' });
   }
 });
@@ -82,6 +89,7 @@ router.get('/knowledge', auth, async (req, res) => {
     const docs = await knowledgeService.list(req.user.id, req.query.q || '');
     res.json({ docs });
   } catch (err) {
+    logger.error('Failed to list knowledge documents', { error: err });
     res.status(500).json({ error: 'Failed to list documents' });
   }
 });
@@ -93,6 +101,7 @@ router.get('/knowledge/:id', auth, async (req, res) => {
     if (!doc) return res.status(404).json({ error: 'Not found' });
     res.json({ doc });
   } catch (err) {
+    logger.error('Failed to get knowledge document', { error: err });
     res.status(500).json({ error: 'Failed to get document' });
   }
 });
@@ -103,6 +112,7 @@ router.post('/knowledge/:id/refresh', auth, async (req, res) => {
     const doc = await knowledgeService.refresh(req.user.id, req.params.id);
     res.json({ doc });
   } catch (err) {
+    logger.error('Failed to refresh knowledge document', { error: err });
     res.status(500).json({ error: 'Failed to refresh document' });
   }
 });
@@ -114,6 +124,7 @@ router.post('/knowledge/:id/columns', auth, async (req, res) => {
     const doc = await knowledgeService.updateColumns(req.user.id, req.params.id, excluded || []);
     res.json({ doc });
   } catch (err) {
+    logger.error('Failed to update excluded columns', { error: err });
     res.status(500).json({ error: 'Failed to update columns' });
   }
 });
@@ -130,6 +141,7 @@ router.get('/sheets/:spreadsheetId', auth, operator, async (req, res) => {
     );
     res.json(data);
   } catch (err) {
+    logger.error('Failed to fetch spreadsheet', { error: err });
     res.status(500).json({ error: 'Failed to fetch sheet' });
   }
 });
