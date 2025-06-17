@@ -37,8 +37,8 @@ All configuration is managed via environment variables. You can set these in a `
 - `JWT_SECRET` - Secret for JWT authentication
 - `GOOGLE_CLIENT_ID` - Google API client ID (for Google Drive integration)
 - `GOOGLE_CLIENT_SECRET` - Google API client secret
-- `GOOGLE_REDIRECT_URI` - Google OAuth2 redirect URI
-- `GOOGLE_REFRESH_TOKEN` - Google OAuth2 refresh token
+- `GOOGLE_REDIRECT_URI` - Google OAuth2 redirect URI (e.g. `http://localhost:3000/api/google/oauth2callback`)
+- `GOOGLE_REFRESH_TOKEN` - Google OAuth2 refresh token (optional, legacy)
 - `EMAIL_HOST` - SMTP host (for alerting)
 - `EMAIL_PORT` - SMTP port
 - `EMAIL_USER` - SMTP username
@@ -52,7 +52,7 @@ MONGODB_URI=mongodb://localhost:27017/chatbot
 JWT_SECRET=your_jwt_secret
 GOOGLE_CLIENT_ID=your_google_client_id
 GOOGLE_CLIENT_SECRET=your_google_client_secret
-GOOGLE_REDIRECT_URI=your_google_redirect_uri
+GOOGLE_REDIRECT_URI=http://localhost:3000/api/google/oauth2callback
 GOOGLE_REFRESH_TOKEN=your_google_refresh_token
 EMAIL_HOST=smtp.example.com
 EMAIL_PORT=587
@@ -78,6 +78,7 @@ The server will run on the port specified in your `.env` file (default: 3000).
 - **Frontend widget**: Embeddable via `public/widget/js/widget-loader.js`.
 - **Admin dashboard**: Available at `/admin`.
 - **API endpoints**: See `routes/` for available endpoints (chat, session, admin, auth, gdpr, operations).
+- **Google knowledge import**: Connect your Google account from the admin dashboard to load spreadsheet data as knowledge documents.
 - **Monitoring**: Prometheus metrics at `/metrics`.
 
 ---

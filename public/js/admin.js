@@ -3622,3 +3622,62 @@ function resetPassword() {
       showAlert('Failed to reset password', 'danger');
     });
 }
+
+// Start Google OAuth flow
+function connectGoogleAccount() {
+  const token = localStorage.getItem('chatbot-auth-token');
+  fetch('/api/google/auth/url', { headers: { 'x-auth-token': token } })
+    .then(res => res.json())
+    .then(data => {
+      window.open(data.url, '_blank');
+    })
+    .catch(() => showAlert('Failed to initiate Google OAuth', 'danger'));
+}
+
+// Load spreadsheet data and display in table
+function loadSpreadsheet() {
+  const token = localStorage.getItem('chatbot-auth-token');
+  const spreadsheetId = document.getElementById('spreadsheet-id').value;
+  const exclude = document.getElementById('exclude-columns').value;
+
+  fetch(`/api/google/sheets/${spreadsheetId}?exclude=${encodeURIComponent(exclude)}`, {
+    headers: { 'x-auth-token': token }
+  })
+    .then(res => res.json())
+    .then(data => {
+      const table = document.getElementById('spreadsheet-table');
+      table.innerHTML = '';
+      const thead = document.createElement('thead');
+      const headRow = document.createElement('tr');
+      data.header.forEach(h => {
+        const th = document.createElement('th');
+        th.textContent = h;
+        headRow.appendChild(th);
+      });
+      thead.appendChild(headRow);
+      table.appendChild(thead);
+      const tbody = document.createElement('tbody');
+      data.rows.forEach(r => {
+        const row = document.createElement('tr');
+        r.forEach(c => {
+          const td = document.createElement('td');
+          td.textContent = c;
+          row.appendChild(td);
+        });
+        tbody.appendChild(row);
+      });
+      table.appendChild(tbody);
+    })
+    .catch(() => showAlert('Failed to load spreadsheet', 'danger'));
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+  const loadBtn = document.getElementById('load-spreadsheet');
+  if (loadBtn) {
+    loadBtn.addEventListener('click', loadSpreadsheet);
+  }
+  const connectBtn = document.getElementById('connect-google');
+  if (connectBtn) {
+    connectBtn.addEventListener('click', connectGoogleAccount);
+  }
+});

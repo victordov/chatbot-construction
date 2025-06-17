@@ -39,13 +39,31 @@
   // Heartbeat interval for keeping the socket connection alive
   let heartbeatInterval;
 
+  // Logger utility to avoid direct console usage
+  const logger = {
+    log: function() {
+      // eslint-disable-next-line no-console
+      if (window.debugMode) {
+        console.log(...arguments);
+      }
+    },
+    error: function() {
+      // eslint-disable-next-line no-console
+      console.error(...arguments);
+    },
+    warn: function() {
+      // eslint-disable-next-line no-console
+      console.warn(...arguments);
+    }
+  };
+
   // Initialize the widget
   function init(customConfig = {}) {
     // Merge custom configuration with defaults
     Object.assign(config, customConfig);
 
     if (!config.serverUrl) {
-      console.error('Chatbot widget: Server URL is required');
+      logger.error('Chatbot widget: Server URL is required');
       return;
     }
 
@@ -90,7 +108,7 @@
     heartbeatInterval = setInterval(() => {
       if (socket && socket.connected) {
         socket.emit('heartbeat', { sessionId });
-        console.log('Heartbeat sent');
+        logger.log('Heartbeat sent');
       }
     }, 30000);
 
@@ -400,7 +418,7 @@
               publicKey
             });
           } catch (error) {
-            console.error('Error during encryption setup:', error);
+            logger.error('Error during encryption setup:', error);
           }
         }
       });
@@ -408,9 +426,9 @@
       // Handle encryption ready status
       socket.on('encryption-ready', (data) => {
         if (!data.success) {
-          console.error('Encryption setup failed:', data.error);
+          logger.error('Encryption setup failed:', data.error);
         } else {
-          console.log('End-to-end encryption enabled');
+          logger.log('End-to-end encryption enabled');
         }
       });
 
@@ -425,7 +443,7 @@
           if (decrypted) {
             messageText = decrypted;
           } else {
-            console.error('Failed to decrypt message');
+            logger.error('Failed to decrypt message');
             messageText = 'Error: Could not decrypt message';
           }
         }
@@ -471,7 +489,7 @@
           if (decrypted) {
             messageText = decrypted;
           } else {
-            console.error('Failed to decrypt message');
+            logger.error('Failed to decrypt message');
             messageText = 'Error: Could not decrypt message';
           }
         }
@@ -552,6 +570,22 @@
         }
       });
 
+      // Listen for operator typing indicator
+      socket.on('operator-typing', (data) => {
+        const { isTyping } = data;
+        setTypingIndicator(isTyping);
+
+        // Broadcast typing indicator to other tabs/windows
+        if (broadcastChannel) {
+          broadcastChannel.postMessage({
+            type: 'typing-indicator',
+            data: {
+              isTyping
+            }
+          });
+        }
+      });
+
       // Listen for read receipts
       socket.on('message-read', (data) => {
         // Update read status in the UI
@@ -560,15 +594,15 @@
 
       // Handle connection events
       socket.on('connect', () => {
-        console.log('Socket connected');
+        logger.log('Socket connected');
       });
 
       socket.on('disconnect', (reason) => {
-        console.log('Socket disconnected:', reason);
+        logger.log('Socket disconnected:', reason);
       });
 
       socket.on('connect_error', (error) => {
-        console.error('Connection error:', error);
+        logger.error('Connection error:', error);
         // Try to reconnect after a short delay
         setTimeout(() => {
           socket.connect();
@@ -577,7 +611,7 @@
 
       // Handle reconnection
       socket.on('reconnect', async () => {
-        console.log('Socket reconnected');
+        logger.log('Socket reconnected');
         // Re-establish session
         const publicKey = encryptionUtil ? await encryptionUtil.getPublicKey() : null;
         socket.emit('resume-session', {
@@ -588,7 +622,7 @@
 
       // Load chat history when socket is connected
       socket.on('connect', async () => {
-        console.log('Socket connected');
+        logger.log('Socket connected');
         // Request chat history
         const publicKey = encryptionUtil ? await encryptionUtil.getPublicKey() : null;
         socket.emit('resume-session', {
@@ -663,7 +697,7 @@
       if (document.visibilityState === 'visible') {
         // When tab becomes visible, check socket connection and reconnect if needed
         if (socket && !socket.connected) {
-          console.log('Reconnecting socket on visibility change');
+          logger.log('Reconnecting socket on visibility change');
           socket.connect();
         }
 
@@ -715,6 +749,16 @@
     localStorage.setItem('chatbotUserName', userName);
     localStorage.setItem('chatbotUserEmail', userEmail);
     localStorage.setItem('chatbotUserPhone', userPhone);
+
+    // Send user details to server
+    if (socket) {
+      socket.emit('user-details', {
+        sessionId,
+        name: userName,
+        email: userEmail,
+        phone: userPhone
+      });
+    }
 
     // Hide form and show chat interface
     userDetailsForm.style.display = 'none';
@@ -802,8 +846,8 @@
       // Clear input
       chatInput.value = '';
 
-      // Show typing indicator
-      setTypingIndicator(true);
+      // Don't automatically show typing indicator when user sends a message
+      // Let the server explicitly trigger it with 'bot-typing' or 'operator-typing' events
 
       // Inform the server that the user is no longer typing
       if (socket) {
@@ -825,6 +869,12 @@
           messageId,
           timestamp
         };
+
+        // Add user name if available
+        const userName = localStorage.getItem('chatbotUserName');
+        if (userName) {
+          messageData.userName = userName;
+        }
 
         // Check if encryption is available and ready
         if (encryptionUtil && encryptionUtil.isEncryptionReady()) {
@@ -886,8 +936,8 @@
           // Add message about file upload
             addUserMessage(`I've uploaded a file: ${file.name}`, true);
 
-            // Show typing indicator
-            setTypingIndicator(true);
+            // Don't automatically show typing indicator when user uploads a file
+            // Let the server explicitly trigger it with 'bot-typing' or 'operator-typing' events
 
             // Clear file input and indicator
             fileUploadInput.value = '';
