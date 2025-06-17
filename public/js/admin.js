@@ -3637,21 +3637,23 @@ function connectGoogleAccount() {
 // Check authorization status and update UI
 function checkGoogleAuthorization() {
   const token = localStorage.getItem('chatbot-auth-token');
-  fetch('/api/google/token', { headers: { 'x-auth-token': token } })
+  return fetch('/api/google/token', { headers: { 'x-auth-token': token } })
     .then(res => res.json())
     .then(data => {
       const status = document.getElementById('google-status');
       const btn = document.getElementById('connect-google');
-      if (!status || !btn) return;
-      if (data.authorized) {
-        status.textContent = 'Google account authorized';
-        btn.textContent = 'Reauthorize Google Account';
-      } else {
-        status.textContent = 'Google account not connected';
-        btn.textContent = 'Connect Google Account';
+      if (status && btn) {
+        if (data.authorized) {
+          status.textContent = 'Google account authorized';
+          btn.textContent = 'Reauthorize Google Account';
+        } else {
+          status.textContent = 'Google account not connected';
+          btn.textContent = 'Connect Google Account';
+        }
       }
+      return data.authorized;
     })
-    .catch(() => { /* ignore */ });
+    .catch(() => false);
 }
 
 const activeSpreadsheets = {};
@@ -3842,10 +3844,11 @@ document.addEventListener('DOMContentLoaded', function() {
   if (storedBtn) {
     storedBtn.addEventListener('click', searchStoredSpreadsheets);
   }
-  checkGoogleAuthorization();
-  if (searchBtn) {
-    searchSpreadsheets();
-  }
+  checkGoogleAuthorization().then(authorized => {
+    if (authorized && searchBtn) {
+      searchSpreadsheets();
+    }
+  });
   if (storedBtn) {
     searchStoredSpreadsheets();
   }
