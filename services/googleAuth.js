@@ -18,7 +18,10 @@ class GoogleAuthService {
 
   generateAuthUrl(state) {
     const client = this.createOAuthClient();
-    const scopes = ['https://www.googleapis.com/auth/spreadsheets.readonly'];
+    const scopes = [
+      'https://www.googleapis.com/auth/spreadsheets.readonly',
+      'https://www.googleapis.com/auth/drive.readonly'
+    ];
     return client.generateAuthUrl({
       access_type: 'offline',
       scope: scopes,
