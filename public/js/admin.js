@@ -3692,7 +3692,14 @@ function searchSpreadsheets() {
   fetch(`/api/google/spreadsheets?q=${encodeURIComponent(query)}`, {
     headers: { 'x-auth-token': token }
   })
-    .then(res => res.json())
+    .then(res => {
+      if (res.status === 401) {
+        checkGoogleAuthorization();
+        showAlert('Google account not connected', 'warning');
+        return [];
+      }
+      return res.json();
+    })
     .then(renderSpreadsheetList)
     .catch(() => showAlert('Failed to fetch spreadsheets', 'danger'));
 }

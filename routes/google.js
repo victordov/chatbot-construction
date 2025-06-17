@@ -78,6 +78,9 @@ router.get('/spreadsheets', auth, operator, async (req, res) => {
     );
     res.json(files);
   } catch (err) {
+    if (err.message === 'Google token not found') {
+      return res.status(401).json({ error: 'Google account not authorized' });
+    }
     res.status(500).json({ error: 'Failed to list spreadsheets' });
   }
 });
