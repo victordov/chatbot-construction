@@ -3687,21 +3687,21 @@ function displaySheetData(data) {
 
 // Search user's spreadsheets
 function searchSpreadsheets() {
-  const token = localStorage.getItem('chatbot-auth-token');
   const query = document.getElementById('spreadsheet-search').value;
-  fetch(`/api/google/spreadsheets?q=${encodeURIComponent(query)}`, {
-    headers: { 'x-auth-token': token }
-  })
-    .then(res => {
-      if (res.status === 401) {
-        checkGoogleAuthorization();
-        showAlert('Google account not connected', 'warning');
-        return [];
-      }
-      return res.json();
+  checkGoogleAuthorization().then(authorized => {
+    if (!authorized) {
+      renderSpreadsheetList([]);
+      showAlert('Google account not connected', 'warning');
+      return;
+    }
+    const token = localStorage.getItem('chatbot-auth-token');
+    fetch(`/api/google/spreadsheets?q=${encodeURIComponent(query)}`, {
+      headers: { 'x-auth-token': token }
     })
-    .then(renderSpreadsheetList)
-    .catch(() => showAlert('Failed to fetch spreadsheets', 'danger'));
+      .then(res => res.json())
+      .then(renderSpreadsheetList)
+      .catch(() => showAlert('Failed to fetch spreadsheets', 'danger'));
+  });
 }
 
 function renderSpreadsheetList(files) {
@@ -3868,24 +3868,14 @@ document.addEventListener('DOMContentLoaded', function() {
   if (connectBtn) {
     connectBtn.addEventListener('click', connectGoogleAccount);
   }
-  const searchBtn = document.getElementById('search-spreadsheets');
-  if (searchBtn) {
-    searchBtn.addEventListener('click', searchSpreadsheets);
-  }
-  const storedBtn = document.getElementById('search-stored');
-  if (storedBtn) {
-    storedBtn.addEventListener('click', searchStoredSpreadsheets);
-  }
-  const saveBtn = document.getElementById('save-spreadsheets');
-  if (saveBtn) {
-    saveBtn.addEventListener('click', saveSelectedSpreadsheets);
-  }
+  document.getElementById('search-spreadsheets')?.addEventListener('click', searchSpreadsheets);
+  document.getElementById('search-stored')?.addEventListener('click', searchStoredSpreadsheets);
+  document.getElementById('save-spreadsheets')?.addEventListener('click', saveSelectedSpreadsheets);
+
   checkGoogleAuthorization().then(authorized => {
-    if (authorized && searchBtn) {
+    if (authorized) {
       searchSpreadsheets();
     }
   });
-  if (storedBtn) {
-    searchStoredSpreadsheets();
-  }
+  searchStoredSpreadsheets();
 });
