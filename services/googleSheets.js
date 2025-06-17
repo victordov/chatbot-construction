@@ -16,10 +16,14 @@ class GoogleSheetsService {
     });
 
     const values = response.data.values || [];
-    if (values.length === 0) return { header: [], rows: [] };
+    if (values.length === 0) {
+      return {header: [], rows: []};
+    }
     const [header, ...rows] = values;
     const indices = header.reduce((acc, col, idx) => {
-      if (exclude.includes(col)) acc.push(idx);
+      if (exclude.includes(col)) {
+        acc.push(idx);
+      }
       return acc;
     }, []);
     const filteredHeader = header.filter((_, idx) => !indices.includes(idx));
