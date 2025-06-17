@@ -15,6 +15,7 @@ const gdprRoutes = require('./routes/gdpr');
 const operationsRoutes = require('./routes/operations');
 const taskRoutes = require('./routes/task');
 const googleRoutes = require('./routes/google');
+const knowledgeRoutes = require('./routes/knowledge');
 // eslint-disable-next-line no-unused-vars
 const { apiLimiter, chatLimiter } = require('./middleware/rateLimiter');
 const DataRetentionService = require('./services/dataRetention');
@@ -181,6 +182,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/gdpr', gdprRoutes);
 app.use('/api/operations', operationsRoutes);
 app.use('/api/google', googleRoutes);
+app.use('/api/knowledge', knowledgeRoutes);
 app.use('/api/tasks', taskRoutes);
 
 app.get('/', (req, res) => {

@@ -3655,6 +3655,33 @@ function checkGoogleAuthorization() {
 }
 
 const activeSpreadsheets = {};
+const storedDocs = {};
+
+function displaySheetData(data) {
+  const table = document.getElementById('spreadsheet-table');
+  if (!table) return;
+  table.innerHTML = '';
+  const thead = document.createElement('thead');
+  const headRow = document.createElement('tr');
+  data.header.forEach(h => {
+    const th = document.createElement('th');
+    th.textContent = h;
+    headRow.appendChild(th);
+  });
+  thead.appendChild(headRow);
+  table.appendChild(thead);
+  const tbody = document.createElement('tbody');
+  data.rows.forEach(r => {
+    const row = document.createElement('tr');
+    r.forEach(c => {
+      const td = document.createElement('td');
+      td.textContent = c;
+      row.appendChild(td);
+    });
+    tbody.appendChild(row);
+  });
+  table.appendChild(tbody);
+}
 
 // Search user's spreadsheets
 function searchSpreadsheets() {
@@ -3706,6 +3733,84 @@ function renderSpreadsheetList(files) {
   table.appendChild(tbody);
 }
 
+// Search stored spreadsheets
+function searchStoredSpreadsheets() {
+  const token = localStorage.getItem('chatbot-auth-token');
+  const query = document.getElementById('stored-search').value;
+  fetch(`/api/knowledge?q=${encodeURIComponent(query)}`, {
+    headers: { 'x-auth-token': token }
+  })
+    .then(res => res.json())
+    .then(renderStoredList)
+    .catch(() => showAlert('Failed to fetch saved spreadsheets', 'danger'));
+}
+
+function renderStoredList(docs) {
+  const table = document.getElementById('stored-spreadsheets-table');
+  if (!table) return;
+  table.innerHTML = '';
+  const thead = document.createElement('thead');
+  thead.innerHTML = '<tr><th>Active</th><th>Title</th><th>ID</th><th></th></tr>';
+  table.appendChild(thead);
+  const tbody = document.createElement('tbody');
+  docs.forEach(doc => {
+    storedDocs[doc._id] = doc;
+    const row = document.createElement('tr');
+    const activeCell = document.createElement('td');
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.className = 'form-check-input';
+    checkbox.checked = doc.active;
+    checkbox.addEventListener('change', () => {
+      updateStoredActive(doc._id, checkbox.checked);
+    });
+    activeCell.appendChild(checkbox);
+    row.appendChild(activeCell);
+
+    const titleCell = document.createElement('td');
+    titleCell.textContent = doc.title || doc.spreadsheetId;
+    row.appendChild(titleCell);
+
+    const idCell = document.createElement('td');
+    idCell.textContent = doc.spreadsheetId;
+    row.appendChild(idCell);
+
+    const actionCell = document.createElement('td');
+    const btn = document.createElement('button');
+    btn.className = 'btn btn-sm btn-outline-primary';
+    btn.textContent = 'Expand';
+    btn.addEventListener('click', () => viewStoredSpreadsheet(doc._id));
+    actionCell.appendChild(btn);
+    row.appendChild(actionCell);
+
+    tbody.appendChild(row);
+  });
+  table.appendChild(tbody);
+}
+
+function updateStoredActive(id, active) {
+  const token = localStorage.getItem('chatbot-auth-token');
+  fetch(`/api/knowledge/${id}/active`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-auth-token': token
+    },
+    body: JSON.stringify({ active })
+  }).catch(() => showAlert('Failed to update', 'danger'));
+}
+
+function viewStoredSpreadsheet(id) {
+  const token = localStorage.getItem('chatbot-auth-token');
+  const exclude = document.getElementById('exclude-columns').value;
+  fetch(`/api/knowledge/${id}/sheet?exclude=${encodeURIComponent(exclude)}`, {
+    headers: { 'x-auth-token': token }
+  })
+    .then(res => res.json())
+    .then(displaySheetData)
+    .catch(() => showAlert('Failed to load spreadsheet', 'danger'));
+}
+
 // Load spreadsheet data and display in table
 function loadSpreadsheet() {
   const token = localStorage.getItem('chatbot-auth-token');
@@ -3716,30 +3821,7 @@ function loadSpreadsheet() {
     headers: { 'x-auth-token': token }
   })
     .then(res => res.json())
-    .then(data => {
-      const table = document.getElementById('spreadsheet-table');
-      table.innerHTML = '';
-      const thead = document.createElement('thead');
-      const headRow = document.createElement('tr');
-      data.header.forEach(h => {
-        const th = document.createElement('th');
-        th.textContent = h;
-        headRow.appendChild(th);
-      });
-      thead.appendChild(headRow);
-      table.appendChild(thead);
-      const tbody = document.createElement('tbody');
-      data.rows.forEach(r => {
-        const row = document.createElement('tr');
-        r.forEach(c => {
-          const td = document.createElement('td');
-          td.textContent = c;
-          row.appendChild(td);
-        });
-        tbody.appendChild(row);
-      });
-      table.appendChild(tbody);
-    })
+    .then(displaySheetData)
     .catch(() => showAlert('Failed to load spreadsheet', 'danger'));
 }
 
@@ -3756,8 +3838,15 @@ document.addEventListener('DOMContentLoaded', function() {
   if (searchBtn) {
     searchBtn.addEventListener('click', searchSpreadsheets);
   }
+  const storedBtn = document.getElementById('search-stored');
+  if (storedBtn) {
+    storedBtn.addEventListener('click', searchStoredSpreadsheets);
+  }
   checkGoogleAuthorization();
   if (searchBtn) {
     searchSpreadsheets();
+  }
+  if (storedBtn) {
+    searchStoredSpreadsheets();
   }
 });

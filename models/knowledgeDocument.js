@@ -10,6 +10,7 @@ const KnowledgeDocumentSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   spreadsheetId: { type: String, required: true },
   title: String,
+  active: { type: Boolean, default: true },
   columns: [ColumnSchema],
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
