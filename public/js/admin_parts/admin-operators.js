@@ -802,6 +802,34 @@ function applyStickySpreadsheetRows() {
     first.classList.add('sticky-row');
     first.style.top = `${headerHeight}px`;
   }
+
+  enableSpreadsheetColumnResizing(table);
+}
+
+function enableSpreadsheetColumnResizing(table) {
+  if (!table) return;
+  table.querySelectorAll('thead th').forEach(th => {
+    const handle = document.createElement('div');
+    handle.className = 'col-resizer';
+    th.style.position = 'relative';
+    th.appendChild(handle);
+    let startX = 0;
+    let startWidth = 0;
+    function onMouseMove(e) {
+      const newWidth = startWidth + (e.clientX - startX);
+      th.style.width = `${newWidth}px`;
+    }
+    function onMouseUp() {
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+    }
+    handle.addEventListener('mousedown', e => {
+      startX = e.clientX;
+      startWidth = th.offsetWidth;
+      document.addEventListener('mousemove', onMouseMove);
+      document.addEventListener('mouseup', onMouseUp);
+    });
+  });
 }
 
 document.addEventListener('DOMContentLoaded', function() {

@@ -171,3 +171,14 @@
   background: #fff;
   z-index: 1;
 }
+
+/* Resize handles for spreadsheet columns */
+th .col-resizer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 5px;
+  height: 100%;
+  cursor: col-resize;
+  user-select: none;
+}
