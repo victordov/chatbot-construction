@@ -791,7 +791,7 @@ function updateColumns(id) {
   });
 }
 
-// Make the first two spreadsheet rows sticky when scrolling
+// Make the first spreadsheet row sticky when scrolling
 function applyStickySpreadsheetRows() {
   const table = document.getElementById('spreadsheet-table');
   if (!table) return;
@@ -801,12 +801,6 @@ function applyStickySpreadsheetRows() {
     const first = rows[0];
     first.classList.add('sticky-row');
     first.style.top = `${headerHeight}px`;
-  }
-  if (rows.length > 1) {
-    const second = rows[1];
-    second.classList.add('sticky-row');
-    const firstHeight = rows[0].offsetHeight;
-    second.style.top = `${headerHeight + firstHeight}px`;
   }
 }
 

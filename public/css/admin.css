@@ -154,7 +154,7 @@
 
 /* Spreadsheet table with sticky headers */
 .spreadsheet-table-container {
-  max-height: 400px;
+  max-height: 80vh;
   overflow: auto;
 }
 
@@ -165,7 +165,7 @@
   z-index: 2;
 }
 
-/* Sticky first two rows of spreadsheet body */
+/* Sticky first row of spreadsheet body */
 .spreadsheet-table-container tbody tr.sticky-row {
   position: sticky;
   background: #fff;
