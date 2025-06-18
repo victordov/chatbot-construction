@@ -381,6 +381,70 @@ function setupWebSockets(server) {
               timestamp: new Date()
             });
           }
+        } else {
+          // No operator connected, generate an AI response for the user
+          const aiService = new AIService();
+          const messageHistory = conversation.messages
+            .slice(-10)
+            .map(msg => ({
+              role: msg.sender === 'user' ? 'user' : 'assistant',
+              content: msg.content
+            }));
+
+          const botResponse = await aiService.generateResponse(message, messageHistory);
+
+          // Create a message ID for the bot response
+          const botMessageId = 'bot_' + Date.now();
+
+          // Save bot response
+          const botMessageDoc = {
+            content: botResponse,
+            sender: 'bot',
+            messageId: botMessageId,
+            timestamp: new Date(),
+            encrypted: encryptionEnabled
+          };
+
+          conversation.messages.push(botMessageDoc);
+          conversation.lastActivity = new Date();
+          await conversation.save();
+
+          // Get the database ID of the bot message
+          let dbBotMessageId = 'temp-bot-id';
+          if (conversation.messages &&
+              conversation.messages.length > 0 &&
+              conversation.messages[conversation.messages.length - 1]._id) {
+            dbBotMessageId = conversation.messages[conversation.messages.length - 1]._id.toString();
+          }
+
+          const responseData = {
+            id: dbBotMessageId,
+            clientId: botMessageId,
+            timestamp: new Date()
+          };
+
+          if (encryptionEnabled && encryptionService.hasClientPublicKey(sessionId)) {
+            const encrypted = encryptionService.encryptForClient(sessionId, botResponse);
+            if (encrypted) {
+              responseData.encrypted = true;
+              responseData.encryptedMessage = encrypted.encryptedMessage;
+              responseData.nonce = encrypted.nonce;
+            } else {
+              responseData.text = botResponse;
+            }
+          } else {
+            responseData.text = botResponse;
+          }
+
+          socket.emit('bot-message', responseData);
+
+          socket.to('operators').emit('new-message', {
+            sessionId,
+            message: botResponse,
+            sender: 'bot',
+            messageId: dbBotMessageId,
+            timestamp: new Date()
+          });
         }
 
         // Send read receipt for the user message
