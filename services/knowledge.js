@@ -7,13 +7,14 @@ class KnowledgeService {
     this.sheetsService = new GoogleSheetsService();
   }
 
-  async importSpreadsheet(userId, spreadsheetId, exclude = []) {
+  async importSpreadsheet(userId, spreadsheetId, sheet = 'Sheet1', exclude = []) {
     try {
-      const sheet = await this.sheetsService.getSheetData(userId, spreadsheetId, 'Sheet1');
-      const columns = sheet.header.map(name => ({ name, exclude: exclude.includes(name) }));
+      const { title } = await this.sheetsService.getSheetNames(userId, spreadsheetId);
+      const sheetData = await this.sheetsService.getSheetData(userId, spreadsheetId, sheet);
+      const columns = sheetData.header.map(name => ({ name, exclude: exclude.includes(name) }));
       const doc = await KnowledgeDocument.findOneAndUpdate(
         { userId, spreadsheetId },
-        { title: spreadsheetId, columns, rows: sheet.rows },
+        { title: title || spreadsheetId, sheet, columns, rows: sheetData.rows },
         { new: true, upsert: true, setDefaultsOnInsert: true }
       );
       return doc;
@@ -30,7 +31,7 @@ class KnowledgeService {
           { spreadsheetId: { $regex: query, $options: 'i' } }
         ] }
       : {};
-    return KnowledgeDocument.find({ userId, ...q }).select('spreadsheetId title createdAt');
+    return KnowledgeDocument.find({ userId, ...q }).select('spreadsheetId title sheet createdAt');
   }
 
   async get(userId, id) {
@@ -42,9 +43,11 @@ class KnowledgeService {
       const doc = await KnowledgeDocument.findOne({ _id: id, userId });
       if (!doc) throw new Error('Document not found');
       const excludeMap = doc.columns.reduce((acc, c) => { acc[c.name] = c.exclude; return acc; }, {});
-      const sheet = await this.sheetsService.getSheetData(userId, doc.spreadsheetId, 'Sheet1');
-      doc.columns = sheet.header.map(name => ({ name, exclude: excludeMap[name] || false }));
-      doc.rows = sheet.rows;
+      const { title } = await this.sheetsService.getSheetNames(userId, doc.spreadsheetId);
+      const sheetData = await this.sheetsService.getSheetData(userId, doc.spreadsheetId, doc.sheet || 'Sheet1');
+      doc.columns = sheetData.header.map(name => ({ name, exclude: excludeMap[name] || false }));
+      doc.rows = sheetData.rows;
+      if (title) doc.title = title;
       await doc.save();
       return doc;
     } catch (error) {

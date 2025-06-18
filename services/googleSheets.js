@@ -54,6 +54,30 @@ class GoogleSheetsService {
       throw enrichedError;
     }
   }
+
+  /**
+   * Retrieves all sheet names for a given spreadsheet.
+   * @param {string} userId The user's ID for authentication.
+   * @param {string} spreadsheetId The ID of the spreadsheet.
+   * @returns {Promise<string[]>} Array of sheet names.
+   */
+  async getSheetNames(userId, spreadsheetId) {
+    try {
+      const auth = await this.authService.getOAuthClient(userId);
+      const sheets = google.sheets({ version: 'v4', auth });
+      const response = await sheets.spreadsheets.get({ spreadsheetId });
+      const names = (response.data.sheets || []).map(s => s.properties.title);
+      const title = response.data.properties?.title;
+      return { names, title };
+    } catch (error) {
+      logger.error('Error fetching sheet names', {
+        userId,
+        spreadsheetId,
+        error: error.message
+      });
+      throw error;
+    }
+  }
 }
 
 module.exports = GoogleSheetsService;

@@ -9,6 +9,7 @@ const ColumnSchema = new mongoose.Schema({
 const KnowledgeDocumentSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   spreadsheetId: { type: String, required: true },
+  sheet: { type: String, default: 'Sheet1' },
   title: String,
   columns: [ColumnSchema],
   rows: { type: [[String]], default: [] },

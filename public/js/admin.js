@@ -1561,7 +1561,7 @@ function saveSettings() {
   // Save column configuration
   saveColumnConfig();
 
-  alert('Settings saved successfully');
+  showToast('Settings saved successfully', 'success');
 }
 
 // Save column configuration
@@ -1743,7 +1743,7 @@ function viewChatHistory(sessionId) {
     .then(response => response.json())
     .then(chat => {
       if (!chat) {
-        alert('Chat not found');
+        showToast('Chat not found', 'danger');
         return;
       }
 
@@ -1835,7 +1835,7 @@ function viewChatHistory(sessionId) {
     })
     .catch(error => {
       logger.error('Error viewing chat history:', error);
-      alert('An error occurred while loading the chat');
+      showToast('An error occurred while loading the chat', 'danger');
     });
 }
 
@@ -1862,12 +1862,12 @@ function deleteChatHistory(sessionId) {
             historyTable.innerHTML = '<tr><td colspan="6" class="text-center">No chat history available</td></tr>';
           }
         } else {
-          alert('Failed to delete chat history');
+          showToast('Failed to delete chat history', 'danger');
         }
       })
       .catch(error => {
         logger.error('Error deleting chat history:', error);
-        alert('An error occurred while deleting chat history');
+        showToast('An error occurred while deleting chat history', 'danger');
       });
   }
 }
@@ -3299,8 +3299,7 @@ function saveContactInfo(token) {
 }
 
 function showNotification(title, message, type = 'info') {
-  // Use showAlert for notifications
-  showAlert(`${title}: ${message}`, type);
+  showToast(`${title}: ${message}`, type);
 }
 
 // Load all operators (including inactive)
@@ -3369,7 +3368,7 @@ function loadAllOperators() {
     })
     .catch(error => {
       console.error('Error loading operators:', error);
-      showAlert('Failed to load operators', 'danger');
+      showToast('Failed to load operators', 'danger');
     });
 }
 
@@ -3392,15 +3391,15 @@ function toggleOperatorStatus(event) {
     .then(response => response.json())
     .then(data => {
       if (data.success) {
-        showAlert(`Operator ${newStatus ? 'activated' : 'deactivated'} successfully`, 'success');
+        showToast(`Operator ${newStatus ? 'activated' : 'deactivated'} successfully`, 'success');
         loadAllOperators(); // Reload the operators list
       } else {
-        showAlert(data.error || 'Failed to update operator status', 'danger');
+        showToast(data.error || 'Failed to update operator status', 'danger');
       }
     })
     .catch(error => {
       console.error('Error updating operator status:', error);
-      showAlert('Failed to update operator status', 'danger');
+      showToast('Failed to update operator status', 'danger');
     });
 }
 
@@ -3421,12 +3420,12 @@ function createOperator() {
   const token = localStorage.getItem('chatbot-auth-token');
 
   if (!username || !email || !password || !confirmPassword) {
-    showAlert('Please fill in all required fields', 'warning');
+    showToast('Please fill in all required fields', 'warning');
     return;
   }
 
   if (password !== confirmPassword) {
-    showAlert('Passwords do not match', 'warning');
+    showToast('Passwords do not match', 'warning');
     return;
   }
 
@@ -3441,7 +3440,7 @@ function createOperator() {
     .then(response => response.json())
     .then(data => {
       if (data.success) {
-        showAlert('Operator created successfully', 'success');
+        showToast('Operator created successfully', 'success');
 
         // Clear form and close modal
         document.getElementById('create-operator-form').reset();
@@ -3450,35 +3449,50 @@ function createOperator() {
         // Reload operators list
         loadAllOperators();
       } else {
-        showAlert(data.error || 'Failed to create operator', 'danger');
+        showToast(data.error || 'Failed to create operator', 'danger');
       }
     })
     .catch(error => {
       console.error('Error creating operator:', error);
-      showAlert('Failed to create operator', 'danger');
+      showToast('Failed to create operator', 'danger');
     });
 }
 
-// Helper function to show alerts
-function showAlert(message, type = 'info') {
-  const alertContainer = document.createElement('div');
-  alertContainer.className = `alert alert-${type} alert-dismissible fade show`;
-  alertContainer.innerHTML = `
-    ${message}
-    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
-  `;
+// Helper function to show toast notifications
+function showToast(message, type = 'info') {
+  const container = document.querySelector('.toast-container');
+  if (!container) return;
 
-  document.querySelector('.content-section:not([style*="display: none"])').prepend(alertContainer);
+  const wrapper = document.createElement('div');
+  wrapper.className = `toast align-items-center text-bg-${type} border-0`;
+  wrapper.role = 'alert';
+  wrapper.setAttribute('aria-live', 'assertive');
+  wrapper.setAttribute('aria-atomic', 'true');
+  wrapper.innerHTML = `
+    <div class="d-flex">
+      <div class="toast-body">${message}</div>
+      <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
+    </div>`;
+  container.appendChild(wrapper);
+  const toast = new bootstrap.Toast(wrapper, { delay: 5000 });
+  toast.show();
+  toast._element.addEventListener('hidden.bs.toast', () => wrapper.remove());
+}
 
-  // Auto-dismiss after 5 seconds
-  setTimeout(() => {
-    const alert = bootstrap.Alert.getInstance(alertContainer);
-    if (alert) {
-      alert.close();
-    } else {
-      alertContainer.remove();
+// Toggle loading state for buttons
+function setLoading(button, isLoading) {
+  if (!button) return;
+  if (isLoading) {
+    button.dataset.originalContent = button.innerHTML;
+    button.disabled = true;
+    button.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>';
+  } else {
+    if (button.dataset.originalContent) {
+      button.innerHTML = button.dataset.originalContent;
+      delete button.dataset.originalContent;
     }
-  }, 5000);
+    button.disabled = false;
+  }
 }
 
 // Open edit operator modal
@@ -3499,7 +3513,7 @@ function openEditOperatorModal(event) {
       const operator = data.operators.find(op => op._id === operatorId);
 
       if (!operator) {
-        showAlert('Operator not found', 'danger');
+        showToast('Operator not found', 'danger');
         return;
       }
 
@@ -3518,7 +3532,7 @@ function openEditOperatorModal(event) {
     })
     .catch(error => {
       console.error('Error fetching operator details:', error);
-      showAlert('Failed to fetch operator details', 'danger');
+      showToast('Failed to fetch operator details', 'danger');
     });
 }
 
@@ -3543,7 +3557,7 @@ function editOperator() {
   const token = localStorage.getItem('chatbot-auth-token');
 
   if (!username || !email) {
-    showAlert('Username and email are required', 'warning');
+    showToast('Username and email are required', 'warning');
     return;
   }
 
@@ -3558,7 +3572,7 @@ function editOperator() {
     .then(response => response.json())
     .then(data => {
       if (data.success) {
-        showAlert('Operator details updated successfully', 'success');
+        showToast('Operator details updated successfully', 'success');
 
         // Close the modal
         bootstrap.Modal.getInstance(document.getElementById('editOperatorModal')).hide();
@@ -3566,12 +3580,12 @@ function editOperator() {
         // Reload operators list
         loadAllOperators();
       } else {
-        showAlert(data.error || 'Failed to update operator details', 'danger');
+        showToast(data.error || 'Failed to update operator details', 'danger');
       }
     })
     .catch(error => {
       console.error('Error updating operator details:', error);
-      showAlert('Failed to update operator details', 'danger');
+      showToast('Failed to update operator details', 'danger');
     });
 }
 
@@ -3582,12 +3596,12 @@ function resetPassword() {
   const token = localStorage.getItem('chatbot-auth-token');
 
   if (!password || !confirmPassword) {
-    showAlert('Password and confirm password are required', 'warning');
+    showToast('Password and confirm password are required', 'warning');
     return;
   }
 
   if (password !== confirmPassword) {
-    showAlert('Passwords do not match', 'warning');
+    showToast('Passwords do not match', 'warning');
     return;
   }
 
@@ -3602,7 +3616,7 @@ function resetPassword() {
     .then(response => response.json())
     .then(data => {
       if (data.success) {
-        showAlert('Password reset successfully', 'success');
+        showToast('Password reset successfully', 'success');
 
         // Close the modal
         bootstrap.Modal.getInstance(document.getElementById('resetPasswordModal')).hide();
@@ -3616,24 +3630,27 @@ function resetPassword() {
         // Clear the form
         document.getElementById('reset-password-form').reset();
       } else {
-        showAlert(data.error || 'Failed to reset password', 'danger');
+        showToast(data.error || 'Failed to reset password', 'danger');
       }
     })
     .catch(error => {
       console.error('Error resetting password:', error);
-      showAlert('Failed to reset password', 'danger');
+      showToast('Failed to reset password', 'danger');
     });
 }
 
 // Start Google OAuth flow
-function connectGoogleAccount() {
+function connectGoogleAccount(event) {
+  const btn = event?.currentTarget;
+  setLoading(btn, true);
   const token = localStorage.getItem('chatbot-auth-token');
   fetch('/api/google/auth/url', { headers: { 'x-auth-token': token } })
     .then(res => res.json())
     .then(data => {
       window.open(data.url, '_blank');
     })
-    .catch(() => showAlert('Failed to initiate Google OAuth', 'danger'));
+    .catch(() => showToast('Failed to initiate Google OAuth', 'danger'))
+    .finally(() => setLoading(btn, false));
 }
 
 function checkGoogleStatus() {
@@ -3649,9 +3666,13 @@ function checkGoogleStatus() {
 }
 
 // Load spreadsheet data and display in table
-function loadSpreadsheet() {
+function loadSpreadsheet(event) {
+  const btn = event?.currentTarget;
+  setLoading(btn, true);
   const token = localStorage.getItem('chatbot-auth-token');
   const spreadsheetId = document.getElementById('spreadsheet-id').value;
+  const defaultSheet = document.getElementById('default-sheet').checked;
+  const sheet = defaultSheet ? 'Sheet1' : document.getElementById('sheet-select').value;
   const exclude = document.getElementById('exclude-columns').value
     .split(',')
     .map(s => s.trim())
@@ -3660,18 +3681,21 @@ function loadSpreadsheet() {
   fetch('/api/google/knowledge/import', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-auth-token': token },
-    body: JSON.stringify({ spreadsheetId, exclude })
+    body: JSON.stringify({ spreadsheetId, sheet, exclude })
   })
     .then(res => res.json())
     .then(data => {
       refreshKnowledge();
       expandKnowledge(data.doc._id);
     })
-    .catch(() => showAlert('Failed to load spreadsheet', 'danger'));
+    .catch(() => showToast('Failed to load spreadsheet', 'danger'))
+    .finally(() => setLoading(btn, false));
 }
 
 // Search Google Drive for spreadsheets
-function searchDrive() {
+function searchDrive(event) {
+  const btn = event?.currentTarget;
+  setLoading(btn, true);
   const token = localStorage.getItem('chatbot-auth-token');
   const query = document.getElementById('drive-query').value;
   fetch(`/api/google/drive/search?q=${encodeURIComponent(query)}`, { headers: { 'x-auth-token': token } })
@@ -3686,33 +3710,91 @@ function searchDrive() {
         const btn = document.createElement('button');
         btn.className = 'btn btn-sm btn-primary';
         btn.textContent = 'Load';
-        btn.addEventListener('click', () => importSpreadsheet(f.id));
+        btn.addEventListener('click', () => openLoadModal(f.id));
         li.appendChild(btn);
         list.appendChild(li);
       });
     })
-    .catch(() => showAlert('Drive search failed', 'danger'));
+    .catch(() => showToast('Drive search failed', 'danger'))
+    .finally(() => setLoading(btn, false));
+}
+
+function openLoadModal(id) {
+  document.getElementById('modal-spreadsheet-id').value = id;
+  fetchModalSheetNames(id).then(() => {
+    const modal = new bootstrap.Modal(document.getElementById('loadSheetModal'));
+    modal.show();
+  });
 }
 
 function importSpreadsheet(id) {
+  document.getElementById('spreadsheet-id').value = id;
+  fetchSheetNames(id);
+}
+
+function fetchSheetNames(id) {
   const token = localStorage.getItem('chatbot-auth-token');
+  fetch(`/api/google/sheets/${id}/names`, { headers: { 'x-auth-token': token } })
+    .then(res => res.json())
+    .then(data => {
+      const select = document.getElementById('sheet-select');
+      select.innerHTML = '';
+      data.names.forEach(n => {
+        const opt = document.createElement('option');
+        opt.value = n;
+        opt.textContent = n;
+        select.appendChild(opt);
+      });
+    })
+    .catch(() => showToast('Failed to fetch sheet names', 'danger'));
+}
+
+function fetchModalSheetNames(id) {
+  const token = localStorage.getItem('chatbot-auth-token');
+  return fetch(`/api/google/sheets/${id}/names`, { headers: { 'x-auth-token': token } })
+    .then(res => res.json())
+    .then(data => {
+      const select = document.getElementById('modal-sheet-select');
+      select.innerHTML = '';
+      data.names.forEach(n => {
+        const opt = document.createElement('option');
+        opt.value = n;
+        opt.textContent = n;
+        select.appendChild(opt);
+      });
+    })
+    .catch(() => showToast('Failed to fetch sheet names', 'danger'));
+}
+
+function loadFromModal(event) {
+  const btn = event?.currentTarget;
+  setLoading(btn, true);
+  const token = localStorage.getItem('chatbot-auth-token');
+  const spreadsheetId = document.getElementById('modal-spreadsheet-id').value;
+  const defaultSheet = document.getElementById('modal-default-sheet').checked;
+  const sheet = defaultSheet ? 'Sheet1' : document.getElementById('modal-sheet-select').value;
+  const exclude = document.getElementById('exclude-columns').value
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
   fetch('/api/google/knowledge/import', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-auth-token': token
-    },
-    body: JSON.stringify({ spreadsheetId: id })
+    headers: { 'Content-Type': 'application/json', 'x-auth-token': token },
+    body: JSON.stringify({ spreadsheetId, sheet, exclude })
   })
     .then(res => res.json())
     .then(data => {
+      bootstrap.Modal.getInstance(document.getElementById('loadSheetModal')).hide();
       refreshKnowledge();
       expandKnowledge(data.doc._id);
     })
-    .catch(() => showAlert('Failed to import spreadsheet', 'danger'));
+    .catch(() => showToast('Failed to load spreadsheet', 'danger'))
+    .finally(() => setLoading(btn, false));
 }
 
-function refreshKnowledge(query = '') {
+function refreshKnowledge(query = '', event) {
+  const btn = event?.currentTarget;
+  if (btn) setLoading(btn, true);
   const token = localStorage.getItem('chatbot-auth-token');
   const url = '/api/google/knowledge' + (query ? `?q=${encodeURIComponent(query)}` : '');
   fetch(url, { headers: { 'x-auth-token': token } })
@@ -3723,7 +3805,7 @@ function refreshKnowledge(query = '') {
       data.docs.forEach(doc => {
         const li = document.createElement('li');
         li.className = 'list-group-item d-flex justify-content-between align-items-center';
-        li.textContent = doc.title || doc.spreadsheetId;
+        li.textContent = (doc.title || doc.spreadsheetId) + ' - ' + (doc.sheet || 'Sheet1');
         const div = document.createElement('div');
         const expand = document.createElement('button');
         expand.className = 'btn btn-sm btn-outline-primary me-1';
@@ -3732,22 +3814,28 @@ function refreshKnowledge(query = '') {
         const refBtn = document.createElement('button');
         refBtn.className = 'btn btn-sm btn-outline-secondary';
         refBtn.textContent = 'Refresh';
-        refBtn.addEventListener('click', () => refreshDocument(doc._id));
+        refBtn.addEventListener('click', event => refreshDocument(doc._id, event));
         div.appendChild(expand);
         div.appendChild(refBtn);
         li.appendChild(div);
         list.appendChild(li);
       });
     })
-    .catch(() => showAlert('Failed to load knowledge list', 'danger'));
+    .catch(() => showToast('Failed to load knowledge list', 'danger'))
+    .finally(() => {
+      if (btn) setLoading(btn, false);
+    });
 }
 
-function refreshDocument(id) {
+function refreshDocument(id, event) {
+  const btn = event?.currentTarget;
+  setLoading(btn, true);
   const token = localStorage.getItem('chatbot-auth-token');
   fetch(`/api/google/knowledge/${id}/refresh`, { method: 'POST', headers: { 'x-auth-token': token } })
     .then(res => res.json())
     .then(() => refreshKnowledge())
-    .catch(() => showAlert('Refresh failed', 'danger'));
+    .catch(() => showToast('Refresh failed', 'danger'))
+    .finally(() => setLoading(btn, false));
 }
 
 function expandKnowledge(id) {
@@ -3787,8 +3875,18 @@ function expandKnowledge(id) {
       });
       table.appendChild(tbody);
       document.getElementById('spreadsheet-id').value = data.doc.spreadsheetId;
+      fetchSheetNames(data.doc.spreadsheetId);
+      if (document.getElementById('default-sheet')) {
+        const cb = document.getElementById('default-sheet');
+        const select = document.getElementById('sheet-select');
+        if (select) {
+          if (cb && !cb.checked && data.doc.sheet) {
+            select.value = data.doc.sheet;
+          }
+        }
+      }
     })
-    .catch(() => showAlert('Failed to load document', 'danger'));
+    .catch(() => showToast('Failed to load document', 'danger'));
 }
 
 function updateColumns(id) {
@@ -3837,14 +3935,40 @@ document.addEventListener('DOMContentLoaded', function() {
   }
   const searchKnowledgeBtn = document.getElementById('search-knowledge');
   if (searchKnowledgeBtn) {
-    searchKnowledgeBtn.addEventListener('click', function() {
+    searchKnowledgeBtn.addEventListener('click', function(event) {
       const q = document.getElementById('knowledge-query').value;
-      refreshKnowledge(q);
+      refreshKnowledge(q, event);
     });
   }
   const refreshBtn = document.getElementById('refresh-knowledge');
   if (refreshBtn) {
-    refreshBtn.addEventListener('click', () => refreshKnowledge());
+    refreshBtn.addEventListener('click', event => refreshKnowledge('', event));
     refreshKnowledge();
+  }
+  const defaultCb = document.getElementById('default-sheet');
+  const sheetSelect = document.getElementById('sheet-select');
+  if (defaultCb && sheetSelect) {
+    defaultCb.addEventListener('change', function() {
+      sheetSelect.disabled = this.checked;
+    });
+    sheetSelect.disabled = defaultCb.checked;
+  }
+  const idInput = document.getElementById('spreadsheet-id');
+  if (idInput) {
+    idInput.addEventListener('change', function() {
+      if (this.value) fetchSheetNames(this.value);
+    });
+  }
+  const modalLoadBtn = document.getElementById('modal-load-btn');
+  if (modalLoadBtn) {
+    modalLoadBtn.addEventListener('click', loadFromModal);
+  }
+  const modalDefaultCb = document.getElementById('modal-default-sheet');
+  const modalSheetSelect = document.getElementById('modal-sheet-select');
+  if (modalDefaultCb && modalSheetSelect) {
+    modalDefaultCb.addEventListener('change', function() {
+      modalSheetSelect.disabled = this.checked;
+    });
+    modalSheetSelect.disabled = modalDefaultCb.checked;
   }
 });

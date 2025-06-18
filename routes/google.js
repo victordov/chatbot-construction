@@ -76,8 +76,13 @@ router.get('/drive/search', auth, async (req, res) => {
 // Import spreadsheet and store as knowledge document
 router.post('/knowledge/import', auth, async (req, res) => {
   try {
-    const { spreadsheetId, exclude } = req.body;
-    const doc = await knowledgeService.importSpreadsheet(req.user.id, spreadsheetId, exclude || []);
+    const { spreadsheetId, sheet, exclude } = req.body;
+    const doc = await knowledgeService.importSpreadsheet(
+      req.user.id,
+      spreadsheetId,
+      sheet || 'Sheet1',
+      exclude || []
+    );
     res.json({ doc });
   } catch (err) {
     logger.error('Failed to import spreadsheet', { error: err });
@@ -128,6 +133,20 @@ router.post('/knowledge/:id/columns', auth, async (req, res) => {
   } catch (err) {
     logger.error('Failed to update excluded columns', { error: err });
     res.status(500).json({ error: 'Failed to update columns' });
+  }
+});
+
+// Get names of sheets within a spreadsheet
+router.get('/sheets/:spreadsheetId/names', auth, operator, async (req, res) => {
+  try {
+    const { names, title } = await sheetsService.getSheetNames(
+      req.user.id,
+      req.params.spreadsheetId
+    );
+    res.json({ names, title });
+  } catch (err) {
+    logger.error('Failed to fetch sheet names', { error: err });
+    res.status(500).json({ error: 'Failed to fetch sheet names' });
   }
 });
 
