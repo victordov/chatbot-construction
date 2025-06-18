@@ -19,14 +19,16 @@ class UserGoogleDrive {
       }
       const q = parts.join(' and ');
 
+      logger.debug('Searching Google Drive', { userId, query, q });
       const res = await drive.files.list({
         q,
         fields: 'files(id,name)',
         spaces: 'drive'
       });
+      logger.debug('Google Drive search complete', { userId, count: res.data.files?.length || 0 });
       return res.data.files || [];
     } catch (error) {
-      logger.error('Error searching Google Drive', { error });
+      logger.error('Error searching Google Drive', { userId, query, error });
       throw error;
     }
   }

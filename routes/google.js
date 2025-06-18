@@ -62,11 +62,13 @@ router.get('/status', auth, async (req, res) => {
 
 // Search user drive for spreadsheets
 router.get('/drive/search', auth, async (req, res) => {
+  const query = req.query.q || '';
   try {
-    const files = await driveService.searchSpreadsheets(req.user.id, req.query.q || '');
+    logger.info('Drive search requested', { userId: req.user.id, query });
+    const files = await driveService.searchSpreadsheets(req.user.id, query);
     res.json({ files });
   } catch (err) {
-    logger.error('Failed to search Google Drive', { error: err });
+    logger.error('Failed to search Google Drive', { userId: req.user.id, query, error: err });
     res.status(500).json({ error: 'Failed to search drive' });
   }
 });
