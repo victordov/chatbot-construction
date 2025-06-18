@@ -774,9 +774,11 @@ function updateColumns(id) {
       th.classList.remove('text-muted');
     }
   });
+  const headerCells = table.querySelectorAll('thead th');
   table.querySelectorAll('tbody tr').forEach(row => {
     row.querySelectorAll('td').forEach((td, idx) => {
-      if (excluded.includes(table.querySelectorAll('thead th')[idx].textContent.trim())) {
+      const headerCell = headerCells[idx];
+      if (headerCell && excluded.includes(headerCell.textContent.trim())) {
         td.classList.add('text-muted');
       } else {
         td.classList.remove('text-muted');
