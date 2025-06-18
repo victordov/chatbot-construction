@@ -151,3 +151,16 @@
   max-height: 6em;
   overflow-y: auto;
 }
+
+/* Spreadsheet table with sticky headers */
+.spreadsheet-table-container {
+  max-height: 400px;
+  overflow: auto;
+}
+
+.spreadsheet-table-container thead th {
+  position: sticky;
+  top: 0;
+  background: #fff;
+  z-index: 2;
+}
