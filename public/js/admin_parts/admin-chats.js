@@ -30,11 +30,12 @@ function sendOperatorMessage(socket, messageInput) {
 }
 
 // Initialize charts
+let chatActivityChart;
+
 function initializeCharts() {
   // Chat Activity Chart
   const activityCtx = document.getElementById('chat-activity-chart').getContext('2d');
-  // eslint-disable-next-line no-unused-vars
-  const activityChart = new Chart(activityCtx, {
+  chatActivityChart = new Chart(activityCtx, {
     type: 'line',
     data: {
       labels: ['Day 1', 'Day 2', 'Day 3', 'Day 4', 'Day 5', 'Day 6', 'Day 7'],
@@ -117,6 +118,37 @@ function initializeCharts() {
       height: 300
     }
   });
+
+  // Helper will update this chart once data is loaded
+}
+
+// Update the Chat Activity chart using analytics data
+function updateChatActivityChart(volumeData) {
+  if (!chatActivityChart) return;
+
+  const labels = [];
+  const dataPoints = [];
+  const today = new Date();
+
+  for (let i = 6; i >= 0; i--) {
+    const date = new Date(today);
+    date.setDate(today.getDate() - i);
+
+    const label = date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    labels.push(label);
+
+    const record = volumeData.find(v =>
+      v._id.year === date.getFullYear() &&
+      v._id.month === date.getMonth() + 1 &&
+      v._id.day === date.getDate()
+    );
+
+    dataPoints.push(record ? record.count : 0);
+  }
+
+  chatActivityChart.data.labels = labels;
+  chatActivityChart.data.datasets[0].data = dataPoints;
+  chatActivityChart.update();
 }
 
 // Load dashboard data
@@ -132,6 +164,9 @@ function loadDashboardData(token) {
       document.getElementById('active-chats-count').textContent = data.activeChats || '0';
       document.getElementById('total-chats-today').textContent = data.totalChatsToday || '0';
       document.getElementById('avg-response-time').textContent = data.avgResponseTime ? `${data.avgResponseTime}s` : '0s';
+      if (data.chatVolumePerDay) {
+        updateChatActivityChart(data.chatVolumePerDay);
+      }
     })
     .catch(error => {
       logger.error('Error loading dashboard data:', error);
