@@ -158,6 +158,15 @@
   overflow: auto;
 }
 
+.spreadsheet-table-container table {
+  table-layout: fixed;
+}
+
+.spreadsheet-table-container th,
+.spreadsheet-table-container td {
+  overflow: hidden;
+}
+
 .spreadsheet-table-container thead th {
   position: sticky;
   top: 0;

@@ -814,7 +814,8 @@ function applyStickySpreadsheetRows() {
 
 function enableSpreadsheetColumnResizing(table) {
   if (!table) return;
-  table.querySelectorAll('thead th').forEach(th => {
+  const headerCells = table.querySelectorAll('thead th');
+  headerCells.forEach((th, index) => {
     const handle = document.createElement('div');
     handle.className = 'col-resizer';
     th.style.position = 'relative';
@@ -822,8 +823,11 @@ function enableSpreadsheetColumnResizing(table) {
     let startX = 0;
     let startWidth = 0;
     function onMouseMove(e) {
-      const newWidth = startWidth + (e.clientX - startX);
+      const newWidth = Math.max(startWidth + (e.clientX - startX), 30);
       th.style.width = `${newWidth}px`;
+      table.querySelectorAll(`tbody td:nth-child(${index + 1})`).forEach(td => {
+        td.style.width = `${newWidth}px`;
+      });
     }
     function onMouseUp() {
       document.removeEventListener('mousemove', onMouseMove);
