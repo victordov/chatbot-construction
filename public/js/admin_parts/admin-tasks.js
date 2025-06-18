@@ -389,7 +389,7 @@ function displayTasks(tasks) {
     // Add cells to row
     row.innerHTML = `
       <td>${task.title}</td>
-      <td>${task.description.length > 50 ? task.description.substring(0, 50) + '...' : task.description}</td>
+      <td class="description-cell">${task.description.length > 50 ? task.description.substring(0, 50) + '...' : task.description}</td>
       <td>${formattedDate}</td>
       <td></td>
       <td>${task.assigneeName || 'Unassigned'}</td>
