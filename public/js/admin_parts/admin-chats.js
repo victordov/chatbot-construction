@@ -32,6 +32,7 @@ function sendOperatorMessage(socket, messageInput) {
 // Initialize charts
 let chatActivityChart;
 let chatVolumeChart;
+let responseTimeChart;
 
 function initializeCharts() {
   // Chat Activity Chart
@@ -98,8 +99,7 @@ function initializeCharts() {
 
   // Response Time Chart
   const responseCtx = document.getElementById('response-time-chart').getContext('2d');
-  // eslint-disable-next-line no-unused-vars
-  const responseChart = new Chart(responseCtx, {
+  responseTimeChart = new Chart(responseCtx, {
     type: 'line',
     data: {
       labels: ['Week 1', 'Week 2', 'Week 3', 'Week 4'],
@@ -120,6 +120,30 @@ function initializeCharts() {
   });
 
   // Helper will update this chart once data is loaded
+}
+
+// Update the Response Time chart using analytics data
+function updateResponseTimeChart(rtData) {
+  if (!responseTimeChart) return;
+
+  const labels = [];
+  const dataPoints = [];
+
+  if (Array.isArray(rtData)) {
+    rtData.forEach(record => {
+      const date = new Date(record._id.year, record._id.month - 1);
+      const label = date.toLocaleDateString(undefined, {
+        month: 'short',
+        year: 'numeric'
+      });
+      labels.push(label);
+      dataPoints.push(record.avg);
+    });
+  }
+
+  responseTimeChart.data.labels = labels;
+  responseTimeChart.data.datasets[0].data = dataPoints;
+  responseTimeChart.update();
 }
 
 // Update the Chat Activity chart using analytics data
@@ -190,6 +214,9 @@ function loadDashboardData(token) {
       }
       if (data.chatVolumeOverTime) {
         updateChatVolumeChart(data.chatVolumeOverTime);
+      }
+      if (data.responseTimeOverTime) {
+        updateResponseTimeChart(data.responseTimeOverTime);
       }
     })
     .catch(error => {
