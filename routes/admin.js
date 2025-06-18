@@ -188,15 +188,161 @@ router.get('/analytics', async (req, res) => {
       }
     ]);
 
-    // Get average response time
-    // In a real app, you would calculate this based on message timestamps
-    const avgResponseTime = 5; // Placeholder
+    // Get chat volume per month for the last 12 months
+    const last12Months = new Date();
+    last12Months.setMonth(last12Months.getMonth() - 11);
+
+    const chatVolumeOverTime = await Conversation.aggregate([
+      {
+        $match: {
+          startedAt: { $gte: last12Months }
+        }
+      },
+      {
+        $group: {
+          _id: {
+            year: { $year: '$startedAt' },
+            month: { $month: '$startedAt' }
+          },
+          count: { $sum: 1 }
+        }
+      },
+      {
+        $sort: {
+          '_id.year': 1,
+          '_id.month': 1
+        }
+      }
+    ]);
+
+    // Calculate average response time for the last 7 days
+    const responseSince = new Date();
+    responseSince.setDate(responseSince.getDate() - 7);
+
+    const convsForResponse = await Conversation.find(
+      { startedAt: { $gte: responseSince } },
+      { messages: 1, startedAt: 1 }
+    ).lean();
+
+    let totalResponseMs = 0;
+    let responseCount = 0;
+    const monthlyResponseTotals = {};
+
+    convsForResponse.forEach(conv => {
+      const msgs = (conv.messages || []).sort(
+        (a, b) => new Date(a.timestamp) - new Date(b.timestamp)
+      );
+      let awaiting = null;
+      msgs.forEach(msg => {
+        const ts = new Date(msg.timestamp);
+        if (ts < responseSince) return;
+        if (msg.sender === 'user') {
+          awaiting = ts;
+        } else if ((msg.sender === 'operator' || msg.sender === 'bot') && awaiting) {
+          const diff = ts - awaiting;
+          totalResponseMs += diff;
+          responseCount += 1;
+
+          const y = awaiting.getFullYear();
+          const m = awaiting.getMonth() + 1;
+          const key = `${y}-${m}`;
+          if (!monthlyResponseTotals[key]) {
+            monthlyResponseTotals[key] = { year: y, month: m, total: 0, count: 0 };
+          }
+          monthlyResponseTotals[key].total += diff;
+          monthlyResponseTotals[key].count += 1;
+          awaiting = null;
+        }
+      });
+    });
+
+    const avgResponseTime = responseCount
+      ? Math.round(totalResponseMs / responseCount / 1000)
+      : 0;
+
+    const responseTimeOverTime = Object.values(monthlyResponseTotals)
+      .sort((a, b) => (a.year === b.year ? a.month - b.month : a.year - b.year))
+      .map(r => ({
+        _id: { year: r.year, month: r.month },
+        avg: Math.round(r.total / r.count / 1000)
+      }));
+
+    // Helper to compute conversation metrics for a period
+    async function conversationMetricsBetween(start, end) {
+      const result = await Conversation.aggregate([
+        { $match: { startedAt: { $gte: start, $lt: end } } },
+        {
+          $project: {
+            messagesCount: { $size: '$messages' },
+            durationMs: {
+              $subtract: [
+                { $ifNull: ['$endedAt', '$lastActivity'] },
+                '$startedAt'
+              ]
+            }
+          }
+        },
+        {
+          $group: {
+            _id: null,
+            total: { $sum: 1 },
+            avgDurationMs: { $avg: '$durationMs' },
+            avgMessages: { $avg: '$messagesCount' }
+          }
+        }
+      ]);
+      return result[0] || { total: 0, avgDurationMs: 0, avgMessages: 0 };
+    }
+
+    const now = new Date();
+    const todayStart = new Date(now);
+    todayStart.setHours(0, 0, 0, 0);
+    const weekStart = new Date(todayStart);
+    weekStart.setDate(weekStart.getDate() - weekStart.getDay());
+    const monthStart = new Date(todayStart.getFullYear(), todayStart.getMonth(), 1);
+    const prevMonthStart = new Date(monthStart);
+    prevMonthStart.setMonth(prevMonthStart.getMonth() - 1);
+
+    const metricsToday = await conversationMetricsBetween(todayStart, now);
+    const metricsWeek = await conversationMetricsBetween(weekStart, now);
+    const metricsMonth = await conversationMetricsBetween(monthStart, now);
+    const metricsPrevMonth = await conversationMetricsBetween(prevMonthStart, monthStart);
+
+    function pctChange(curr, prev) {
+      if (!prev) return 0;
+      if (prev === 0) return curr === 0 ? 0 : 100;
+      return Math.round(((curr - prev) / prev) * 100);
+    }
+
+    const conversationMetrics = {
+      totalConversations: {
+        today: metricsToday.total,
+        thisWeek: metricsWeek.total,
+        thisMonth: metricsMonth.total,
+        change: pctChange(metricsMonth.total, metricsPrevMonth.total)
+      },
+      averageDuration: {
+        today: Math.round(metricsToday.avgDurationMs / 60000),
+        thisWeek: Math.round(metricsWeek.avgDurationMs / 60000),
+        thisMonth: Math.round(metricsMonth.avgDurationMs / 60000),
+        change: pctChange(metricsMonth.avgDurationMs, metricsPrevMonth.avgDurationMs)
+      },
+      messagesPerConversation: {
+        today: Math.round(metricsToday.avgMessages),
+        thisWeek: Math.round(metricsWeek.avgMessages),
+        thisMonth: Math.round(metricsMonth.avgMessages),
+        change: pctChange(metricsMonth.avgMessages, metricsPrevMonth.avgMessages)
+      }
+    };
 
     res.json({
       totalChatsToday,
       activeChats,
       chatVolumePerDay,
-      avgResponseTime
+      chatVolumeOverTime,
+      avgResponseTime,
+      responseTimeOverTime,
+      conversationMetrics
     });
   } catch (error) {
     console.error('Error fetching analytics:', error);
