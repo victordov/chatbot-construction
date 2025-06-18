@@ -159,7 +159,9 @@
 }
 
 .spreadsheet-table-container table {
-  table-layout: fixed;
+  table-layout: auto;
+  min-width: 100%;
+  width: max-content;
 }
 
 .spreadsheet-table-container th,

@@ -828,6 +828,8 @@ function enableSpreadsheetColumnResizing(table) {
       table.querySelectorAll(`tbody td:nth-child(${index + 1})`).forEach(td => {
         td.style.width = `${newWidth}px`;
       });
+      const totalWidth = Array.from(headerCells).reduce((sum, cell) => sum + cell.offsetWidth, 0);
+      table.style.width = `${totalWidth}px`;
     }
     function onMouseUp() {
       document.removeEventListener('mousemove', onMouseMove);
@@ -840,6 +842,8 @@ function enableSpreadsheetColumnResizing(table) {
       document.addEventListener('mouseup', onMouseUp);
     });
   });
+  const initialWidth = Array.from(headerCells).reduce((sum, cell) => sum + cell.offsetWidth, 0);
+  table.style.width = `${initialWidth}px`;
 }
 
 document.addEventListener('DOMContentLoaded', function() {
