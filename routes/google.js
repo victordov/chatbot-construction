@@ -139,11 +139,11 @@ router.post('/knowledge/:id/columns', auth, async (req, res) => {
 // Get names of sheets within a spreadsheet
 router.get('/sheets/:spreadsheetId/names', auth, operator, async (req, res) => {
   try {
-    const names = await sheetsService.getSheetNames(
+    const { names, title } = await sheetsService.getSheetNames(
       req.user.id,
       req.params.spreadsheetId
     );
-    res.json({ names });
+    res.json({ names, title });
   } catch (err) {
     logger.error('Failed to fetch sheet names', { error: err });
     res.status(500).json({ error: 'Failed to fetch sheet names' });

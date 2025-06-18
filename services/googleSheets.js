@@ -66,7 +66,9 @@ class GoogleSheetsService {
       const auth = await this.authService.getOAuthClient(userId);
       const sheets = google.sheets({ version: 'v4', auth });
       const response = await sheets.spreadsheets.get({ spreadsheetId });
-      return (response.data.sheets || []).map(s => s.properties.title);
+      const names = (response.data.sheets || []).map(s => s.properties.title);
+      const title = response.data.properties?.title;
+      return { names, title };
     } catch (error) {
       logger.error('Error fetching sheet names', {
         userId,

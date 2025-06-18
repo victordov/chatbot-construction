@@ -9,11 +9,12 @@ class KnowledgeService {
 
   async importSpreadsheet(userId, spreadsheetId, sheet = 'Sheet1', exclude = []) {
     try {
+      const { title } = await this.sheetsService.getSheetNames(userId, spreadsheetId);
       const sheetData = await this.sheetsService.getSheetData(userId, spreadsheetId, sheet);
       const columns = sheetData.header.map(name => ({ name, exclude: exclude.includes(name) }));
       const doc = await KnowledgeDocument.findOneAndUpdate(
         { userId, spreadsheetId },
-        { title: spreadsheetId, sheet, columns, rows: sheetData.rows },
+        { title: title || spreadsheetId, sheet, columns, rows: sheetData.rows },
         { new: true, upsert: true, setDefaultsOnInsert: true }
       );
       return doc;
@@ -42,9 +43,11 @@ class KnowledgeService {
       const doc = await KnowledgeDocument.findOne({ _id: id, userId });
       if (!doc) throw new Error('Document not found');
       const excludeMap = doc.columns.reduce((acc, c) => { acc[c.name] = c.exclude; return acc; }, {});
+      const { title } = await this.sheetsService.getSheetNames(userId, doc.spreadsheetId);
       const sheetData = await this.sheetsService.getSheetData(userId, doc.spreadsheetId, doc.sheet || 'Sheet1');
       doc.columns = sheetData.header.map(name => ({ name, exclude: excludeMap[name] || false }));
       doc.rows = sheetData.rows;
+      if (title) doc.title = title;
       await doc.save();
       return doc;
     } catch (error) {
