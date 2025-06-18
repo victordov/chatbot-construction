@@ -1545,11 +1545,13 @@ function saveSettings() {
   const notificationSetting = document.getElementById('notification-setting').value;
   const soundNotifications = document.getElementById('sound-notifications').checked;
   const autoRefresh = document.getElementById('auto-refresh').value;
+  const enablePdf = document.getElementById('enable-pdf').checked;
 
   // Save settings to localStorage
   localStorage.setItem('notification-setting', notificationSetting);
   localStorage.setItem('sound-notifications', soundNotifications);
   localStorage.setItem('auto-refresh', autoRefresh);
+  localStorage.setItem('enable-pdf', enablePdf);
 
   // Request notification permission if needed
   if (notificationSetting !== 'none' && 'Notification' in window && Notification.permission !== 'granted') {
@@ -3634,41 +3636,189 @@ function connectGoogleAccount() {
     .catch(() => showAlert('Failed to initiate Google OAuth', 'danger'));
 }
 
+function checkGoogleStatus() {
+  const token = localStorage.getItem('chatbot-auth-token');
+  fetch('/api/google/status', { headers: { 'x-auth-token': token } })
+    .then(res => res.json())
+    .then(data => {
+      const btn = document.getElementById('connect-google');
+      if (btn) {
+        btn.textContent = data.authorized ? 'Reauthorize Google Account' : 'Connect Google Account';
+      }
+    });
+}
+
 // Load spreadsheet data and display in table
 function loadSpreadsheet() {
   const token = localStorage.getItem('chatbot-auth-token');
   const spreadsheetId = document.getElementById('spreadsheet-id').value;
-  const exclude = document.getElementById('exclude-columns').value;
+  const exclude = document.getElementById('exclude-columns').value
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
 
-  fetch(`/api/google/sheets/${spreadsheetId}?exclude=${encodeURIComponent(exclude)}`, {
-    headers: { 'x-auth-token': token }
+  fetch('/api/google/knowledge/import', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-auth-token': token },
+    body: JSON.stringify({ spreadsheetId, exclude })
   })
+    .then(res => res.json())
+    .then(data => {
+      refreshKnowledge();
+      expandKnowledge(data.doc._id);
+    })
+    .catch(() => showAlert('Failed to load spreadsheet', 'danger'));
+}
+
+// Search Google Drive for spreadsheets
+function searchDrive() {
+  const token = localStorage.getItem('chatbot-auth-token');
+  const query = document.getElementById('drive-query').value;
+  fetch(`/api/google/drive/search?q=${encodeURIComponent(query)}`, { headers: { 'x-auth-token': token } })
+    .then(res => res.json())
+    .then(data => {
+      const list = document.getElementById('drive-results');
+      list.innerHTML = '';
+      data.files.forEach(f => {
+        const li = document.createElement('li');
+        li.className = 'list-group-item d-flex justify-content-between align-items-center';
+        li.textContent = f.name;
+        const btn = document.createElement('button');
+        btn.className = 'btn btn-sm btn-primary';
+        btn.textContent = 'Load';
+        btn.addEventListener('click', () => importSpreadsheet(f.id));
+        li.appendChild(btn);
+        list.appendChild(li);
+      });
+    })
+    .catch(() => showAlert('Drive search failed', 'danger'));
+}
+
+function importSpreadsheet(id) {
+  const token = localStorage.getItem('chatbot-auth-token');
+  fetch('/api/google/knowledge/import', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-auth-token': token
+    },
+    body: JSON.stringify({ spreadsheetId: id })
+  })
+    .then(res => res.json())
+    .then(data => {
+      refreshKnowledge();
+      expandKnowledge(data.doc._id);
+    })
+    .catch(() => showAlert('Failed to import spreadsheet', 'danger'));
+}
+
+function refreshKnowledge(query = '') {
+  const token = localStorage.getItem('chatbot-auth-token');
+  const url = '/api/google/knowledge' + (query ? `?q=${encodeURIComponent(query)}` : '');
+  fetch(url, { headers: { 'x-auth-token': token } })
+    .then(res => res.json())
+    .then(data => {
+      const list = document.getElementById('knowledge-list');
+      list.innerHTML = '';
+      data.docs.forEach(doc => {
+        const li = document.createElement('li');
+        li.className = 'list-group-item d-flex justify-content-between align-items-center';
+        li.textContent = doc.title || doc.spreadsheetId;
+        const div = document.createElement('div');
+        const expand = document.createElement('button');
+        expand.className = 'btn btn-sm btn-outline-primary me-1';
+        expand.textContent = 'Expand';
+        expand.addEventListener('click', () => expandKnowledge(doc._id));
+        const refBtn = document.createElement('button');
+        refBtn.className = 'btn btn-sm btn-outline-secondary';
+        refBtn.textContent = 'Refresh';
+        refBtn.addEventListener('click', () => refreshDocument(doc._id));
+        div.appendChild(expand);
+        div.appendChild(refBtn);
+        li.appendChild(div);
+        list.appendChild(li);
+      });
+    })
+    .catch(() => showAlert('Failed to load knowledge list', 'danger'));
+}
+
+function refreshDocument(id) {
+  const token = localStorage.getItem('chatbot-auth-token');
+  fetch(`/api/google/knowledge/${id}/refresh`, { method: 'POST', headers: { 'x-auth-token': token } })
+    .then(res => res.json())
+    .then(() => refreshKnowledge())
+    .catch(() => showAlert('Refresh failed', 'danger'));
+}
+
+function expandKnowledge(id) {
+  const token = localStorage.getItem('chatbot-auth-token');
+  fetch(`/api/google/knowledge/${id}`, { headers: { 'x-auth-token': token } })
     .then(res => res.json())
     .then(data => {
       const table = document.getElementById('spreadsheet-table');
       table.innerHTML = '';
-      const thead = document.createElement('thead');
-      const headRow = document.createElement('tr');
-      data.header.forEach(h => {
+      const headerRow = document.createElement('tr');
+      data.doc.columns.forEach((col, idx) => {
         const th = document.createElement('th');
-        th.textContent = h;
-        headRow.appendChild(th);
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = !col.exclude;
+        cb.addEventListener('change', () => updateColumns(id));
+        th.appendChild(cb);
+        th.appendChild(document.createTextNode(' ' + col.name));
+        if (col.exclude) th.classList.add('text-muted');
+        headerRow.appendChild(th);
       });
-      thead.appendChild(headRow);
+      const thead = document.createElement('thead');
+      thead.appendChild(headerRow);
       table.appendChild(thead);
       const tbody = document.createElement('tbody');
-      data.rows.forEach(r => {
-        const row = document.createElement('tr');
-        r.forEach(c => {
+      data.doc.rows.forEach(r => {
+        const tr = document.createElement('tr');
+        r.forEach((c, cellIdx) => {
           const td = document.createElement('td');
           td.textContent = c;
-          row.appendChild(td);
+          if (data.doc.columns[cellIdx] && data.doc.columns[cellIdx].exclude) {
+            td.classList.add('text-muted');
+          }
+          tr.appendChild(td);
         });
-        tbody.appendChild(row);
+        tbody.appendChild(tr);
       });
       table.appendChild(tbody);
+      document.getElementById('spreadsheet-id').value = data.doc.spreadsheetId;
     })
-    .catch(() => showAlert('Failed to load spreadsheet', 'danger'));
+    .catch(() => showAlert('Failed to load document', 'danger'));
+}
+
+function updateColumns(id) {
+  const table = document.getElementById('spreadsheet-table');
+  const excluded = [];
+  table.querySelectorAll('thead th').forEach(th => {
+    const cb = th.querySelector('input[type="checkbox"]');
+    const name = th.textContent.trim();
+    if (cb && !cb.checked) {
+      excluded.push(name);
+      th.classList.add('text-muted');
+    } else {
+      th.classList.remove('text-muted');
+    }
+  });
+  table.querySelectorAll('tbody tr').forEach(row => {
+    row.querySelectorAll('td').forEach((td, idx) => {
+      if (excluded.includes(table.querySelectorAll('thead th')[idx].textContent.trim())) {
+        td.classList.add('text-muted');
+      } else {
+        td.classList.remove('text-muted');
+      }
+    });
+  });
+  const token = localStorage.getItem('chatbot-auth-token');
+  fetch(`/api/google/knowledge/${id}/columns`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-auth-token': token },
+    body: JSON.stringify({ excluded })
+  });
 }
 
 document.addEventListener('DOMContentLoaded', function() {
@@ -3679,5 +3829,22 @@ document.addEventListener('DOMContentLoaded', function() {
   const connectBtn = document.getElementById('connect-google');
   if (connectBtn) {
     connectBtn.addEventListener('click', connectGoogleAccount);
+    checkGoogleStatus();
+  }
+  const searchBtn = document.getElementById('search-drive');
+  if (searchBtn) {
+    searchBtn.addEventListener('click', searchDrive);
+  }
+  const searchKnowledgeBtn = document.getElementById('search-knowledge');
+  if (searchKnowledgeBtn) {
+    searchKnowledgeBtn.addEventListener('click', function() {
+      const q = document.getElementById('knowledge-query').value;
+      refreshKnowledge(q);
+    });
+  }
+  const refreshBtn = document.getElementById('refresh-knowledge');
+  if (refreshBtn) {
+    refreshBtn.addEventListener('click', () => refreshKnowledge());
+    refreshKnowledge();
   }
 });
