@@ -381,8 +381,8 @@ function setupWebSockets(server) {
               timestamp: new Date()
             });
           }
-        } else {
-          // No operator connected, generate an AI response for the user
+        } else if (conversation.botEnabled !== false) {
+          // No operator connected and bot enabled, generate an AI response for the user
           const aiService = new AIService();
           const messageHistory = conversation.messages
             .slice(-10)
@@ -906,6 +906,48 @@ function setupWebSockets(server) {
           error: 'Failed to toggle suggestions',
           timestamp: new Date()
         });
+      }
+    });
+
+    // Handle operator leaving a chat without ending it
+    socket.on('operator-leave', async (data) => {
+      if (!isOperator) {
+        return;
+      }
+
+      const { sessionId, passToBot } = data;
+
+      try {
+        const conversation = await Conversation.findOneAndUpdate(
+          { sessionId },
+          {
+            $set: {
+              hasOperator: false,
+              operatorId: null,
+              operatorName: null,
+              botEnabled: passToBot !== false
+            }
+          },
+          { new: true }
+        );
+
+        if (conversation) {
+          io.to(sessionId).emit('operator-message', {
+            text: passToBot
+              ? `${socket.user.username} has left the conversation. The chatbot will assist you.`
+              : `${socket.user.username} has left the conversation. Please wait for the next available operator.`,
+            senderName: socket.user.username,
+            timestamp: new Date()
+          });
+
+          io.to('operators').emit('operator-left', {
+            sessionId,
+            operatorId: socket.user.id,
+            timestamp: new Date()
+          });
+        }
+      } catch (error) {
+        logger.error('Error handling operator leave:', { error });
       }
     });
 

@@ -81,6 +81,10 @@ const ConversationSchema = new mongoose.Schema({
     type: Boolean,
     default: true
   },
+  botEnabled: {
+    type: Boolean,
+    default: true
+  },
   metadata: {
     type: Map,
     of: String

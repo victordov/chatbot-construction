@@ -367,6 +367,10 @@ function addChatToList(chat) {
     endBtn.disabled = false;
     endBtn.setAttribute('data-session-id', chat.sessionId);
 
+    const leaveBtn = document.getElementById('leave-chat-btn');
+    leaveBtn.disabled = !isJoined;
+    leaveBtn.setAttribute('data-session-id', chat.sessionId);
+
     // Enable the Create Task and View Tasks buttons
     const createTaskBtn = document.getElementById('create-task-btn');
     createTaskBtn.disabled = false;
@@ -600,6 +604,7 @@ function resetChatView() {
   document.getElementById('operator-input').style.display = 'none';
   document.getElementById('join-chat-btn').disabled = true;
   document.getElementById('end-chat-btn').disabled = true;
+  document.getElementById('leave-chat-btn').disabled = true;
 }
 
 // Update active chat count
@@ -991,6 +996,10 @@ function viewChatHistory(sessionId) {
       const endBtn = document.getElementById('end-chat-btn');
       endBtn.disabled = chat.status !== 'active';
       endBtn.setAttribute('data-session-id', chat.sessionId);
+
+      const leaveBtn = document.getElementById('leave-chat-btn');
+      leaveBtn.disabled = !window.joinedChats.has(chat.sessionId);
+      leaveBtn.setAttribute('data-session-id', chat.sessionId);
 
       // Update URL with chat parameter
       updateUrlWithParams({

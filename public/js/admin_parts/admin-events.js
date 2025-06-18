@@ -86,6 +86,10 @@ function setupEventHandlers(socket) {
 
     // Update suggestion buttons
     updateSuggestionButtons(true);
+
+    // Enable leave button
+    const leaveBtn = document.getElementById('leave-chat-btn');
+    leaveBtn.disabled = false;
   });
 
   // End chat button
@@ -105,6 +109,22 @@ function setupEventHandlers(socket) {
 
       resetChatView();
     }
+  });
+
+  // Leave chat button
+  const leaveChatBtn = document.getElementById('leave-chat-btn');
+  leaveChatBtn.addEventListener('click', function() {
+    const sessionId = this.getAttribute('data-session-id');
+    const passToBot = confirm(
+      'Pass this conversation to the chatbot?\nPress OK to hand off to the bot or Cancel to leave it for another operator.'
+    );
+    socket.emit('operator-leave', { sessionId, passToBot });
+
+    window.joinedChats.delete(sessionId);
+    window.saveJoinedChats();
+
+    updateSuggestionButtons(false);
+    resetChatView();
   });
 
   // Send message
