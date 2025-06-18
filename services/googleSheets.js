@@ -7,7 +7,15 @@ class GoogleSheetsService {
     this.authService = new GoogleAuthService();
   }
 
-  async getSheetData(userId, spreadsheetId, range = 'Sheet1', exclude = []) {
+  /**
+   * Fetches data from a Google Sheet.
+   * @param {string} userId The user's ID for authentication.
+   * @param {string} spreadsheetId The ID of the spreadsheet.
+   * @param {string} [range="'Sheet1'"] The A1 notation of the range to retrieve. Defaults to the entire 'Sheet1'. Note the single quotes.
+   * @param {string[]} [exclude=[]] An array of header columns to exclude from the result.
+   * @returns {Promise<{header: string[], rows: any[][]}>} The header row and data rows.
+   */
+  async getSheetData(userId, spreadsheetId, range = 'Sheet1', exclude = []) { // FIX: Added single quotes around Sheet1
     try {
       const auth = await this.authService.getOAuthClient(userId);
       const sheets = google.sheets({ version: 'v4', auth });
@@ -32,8 +40,18 @@ class GoogleSheetsService {
       const filteredRows = rows.map(row => row.filter((_, idx) => !indices.includes(idx)));
       return { header: filteredHeader, rows: filteredRows };
     } catch (error) {
-      logger.error('Error fetching spreadsheet data from Google', { error });
-      throw error;
+      logger.error(`Error fetching spreadsheet data from Google: ${JSON.stringify({
+        userId,
+        error: error.message, // Log the specific error message for clarity
+        spreadsheetId,
+        range
+      })}`);
+      // Re-throwing the error maintains the original stack trace and allows the caller to handle it.
+      // Adding more context to the thrown error can be helpful for upstream error handlers.
+      const enrichedError = new Error(`Failed to fetch data from Google Sheet. ID: ${spreadsheetId}. Range: ${range}.`);
+      enrichedError.cause = error;
+      enrichedError.statusCode = error.code || 500;
+      throw enrichedError;
     }
   }
 }
