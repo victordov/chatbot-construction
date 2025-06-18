@@ -743,6 +743,9 @@ function expandKnowledge(id) {
         tbody.appendChild(tr);
       });
       table.appendChild(tbody);
+
+      applyStickySpreadsheetRows();
+
       document.getElementById('spreadsheet-id').value = data.doc.spreadsheetId;
       fetchSheetNames(data.doc.spreadsheetId);
       if (document.getElementById('default-sheet')) {
@@ -786,6 +789,25 @@ function updateColumns(id) {
     headers: { 'Content-Type': 'application/json', 'x-auth-token': token },
     body: JSON.stringify({ excluded })
   });
+}
+
+// Make the first two spreadsheet rows sticky when scrolling
+function applyStickySpreadsheetRows() {
+  const table = document.getElementById('spreadsheet-table');
+  if (!table) return;
+  const headerHeight = table.querySelector('thead')?.offsetHeight || 0;
+  const rows = table.querySelectorAll('tbody tr');
+  if (rows.length > 0) {
+    const first = rows[0];
+    first.classList.add('sticky-row');
+    first.style.top = `${headerHeight}px`;
+  }
+  if (rows.length > 1) {
+    const second = rows[1];
+    second.classList.add('sticky-row');
+    const firstHeight = rows[0].offsetHeight;
+    second.style.top = `${headerHeight + firstHeight}px`;
+  }
 }
 
 document.addEventListener('DOMContentLoaded', function() {

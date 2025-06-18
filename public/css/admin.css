@@ -164,3 +164,10 @@
   background: #fff;
   z-index: 2;
 }
+
+/* Sticky first two rows of spreadsheet body */
+.spreadsheet-table-container tbody tr.sticky-row {
+  position: sticky;
+  background: #fff;
+  z-index: 1;
+}
