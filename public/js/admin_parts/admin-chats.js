@@ -31,6 +31,7 @@ function sendOperatorMessage(socket, messageInput) {
 
 // Initialize charts
 let chatActivityChart;
+let chatVolumeChart;
 
 function initializeCharts() {
   // Chat Activity Chart
@@ -77,8 +78,7 @@ function initializeCharts() {
 
   // Chat Volume Chart
   const volumeCtx = document.getElementById('chat-volume-chart').getContext('2d');
-  // eslint-disable-next-line no-unused-vars
-  const volumeChart = new Chart(volumeCtx, {
+  chatVolumeChart = new Chart(volumeCtx, {
     type: 'bar',
     data: {
       labels: ['Week 1', 'Week 2', 'Week 3', 'Week 4'],
@@ -151,6 +151,27 @@ function updateChatActivityChart(volumeData) {
   chatActivityChart.update();
 }
 
+// Update the Chat Volume chart using analytics data
+function updateChatVolumeChart(volumeData) {
+  if (!chatVolumeChart) return;
+
+  const labels = [];
+  const dataPoints = [];
+
+  if (Array.isArray(volumeData)) {
+    volumeData.forEach(record => {
+      const date = new Date(record._id.year, record._id.month - 1);
+      const label = date.toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
+      labels.push(label);
+      dataPoints.push(record.count);
+    });
+  }
+
+  chatVolumeChart.data.labels = labels;
+  chatVolumeChart.data.datasets[0].data = dataPoints;
+  chatVolumeChart.update();
+}
+
 // Load dashboard data
 function loadDashboardData(token) {
   // In a real app, this would fetch data from the server
@@ -166,6 +187,9 @@ function loadDashboardData(token) {
       document.getElementById('avg-response-time').textContent = data.avgResponseTime ? `${data.avgResponseTime}s` : '0s';
       if (data.chatVolumePerDay) {
         updateChatActivityChart(data.chatVolumePerDay);
+      }
+      if (data.chatVolumeOverTime) {
+        updateChatVolumeChart(data.chatVolumeOverTime);
       }
     })
     .catch(error => {

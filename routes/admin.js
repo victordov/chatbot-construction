@@ -188,6 +188,33 @@ router.get('/analytics', async (req, res) => {
       }
     ]);
 
+    // Get chat volume per month for the last 12 months
+    const last12Months = new Date();
+    last12Months.setMonth(last12Months.getMonth() - 11);
+
+    const chatVolumeOverTime = await Conversation.aggregate([
+      {
+        $match: {
+          startedAt: { $gte: last12Months }
+        }
+      },
+      {
+        $group: {
+          _id: {
+            year: { $year: '$startedAt' },
+            month: { $month: '$startedAt' }
+          },
+          count: { $sum: 1 }
+        }
+      },
+      {
+        $sort: {
+          '_id.year': 1,
+          '_id.month': 1
+        }
+      }
+    ]);
+
     // Get average response time
     // In a real app, you would calculate this based on message timestamps
     const avgResponseTime = 5; // Placeholder
@@ -196,6 +223,7 @@ router.get('/analytics', async (req, res) => {
       totalChatsToday,
       activeChats,
       chatVolumePerDay,
+      chatVolumeOverTime,
       avgResponseTime
     });
   } catch (error) {
