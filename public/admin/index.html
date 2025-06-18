@@ -877,9 +877,36 @@
                         </div>
                     </form>
                 </div>
+    <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-primary" id="save-contact-info-btn">Save</button>
+    </div>
+</div>
+</div>
+</div>
+
+    <!-- Load Spreadsheet Modal -->
+    <div class="modal fade" id="loadSheetModal" tabindex="-1" aria-labelledby="loadSheetModalLabel" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="loadSheetModalLabel">Load Spreadsheet</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <input type="hidden" id="modal-spreadsheet-id">
+                    <div class="mb-3">
+                        <label for="modal-sheet-select" class="form-label">Sheet</label>
+                        <select class="form-select" id="modal-sheet-select"></select>
+                    </div>
+                    <div class="form-check mb-3">
+                        <input class="form-check-input" type="checkbox" id="modal-default-sheet" checked>
+                        <label class="form-check-label" for="modal-default-sheet">Use Sheet1 (default)</label>
+                    </div>
+                </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                    <button type="button" class="btn btn-primary" id="save-contact-info-btn">Save</button>
+                    <button type="button" class="btn btn-primary" id="modal-load-btn">Load</button>
                 </div>
             </div>
         </div>

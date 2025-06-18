@@ -3688,12 +3688,20 @@ function searchDrive() {
         const btn = document.createElement('button');
         btn.className = 'btn btn-sm btn-primary';
         btn.textContent = 'Load';
-        btn.addEventListener('click', () => importSpreadsheet(f.id));
+        btn.addEventListener('click', () => openLoadModal(f.id));
         li.appendChild(btn);
         list.appendChild(li);
       });
     })
     .catch(() => showAlert('Drive search failed', 'danger'));
+}
+
+function openLoadModal(id) {
+  document.getElementById('modal-spreadsheet-id').value = id;
+  fetchModalSheetNames(id).then(() => {
+    const modal = new bootstrap.Modal(document.getElementById('loadSheetModal'));
+    modal.show();
+  });
 }
 
 function importSpreadsheet(id) {
@@ -3716,6 +3724,46 @@ function fetchSheetNames(id) {
       });
     })
     .catch(() => showAlert('Failed to fetch sheet names', 'danger'));
+}
+
+function fetchModalSheetNames(id) {
+  const token = localStorage.getItem('chatbot-auth-token');
+  return fetch(`/api/google/sheets/${id}/names`, { headers: { 'x-auth-token': token } })
+    .then(res => res.json())
+    .then(data => {
+      const select = document.getElementById('modal-sheet-select');
+      select.innerHTML = '';
+      data.names.forEach(n => {
+        const opt = document.createElement('option');
+        opt.value = n;
+        opt.textContent = n;
+        select.appendChild(opt);
+      });
+    })
+    .catch(() => showAlert('Failed to fetch sheet names', 'danger'));
+}
+
+function loadFromModal() {
+  const token = localStorage.getItem('chatbot-auth-token');
+  const spreadsheetId = document.getElementById('modal-spreadsheet-id').value;
+  const defaultSheet = document.getElementById('modal-default-sheet').checked;
+  const sheet = defaultSheet ? 'Sheet1' : document.getElementById('modal-sheet-select').value;
+  const exclude = document.getElementById('exclude-columns').value
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
+  fetch('/api/google/knowledge/import', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-auth-token': token },
+    body: JSON.stringify({ spreadsheetId, sheet, exclude })
+  })
+    .then(res => res.json())
+    .then(data => {
+      bootstrap.Modal.getInstance(document.getElementById('loadSheetModal')).hide();
+      refreshKnowledge();
+      expandKnowledge(data.doc._id);
+    })
+    .catch(() => showAlert('Failed to load spreadsheet', 'danger'));
 }
 
 function refreshKnowledge(query = '') {
@@ -3876,5 +3924,17 @@ document.addEventListener('DOMContentLoaded', function() {
     idInput.addEventListener('change', function() {
       if (this.value) fetchSheetNames(this.value);
     });
+  }
+  const modalLoadBtn = document.getElementById('modal-load-btn');
+  if (modalLoadBtn) {
+    modalLoadBtn.addEventListener('click', loadFromModal);
+  }
+  const modalDefaultCb = document.getElementById('modal-default-sheet');
+  const modalSheetSelect = document.getElementById('modal-sheet-select');
+  if (modalDefaultCb && modalSheetSelect) {
+    modalDefaultCb.addEventListener('change', function() {
+      modalSheetSelect.disabled = this.checked;
+    });
+    modalSheetSelect.disabled = modalDefaultCb.checked;
   }
 });
