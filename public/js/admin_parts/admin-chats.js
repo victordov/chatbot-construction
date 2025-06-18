@@ -1328,3 +1328,15 @@ function setupSuggestionEventHandlers(socket) {
     const { sessionId, enabled } = data;
 
     // Update toggle if this is the current chat
+    const joinChatBtn = document.getElementById('join-chat-btn');
+    const selectedChatId = joinChatBtn.getAttribute('data-session-id');
+
+    if (selectedChatId === sessionId) {
+      const toggle = document.getElementById('suggestions-toggle');
+      if (toggle) {
+        toggle.checked = enabled;
+      }
+    }
+  });
+}
+

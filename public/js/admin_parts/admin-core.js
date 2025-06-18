@@ -348,3 +348,101 @@ function setupNavigation() {
   });
 
   // Setup sidebar toggle for small screens
+  if (sidebarToggle) {
+    sidebarToggle.addEventListener('click', function() {
+      sidebar.classList.toggle('show');
+    });
+
+    // Close sidebar when a link is clicked on small screens
+    navLinks.forEach(link => {
+      link.addEventListener('click', function() {
+        if (window.innerWidth < 768) {
+          sidebar.classList.remove('show');
+        }
+      });
+    });
+
+    // Close sidebar when clicking outside of it on small screens
+    document.addEventListener('click', function(event) {
+      if (window.innerWidth < 768 &&
+          !sidebar.contains(event.target) &&
+          event.target !== sidebarToggle &&
+          !sidebarToggle.contains(event.target)) {
+        sidebar.classList.remove('show');
+      }
+    });
+  }
+
+  navLinks.forEach(link => {
+    link.addEventListener('click', function(e) {
+      e.preventDefault();
+
+      // Remove active class from all links and sections
+      navLinks.forEach(l => l.classList.remove('active'));
+      sections.forEach(s => s.classList.remove('active'));
+
+      // Add active class to clicked link
+      this.classList.add('active');
+
+      // Show corresponding section
+      const sectionId = this.getAttribute('data-section');
+      document.getElementById(sectionId + '-section').classList.add('active');
+
+      // If tasks section is clicked, load operators
+      if (sectionId === 'tasks') {
+        loadOperators(localStorage.getItem('chatbot-auth-token'));
+      }
+
+      // If operators section is clicked, load all operators
+      if (sectionId === 'operators') {
+        loadAllOperators();
+      }
+
+      // Update URL with section parameter
+      updateUrlWithParams({ section: sectionId, chat: null });
+    });
+  });
+
+  // Check URL parameters on page load
+  const params = getUrlParams();
+  if (params.section) {
+    // Find the link with the matching data-section attribute
+    const link = document.querySelector(`.nav-link[data-section="${params.section}"]`);
+    if (link) {
+      // Simulate a click on the link
+      link.click();
+    }
+
+    // If tasks section is loaded directly, load operators
+    if (params.section === 'tasks') {
+      loadOperators(localStorage.getItem('chatbot-auth-token'));
+    }
+
+    // If operators section is loaded directly, load all operators
+    if (params.section === 'operators') {
+      loadAllOperators();
+    }
+
+    // If active-chats section is loaded with a session parameter, view that chat
+    if (params.section === 'active-chats' && params.session) {
+      // Small delay to ensure the section is loaded
+      setTimeout(() => {
+        viewChatHistory(params.session);
+      }, 100);
+    }
+  }
+
+  // Check for session parameter in URL fragment even if no section parameter
+  if (!params.section && params.session) {
+    // Navigate to active-chats section and view the chat
+    const activeChatsLink = document.querySelector('.nav-link[data-section="active-chats"]');
+    if (activeChatsLink) {
+      activeChatsLink.click();
+
+      // Small delay to ensure the section is loaded
+      setTimeout(() => {
+        viewChatHistory(params.session);
+      }, 100);
+    }
+  }
+}
