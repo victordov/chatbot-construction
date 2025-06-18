@@ -207,3 +207,668 @@ function setupTaskSocketListeners() {
     }
   });
 }
+
+// Task utility functions moved from admin-operators.js
+function loadTasksForConversation(conversationId) {
+  // Reset filters
+  document.getElementById('task-status-filter').value = '';
+  document.getElementById('task-priority-filter').value = '';
+  document.getElementById('task-assignee-filter').value = '';
+
+  // Build query string with conversationId
+  const queryString = `?conversationId=${conversationId}`;
+
+  // Fetch tasks
+  fetch(`/api/tasks${queryString}`, {
+    method: 'GET',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-auth-token': localStorage.getItem('chatbot-auth-token')
+    }
+  })
+    .then(response => {
+      if (!response.ok) {
+        throw new Error('Failed to load tasks');
+      }
+      return response.json();
+    })
+    .then(data => {
+      displayTasks(data.tasks);
+
+      // Update UI to show we're viewing tasks for a specific conversation
+      const taskListHeader = document.querySelector('#tasks-section .card-header h5');
+      if (taskListHeader) {
+        taskListHeader.innerHTML = 'Tasks for Conversation <span class="badge bg-info">Filtered</span>';
+      }
+    })
+    .catch(error => {
+      logger.error('Error loading tasks for conversation:', error);
+      showNotification('Error', 'Failed to load tasks for conversation', 'error');
+    });
+}
+
+function loadTasks(token) {
+  // Get filter values
+  const status = document.getElementById('task-status-filter').value;
+  const priority = document.getElementById('task-priority-filter').value;
+  const assignee = document.getElementById('task-assignee-filter').value;
+  const search = document.getElementById('task-search').value;
+
+  // Build query string
+  const queryParams = [];
+  if (status) {
+    queryParams.push(`status=${status}`);
+  }
+  if (priority) {
+    queryParams.push(`priority=${priority}`);
+  }
+  if (assignee) {
+    queryParams.push(`assignee=${assignee}`);
+  }
+  if (search) {
+    queryParams.push(`search=${encodeURIComponent(search)}`);
+  }
+
+  const queryString = queryParams.length > 0 ? `?${queryParams.join('&')}` : '';
+
+  // Fetch tasks
+  fetch(`/api/tasks${queryString}`, {
+    method: 'GET',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-auth-token': token || localStorage.getItem('chatbot-auth-token')
+    }
+  })
+    .then(response => {
+      if (!response.ok) {
+        throw new Error('Failed to load tasks');
+      }
+      return response.json();
+    })
+    .then(data => {
+      displayTasks(data.tasks);
+    })
+    .catch(error => {
+      logger.error('Error loading tasks:', error);
+      showNotification('Error', 'Failed to load tasks', 'error');
+    });
+}
+
+function displayTasks(tasks) {
+  const taskList = document.getElementById('task-list');
+
+  // Clear existing tasks
+  taskList.innerHTML = '';
+
+  if (tasks.length === 0) {
+    taskList.innerHTML = '<tr><td colspan="7" class="text-center">No tasks available</td></tr>';
+    return;
+  }
+
+  // Add tasks to the list
+  tasks.forEach(task => {
+    const row = document.createElement('tr');
+
+    // Format due date
+    const dueDate = new Date(task.dueDate);
+    const formattedDate = dueDate.toLocaleDateString();
+
+    // Create priority badge
+    const priorityBadge = document.createElement('span');
+    priorityBadge.className = 'badge';
+
+    switch (task.priority) {
+    case 'low':
+      priorityBadge.className += ' bg-secondary';
+      break;
+    case 'medium':
+      priorityBadge.className += ' bg-primary';
+      break;
+    case 'high':
+      priorityBadge.className += ' bg-warning';
+      break;
+    case 'urgent':
+      priorityBadge.className += ' bg-danger';
+      break;
+    }
+
+    priorityBadge.textContent = task.priority.charAt(0).toUpperCase() + task.priority.slice(1);
+
+    // Create status badge
+    const statusBadge = document.createElement('span');
+    statusBadge.className = 'badge';
+
+    switch (task.status) {
+    case 'open':
+      statusBadge.className += ' bg-secondary';
+      break;
+    case 'in_progress':
+      statusBadge.className += ' bg-primary';
+      break;
+    case 'completed':
+      statusBadge.className += ' bg-success';
+      break;
+    }
+
+    const statusText = task.status === 'in_progress' ? 'In Progress' :
+      task.status.charAt(0).toUpperCase() + task.status.slice(1);
+    statusBadge.textContent = statusText;
+
+    // Create action buttons
+    const viewBtn = document.createElement('button');
+    viewBtn.className = 'btn btn-sm btn-outline-primary me-1';
+    viewBtn.innerHTML = '<i data-feather="eye"></i>';
+    viewBtn.title = 'View Task';
+    viewBtn.addEventListener('click', function() {
+      loadTaskDetails(task._id);
+    });
+
+    const editBtn = document.createElement('button');
+    editBtn.className = 'btn btn-sm btn-outline-secondary me-1';
+    editBtn.innerHTML = '<i data-feather="edit"></i>';
+    editBtn.title = 'Edit Task';
+    editBtn.addEventListener('click', function() {
+      openTaskModal(null, task);
+    });
+
+    const deleteBtn = document.createElement('button');
+    deleteBtn.className = 'btn btn-sm btn-outline-danger';
+    deleteBtn.innerHTML = '<i data-feather="trash-2"></i>';
+    deleteBtn.title = 'Delete Task';
+    deleteBtn.addEventListener('click', function() {
+      if (confirm('Are you sure you want to delete this task?')) {
+        deleteTask(task._id);
+      }
+    });
+
+    const actionsCell = document.createElement('td');
+    actionsCell.appendChild(viewBtn);
+    actionsCell.appendChild(editBtn);
+    actionsCell.appendChild(deleteBtn);
+
+    // Add cells to row
+    row.innerHTML = `
+      <td>${task.title}</td>
+      <td>${task.description.length > 50 ? task.description.substring(0, 50) + '...' : task.description}</td>
+      <td>${formattedDate}</td>
+      <td></td>
+      <td>${task.assigneeName || 'Unassigned'}</td>
+      <td></td>
+    `;
+
+    // Add priority badge
+    row.cells[3].appendChild(priorityBadge);
+
+    // Add status badge
+    row.cells[5].appendChild(statusBadge);
+
+    // Add actions
+    row.appendChild(actionsCell);
+
+    taskList.appendChild(row);
+  });
+
+  // Initialize Feather icons for the new buttons
+  feather.replace();
+}
+
+function loadTaskDetails(taskId) {
+  fetch(`/api/tasks/${taskId}`, {
+    method: 'GET',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-auth-token': localStorage.getItem('chatbot-auth-token')
+    }
+  })
+    .then(response => {
+      if (!response.ok) {
+        throw new Error('Failed to load task details');
+      }
+      return response.json();
+    })
+    .then(data => {
+      displayTaskDetails(data.task);
+      loadTaskComments(taskId);
+    })
+    .catch(error => {
+      logger.error('Error loading task details:', error);
+      showNotification('Error', 'Failed to load task details', 'error');
+    });
+}
+
+function displayTaskDetails(task) {
+  // Hide task list and show task details
+  document.getElementById('task-detail-container').style.display = 'block';
+  document.getElementById('task-detail-container').dataset.taskId = task._id;
+  document.querySelector('.row.mb-3').style.display = 'none';
+
+  // Set task details
+  document.getElementById('task-title').textContent = task.title;
+  document.getElementById('task-description').textContent = task.description;
+
+  // Format due date
+  const dueDate = new Date(task.dueDate);
+  document.getElementById('task-due-date').textContent = dueDate.toLocaleDateString();
+
+  // Set priority with appropriate styling
+  const prioritySpan = document.getElementById('task-priority');
+  prioritySpan.textContent = task.priority.charAt(0).toUpperCase() + task.priority.slice(1);
+  prioritySpan.className = '';
+
+  switch (task.priority) {
+  case 'low':
+    prioritySpan.className = 'text-secondary';
+    break;
+  case 'medium':
+    prioritySpan.className = 'text-primary';
+    break;
+  case 'high':
+    prioritySpan.className = 'text-warning';
+    break;
+  case 'urgent':
+    prioritySpan.className = 'text-danger';
+    break;
+  }
+
+  // Set assignee
+  document.getElementById('task-assignee').textContent = task.assigneeName || 'Unassigned';
+
+  // Set status dropdown
+  document.getElementById('task-status-update').value = task.status;
+
+  // Set conversation link if available
+  const conversationLink = document.getElementById('task-conversation-link');
+  if (task.conversationId) {
+    const sessionId = task.conversationId.sessionId || task.conversationId;
+    conversationLink.href = `#active-chats-section?session=${sessionId}`;
+    conversationLink.style.display = 'inline-block';
+    conversationLink.onclick = function(e) {
+      e.preventDefault();
+      viewChatHistory(sessionId);
+      return false;
+    };
+  } else {
+    conversationLink.style.display = 'none';
+  }
+
+  // Set contact information
+  document.getElementById('contact-name').textContent = task.contactInfo?.name || 'Not provided';
+  document.getElementById('contact-email').textContent = task.contactInfo?.email || 'Not provided';
+  document.getElementById('contact-phone').textContent = task.contactInfo?.phone || 'Not provided';
+
+  // Apply styling for missing contact info
+  if (!task.contactInfo?.name) {
+    document.getElementById('contact-name').className = 'text-danger';
+  } else {
+    document.getElementById('contact-name').className = '';
+  }
+
+  if (!task.contactInfo?.email) {
+    document.getElementById('contact-email').className = 'text-danger';
+  } else {
+    document.getElementById('contact-email').className = '';
+  }
+
+  if (!task.contactInfo?.phone) {
+    document.getElementById('contact-phone').className = 'text-danger';
+  } else {
+    document.getElementById('contact-phone').className = '';
+  }
+}
+
+function loadTaskComments(taskId) {
+  fetch(`/api/tasks/${taskId}/comments`, {
+    method: 'GET',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-auth-token': localStorage.getItem('chatbot-auth-token')
+    }
+  })
+    .then(response => {
+      if (!response.ok) {
+        throw new Error('Failed to load comments');
+      }
+      return response.json();
+    })
+    .then(data => {
+      displayComments(data.comments);
+    })
+    .catch(error => {
+      logger.error('Error loading comments:', error);
+      showNotification('Error', 'Failed to load comments', 'error');
+    });
+}
+
+function displayComments(comments) {
+  const commentsList = document.getElementById('comments-list');
+
+  // Clear existing comments
+  commentsList.innerHTML = '';
+
+  if (comments.length === 0) {
+    commentsList.innerHTML = '<div class="text-center text-muted">No comments yet</div>';
+    return;
+  }
+
+  comments.forEach(comment => {
+    const commentDiv = document.createElement('div');
+    commentDiv.className = 'card mb-2';
+
+    const commentDate = new Date(comment.createdAt);
+    const formattedDate = commentDate.toLocaleString();
+
+    commentDiv.innerHTML = `
+      <div class="card-body">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <strong>${comment.authorName}</strong>
+          <small class="text-muted">${formattedDate}</small>
+        </div>
+        <p class="mb-0">${comment.content}</p>
+      </div>
+    `;
+
+    commentsList.appendChild(commentDiv);
+  });
+}
+
+function showTaskList() {
+  document.getElementById('task-detail-container').style.display = 'none';
+  document.querySelector('.row.mb-3').style.display = 'block';
+}
+
+function openTaskModal(conversationId = null, task = null) {
+  document.getElementById('task-form').reset();
+
+  loadOperators(localStorage.getItem('chatbot-auth-token'))
+    .then(() => {
+      const taskModal = new bootstrap.Modal(document.getElementById('taskModal'));
+      taskModal.show();
+    });
+
+  if (conversationId) {
+    document.getElementById('conversation-id').value = conversationId;
+
+    if (window.currentConversation && window.currentConversation.sessionId === conversationId) {
+      const metadata = window.currentConversation.metadata;
+      if (metadata) {
+        if (metadata instanceof Map) {
+          document.getElementById('contact-name-input').value = metadata.get('name') || '';
+          document.getElementById('contact-email-input').value = metadata.get('email') || '';
+          document.getElementById('contact-phone-input').value = metadata.get('phone') || '';
+
+          document.getElementById('name-missing').style.display = !metadata.get('name') ? 'block' : 'none';
+          document.getElementById('email-missing').style.display = !metadata.get('email') ? 'block' : 'none';
+          document.getElementById('phone-missing').style.display = !metadata.get('phone') ? 'block' : 'none';
+        } else {
+          document.getElementById('contact-name-input').value = metadata.name || '';
+          document.getElementById('contact-email-input').value = metadata.email || '';
+          document.getElementById('contact-phone-input').value = metadata.phone || '';
+
+          document.getElementById('name-missing').style.display = !metadata.name ? 'block' : 'none';
+          document.getElementById('email-missing').style.display = !metadata.email ? 'block' : 'none';
+          document.getElementById('phone-missing').style.display = !metadata.phone ? 'block' : 'none';
+        }
+      }
+    } else {
+      fetch(`/api/chat/session/${conversationId}`, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-auth-token': localStorage.getItem('chatbot-auth-token')
+        }
+      })
+        .then(response => {
+          if (!response.ok) {
+            throw new Error('Failed to load conversation');
+          }
+          return response.json();
+        })
+        .then(data => {
+          const metadata = data.conversation.metadata;
+          if (metadata) {
+            if (metadata.get('name')) {
+              document.getElementById('contact-name-input').value = metadata.get('name');
+            }
+            if (metadata.get('email')) {
+              document.getElementById('contact-email-input').value = metadata.get('email');
+            }
+            if (metadata.get('phone')) {
+              document.getElementById('contact-phone-input').value = metadata.get('phone');
+            }
+          }
+
+          document.getElementById('name-missing').style.display = metadata && !metadata.get('name') ? 'block' : 'none';
+          document.getElementById('email-missing').style.display = metadata && !metadata.get('email') ? 'block' : 'none';
+          document.getElementById('phone-missing').style.display = metadata && !metadata.get('phone') ? 'block' : 'none';
+        })
+        .catch(error => {
+          logger.error('Error loading conversation:', error);
+        });
+    }
+  }
+
+  if (task) {
+    document.getElementById('taskModalLabel').textContent = 'Edit Task';
+    document.getElementById('save-task-btn').textContent = 'Update Task';
+
+    document.getElementById('conversation-id').value = task.conversationId || '';
+    document.getElementById('task-title-input').value = task.title;
+    document.getElementById('task-description-input').value = task.description;
+
+    const dueDate = new Date(task.dueDate);
+    const formattedDate = dueDate.toISOString().split('T')[0];
+    document.getElementById('task-due-date-input').value = formattedDate;
+
+    document.getElementById('task-priority-input').value = task.priority;
+    document.getElementById('task-assignee-input').value = task.assignee;
+
+    if (task.contactInfo) {
+      document.getElementById('contact-name-input').value = task.contactInfo.name || '';
+      document.getElementById('contact-email-input').value = task.contactInfo.email || '';
+      document.getElementById('contact-phone-input').value = task.contactInfo.phone || '';
+
+      document.getElementById('name-missing').style.display = !task.contactInfo.name ? 'block' : 'none';
+      document.getElementById('email-missing').style.display = !task.contactInfo.email ? 'block' : 'none';
+      document.getElementById('phone-missing').style.display = !task.contactInfo.phone ? 'block' : 'none';
+    }
+
+    document.getElementById('task-form').dataset.taskId = task._id;
+  } else {
+    document.getElementById('taskModalLabel').textContent = 'Create New Task';
+    document.getElementById('save-task-btn').textContent = 'Create Task';
+
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const formattedDate = tomorrow.toISOString().split('T')[0];
+    document.getElementById('task-due-date-input').value = formattedDate;
+
+    delete document.getElementById('task-form').dataset.taskId;
+  }
+}
+
+function saveTask(token) {
+  const taskId = document.getElementById('task-form').dataset.taskId;
+  const conversationId = document.getElementById('conversation-id').value;
+  const titleInput = document.getElementById('task-title-input');
+  const descriptionInput = document.getElementById('task-description-input');
+  const dueDateInput = document.getElementById('task-due-date-input');
+  const priorityInput = document.getElementById('task-priority-input');
+  const assigneeInput = document.getElementById('task-assignee-input');
+
+  const title = titleInput.value;
+  const description = descriptionInput.value;
+  const dueDate = dueDateInput.value;
+  const priority = priorityInput.value;
+  const assignee = assigneeInput.value;
+
+  const contactInfo = {
+    name: document.getElementById('contact-name-input').value,
+    email: document.getElementById('contact-email-input').value,
+    phone: document.getElementById('contact-phone-input').value
+  };
+
+  let isValid = true;
+
+  titleInput.classList.remove('is-invalid');
+  descriptionInput.classList.remove('is-invalid');
+  dueDateInput.classList.remove('is-invalid');
+  assigneeInput.classList.remove('is-invalid');
+
+  if (!title) {
+    titleInput.classList.add('is-invalid');
+    isValid = false;
+  }
+
+  if (!description) {
+    descriptionInput.classList.add('is-invalid');
+    isValid = false;
+  }
+
+  if (!dueDate) {
+    dueDateInput.classList.add('is-invalid');
+    isValid = false;
+  }
+
+  if (!assignee) {
+    assigneeInput.classList.add('is-invalid');
+    isValid = false;
+  }
+
+  if (!isValid) {
+    return;
+  }
+
+  const taskData = {
+    title,
+    description,
+    dueDate,
+    priority,
+    assignee,
+    contactInfo
+  };
+
+  if (conversationId) {
+    taskData.conversationId = conversationId;
+  }
+
+  const method = taskId ? 'PUT' : 'POST';
+  const url = taskId ? `/api/tasks/${taskId}` : '/api/tasks';
+
+  fetch(url, {
+    method: method,
+    headers: {
+      'Content-Type': 'application/json',
+      'x-auth-token': token || localStorage.getItem('chatbot-auth-token')
+    },
+    body: JSON.stringify(taskData)
+  })
+    .then(response => {
+      if (!response.ok) {
+        throw new Error('Failed to save task');
+      }
+      return response.json();
+    })
+    .then(
+      data => {
+        bootstrap.Modal.getInstance(document.getElementById('taskModal')).hide();
+
+        showNotification('Success', taskId ? 'Task updated successfully' : 'Task created successfully', 'success');
+
+        loadTasks();
+      })
+    .catch(error => {
+      logger.error('Error saving task:', error);
+      showNotification('Error', 'Failed to save task', 'error');
+    });
+}
+
+function updateTaskStatus(token, status) {
+  const taskId = document.getElementById('task-detail-container').dataset.taskId;
+
+  fetch(`/api/tasks/${taskId}`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-auth-token': token || localStorage.getItem('chatbot-auth-token')
+    },
+    body: JSON.stringify({ status })
+  })
+    .then(response => {
+      if (!response.ok) {
+        throw new Error('Failed to update task status');
+      }
+      return response.json();
+    })
+    .then(
+      data => {
+        showNotification('Success', 'Task status updated successfully', 'success');
+      })
+    .catch(error => {
+      logger.error('Error updating task status:', error);
+      showNotification('Error', 'Failed to update task status', 'error');
+    });
+}
+
+function addComment(token) {
+  const taskId = document.getElementById('task-detail-container').dataset.taskId;
+  const content = document.getElementById('comment-input').value.trim();
+
+  if (!content) {
+    return;
+  }
+
+  fetch(`/api/tasks/${taskId}/comments`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-auth-token': token || localStorage.getItem('chatbot-auth-token')
+    },
+    body: JSON.stringify({ content })
+  })
+    .then(response => {
+      if (!response.ok) {
+        throw new Error('Failed to add comment');
+      }
+      return response.json();
+    })
+    .then(
+      data => {
+        document.getElementById('comment-input').value = '';
+        loadTaskComments(taskId);
+      })
+    .catch(error => {
+      logger.error('Error adding comment:', error);
+      showNotification('Error', 'Failed to add comment', 'error');
+    });
+}
+
+function deleteTask(taskId) {
+  fetch(`/api/tasks/${taskId}`, {
+    method: 'DELETE',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-auth-token': localStorage.getItem('chatbot-auth-token')
+    }
+  })
+    .then(response => {
+      if (!response.ok) {
+        throw new Error('Failed to delete task');
+      }
+      return response.json();
+    })
+    .then(
+      data => {
+        showNotification('Success', 'Task deleted successfully', 'success');
+
+        const currentTaskId = document.querySelector('#task-detail-container')?.dataset.taskId;
+        if (currentTaskId === taskId) {
+          showTaskList();
+        }
+
+        loadTasks();
+      })
+    .catch(error => {
+      logger.error('Error deleting task:', error);
+      showNotification('Error', 'Failed to delete task', 'error');
+    });
+}
