@@ -795,10 +795,16 @@ function updateColumns(id) {
 function applyStickySpreadsheetRows() {
   const table = document.getElementById('spreadsheet-table');
   if (!table) return;
-  const headerHeight = table.querySelector('thead')?.offsetHeight || 0;
-  const rows = table.querySelectorAll('tbody tr');
-  if (rows.length > 0) {
-    const first = rows[0];
+
+  const header = table.querySelector('thead tr');
+  if (header) {
+    header.classList.add('sticky-header');
+    header.style.top = '0';
+  }
+
+  const headerHeight = header ? header.offsetHeight : 0;
+  const first = table.querySelector('tbody tr');
+  if (first) {
     first.classList.add('sticky-row');
     first.style.top = `${headerHeight}px`;
   }
