@@ -267,13 +267,82 @@ router.get('/analytics', async (req, res) => {
         avg: Math.round(r.total / r.count / 1000)
       }));
 
+    // Helper to compute conversation metrics for a period
+    async function conversationMetricsBetween(start, end) {
+      const result = await Conversation.aggregate([
+        { $match: { startedAt: { $gte: start, $lt: end } } },
+        {
+          $project: {
+            messagesCount: { $size: '$messages' },
+            durationMs: {
+              $subtract: [
+                { $ifNull: ['$endedAt', '$lastActivity'] },
+                '$startedAt'
+              ]
+            }
+          }
+        },
+        {
+          $group: {
+            _id: null,
+            total: { $sum: 1 },
+            avgDurationMs: { $avg: '$durationMs' },
+            avgMessages: { $avg: '$messagesCount' }
+          }
+        }
+      ]);
+      return result[0] || { total: 0, avgDurationMs: 0, avgMessages: 0 };
+    }
+
+    const now = new Date();
+    const todayStart = new Date(now);
+    todayStart.setHours(0, 0, 0, 0);
+    const weekStart = new Date(todayStart);
+    weekStart.setDate(weekStart.getDate() - weekStart.getDay());
+    const monthStart = new Date(todayStart.getFullYear(), todayStart.getMonth(), 1);
+    const prevMonthStart = new Date(monthStart);
+    prevMonthStart.setMonth(prevMonthStart.getMonth() - 1);
+
+    const metricsToday = await conversationMetricsBetween(todayStart, now);
+    const metricsWeek = await conversationMetricsBetween(weekStart, now);
+    const metricsMonth = await conversationMetricsBetween(monthStart, now);
+    const metricsPrevMonth = await conversationMetricsBetween(prevMonthStart, monthStart);
+
+    function pctChange(curr, prev) {
+      if (!prev) return 0;
+      if (prev === 0) return curr === 0 ? 0 : 100;
+      return Math.round(((curr - prev) / prev) * 100);
+    }
+
+    const conversationMetrics = {
+      totalConversations: {
+        today: metricsToday.total,
+        thisWeek: metricsWeek.total,
+        thisMonth: metricsMonth.total,
+        change: pctChange(metricsMonth.total, metricsPrevMonth.total)
+      },
+      averageDuration: {
+        today: Math.round(metricsToday.avgDurationMs / 60000),
+        thisWeek: Math.round(metricsWeek.avgDurationMs / 60000),
+        thisMonth: Math.round(metricsMonth.avgDurationMs / 60000),
+        change: pctChange(metricsMonth.avgDurationMs, metricsPrevMonth.avgDurationMs)
+      },
+      messagesPerConversation: {
+        today: Math.round(metricsToday.avgMessages),
+        thisWeek: Math.round(metricsWeek.avgMessages),
+        thisMonth: Math.round(metricsMonth.avgMessages),
+        change: pctChange(metricsMonth.avgMessages, metricsPrevMonth.avgMessages)
+      }
+    };
+
     res.json({
       totalChatsToday,
       activeChats,
       chatVolumePerDay,
       chatVolumeOverTime,
       avgResponseTime,
-      responseTimeOverTime
+      responseTimeOverTime,
+      conversationMetrics
     });
   } catch (error) {
     console.error('Error fetching analytics:', error);

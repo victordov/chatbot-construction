@@ -196,6 +196,38 @@ function updateChatVolumeChart(volumeData) {
   chatVolumeChart.update();
 }
 
+// Update conversation metrics table
+function updateConversationMetrics(metrics) {
+  if (!metrics) return;
+
+  const total = metrics.totalConversations || {};
+  document.getElementById('conv-total-today').textContent = total.today || 0;
+  document.getElementById('conv-total-week').textContent = total.thisWeek || 0;
+  document.getElementById('conv-total-month').textContent = total.thisMonth || 0;
+  document.getElementById('conv-total-change').textContent =
+    (total.change ?? 0) + '%';
+
+  const dur = metrics.averageDuration || {};
+  document.getElementById('conv-duration-today').textContent =
+    (dur.today || 0) + ' min';
+  document.getElementById('conv-duration-week').textContent =
+    (dur.thisWeek || 0) + ' min';
+  document.getElementById('conv-duration-month').textContent =
+    (dur.thisMonth || 0) + ' min';
+  document.getElementById('conv-duration-change').textContent =
+    (dur.change ?? 0) + '%';
+
+  const msgs = metrics.messagesPerConversation || {};
+  document.getElementById('conv-msgs-today').textContent =
+    Math.round(msgs.today || 0);
+  document.getElementById('conv-msgs-week').textContent =
+    Math.round(msgs.thisWeek || 0);
+  document.getElementById('conv-msgs-month').textContent =
+    Math.round(msgs.thisMonth || 0);
+  document.getElementById('conv-msgs-change').textContent =
+    (msgs.change ?? 0) + '%';
+}
+
 // Load dashboard data
 function loadDashboardData(token) {
   // In a real app, this would fetch data from the server
@@ -217,6 +249,9 @@ function loadDashboardData(token) {
       }
       if (data.responseTimeOverTime) {
         updateResponseTimeChart(data.responseTimeOverTime);
+      }
+      if (data.conversationMetrics) {
+        updateConversationMetrics(data.conversationMetrics);
       }
     })
     .catch(error => {
