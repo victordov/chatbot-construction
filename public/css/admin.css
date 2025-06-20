@@ -156,6 +156,7 @@
 .spreadsheet-table-container {
   max-height: 80vh;
   overflow: auto;
+  width: 100%;
 }
 
 .spreadsheet-table-container table {
@@ -205,4 +206,9 @@ th .col-resizer {
 .kb-step {
   max-width: 600px;
   margin: 0 auto;
+}
+
+/* Allow the columns step to expand fully for the table */
+#kb-step-columns {
+  max-width: none;
 }
