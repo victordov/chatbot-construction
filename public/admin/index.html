@@ -513,9 +513,6 @@
                                 <li class="nav-item" role="presentation">
                                     <button class="nav-link" id="knowledge-tab" data-bs-toggle="tab" data-bs-target="#knowledge-pane" type="button" role="tab">Knowledge Base</button>
                                 </li>
-                                <li class="nav-item" role="presentation">
-                                    <button class="nav-link" id="pdf-tab" data-bs-toggle="tab" data-bs-target="#pdf-pane" type="button" role="tab">PDF Generation</button>
-                                </li>
                             </ul>
                             <div class="tab-content">
                                 <div class="tab-pane fade show active" id="general-pane" role="tabpanel">
@@ -557,6 +554,7 @@
                                     <div id="kb-step-sheet" class="kb-step d-none">
                                         <h5>Step 2: Choose the Sheet</h5>
                                         <p>Selected Spreadsheet: <span id="selected-spreadsheet-name"></span> <button class="btn btn-link btn-sm" id="kb-change-spreadsheet">Change</button></p>
+                                        <input type="hidden" id="spreadsheet-id">
                                         <div class="mb-3">
                                             <label for="sheet-select" class="form-label">Sheet</label>
                                             <select class="form-select" id="sheet-select"></select>
@@ -581,80 +579,6 @@
                                         <button type="button" class="btn btn-outline-secondary me-2" id="kb-refresh">Refresh Data</button>
                                         <button type="button" class="btn btn-outline-secondary me-2" id="kb-edit">Edit Configuration</button>
                                         <button type="button" class="btn btn-outline-danger" id="kb-disconnect">Disconnect</button>
-                                    </div>
-                                </div>
-                                <div class="tab-pane fade" id="pdf-pane" role="tabpanel">
-                                    <h5 class="mt-0">PDF Configuration</h5>
-                                    <div class="mb-3 form-check">
-                                        <input type="checkbox" class="form-check-input" id="enable-pdf">
-                                        <label class="form-check-label" for="enable-pdf">Allow chatbot to generate PDFs</label>
-                                    </div>
-                                    <h6 class="mt-3">PDF Column Configuration</h6>
-                                    <div class="mb-3">
-                                        <label class="form-label">Apartment Information Columns</label>
-                                        <div id="column-config-container" class="list-group">
-                                            <!-- Column items will be added here dynamically -->
-                                            <div class="list-group-item">
-                                                <div class="d-flex justify-content-between align-items-center">
-                                                    <div>
-                                                        <input type="checkbox" class="form-check-input me-2" id="col-address" checked>
-                                                        <label class="form-check-label" for="col-address">Address</label>
-                                                    </div>
-                                                    <div>
-                                                        <button class="btn btn-sm btn-outline-secondary move-up">↑</button>
-                                                        <button class="btn btn-sm btn-outline-secondary move-down">↓</button>
-                                                    </div>
-                                                </div>
-                                            </div>
-                                            <div class="list-group-item">
-                                                <div class="d-flex justify-content-between align-items-center">
-                                                    <div>
-                                                        <input type="checkbox" class="form-check-input me-2" id="col-size" checked>
-                                                        <label class="form-check-label" for="col-size">Size (sq ft)</label>
-                                                    </div>
-                                                    <div>
-                                                        <button class="btn btn-sm btn-outline-secondary move-up">↑</button>
-                                                        <button class="btn btn-sm btn-outline-secondary move-down">↓</button>
-                                                    </div>
-                                                </div>
-                                            </div>
-                                            <div class="list-group-item">
-                                                <div class="d-flex justify-content-between align-items-center">
-                                                    <div>
-                                                        <input type="checkbox" class="form-check-input me-2" id="col-rooms" checked>
-                                                        <label class="form-check-label" for="col-rooms">Rooms</label>
-                                                    </div>
-                                                    <div>
-                                                        <button class="btn btn-sm btn-outline-secondary move-up">↑</button>
-                                                        <button class="btn btn-sm btn-outline-secondary move-down">↓</button>
-                                                    </div>
-                                                </div>
-                                            </div>
-                                            <div class="list-group-item">
-                                                <div class="d-flex justify-content-between align-items-center">
-                                                    <div>
-                                                        <input type="checkbox" class="form-check-input me-2" id="col-price" checked>
-                                                        <label class="form-check-label" for="col-price">Price</label>
-                                                    </div>
-                                                    <div>
-                                                        <button class="btn btn-sm btn-outline-secondary move-up">↑</button>
-                                                        <button class="btn btn-sm btn-outline-secondary move-down">↓</button>
-                                                    </div>
-                                                </div>
-                                            </div>
-                                            <div class="list-group-item">
-                                                <div class="d-flex justify-content-between align-items-center">
-                                                    <div>
-                                                        <input type="checkbox" class="form-check-input me-2" id="col-details" checked>
-                                                        <label class="form-check-label" for="col-details">Details</label>
-                                                    </div>
-                                                    <div>
-                                                        <button class="btn btn-sm btn-outline-secondary move-up">↑</button>
-                                                        <button class="btn btn-sm btn-outline-secondary move-down">↓</button>
-                                                    </div>
-                                                </div>
-                                            </div>
-                                        </div>
                                     </div>
                                 </div>
                             </div>

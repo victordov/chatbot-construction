@@ -52,8 +52,6 @@ jspm_packages/
 # Backups
 backups/
 
-# Generated PDFs
-generated_pdfs/
 
 # Security reports
 security-reports/

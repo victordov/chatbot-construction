@@ -53,7 +53,15 @@ router.post('/token', auth, async (req, res) => {
 router.get('/status', auth, async (req, res) => {
   try {
     const authorized = await authService.hasTokens(req.user.id);
-    res.json({ authorized });
+    let email = null;
+    if (authorized) {
+      try {
+        email = await authService.getUserEmail(req.user.id);
+      } catch (err) {
+        logger.error('Failed to fetch Google user email', { error: err });
+      }
+    }
+    res.json({ authorized, email });
   } catch (err) {
     logger.error('Failed to check Google auth status', { error: err });
     res.status(500).json({ error: 'Failed to check status' });

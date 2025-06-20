@@ -516,7 +516,13 @@ function connectGoogleAccount(event) {
   fetch('/api/google/auth/url', { headers: { 'x-auth-token': token } })
     .then(res => res.json())
     .then(data => {
-      window.open(data.url, '_blank');
+      const w = window.open(data.url, '_blank');
+      const poll = setInterval(() => {
+        if (w.closed) {
+          clearInterval(poll);
+          checkGoogleStatus();
+        }
+      }, 1000);
     })
     .catch(() => showToast('Failed to initiate Google OAuth', 'danger'))
     .finally(() => setLoading(btn, false));
@@ -531,6 +537,8 @@ function checkGoogleStatus() {
       if (btn) {
         btn.textContent = data.authorized ? 'Reauthorize Google Account' : 'Connect Google Account';
       }
+      const span = document.getElementById('google-account');
+      if (span) span.textContent = data.email || '';
       showStep(data.authorized ? 'kb-step-search' : 'kb-step-connect');
     });
 }

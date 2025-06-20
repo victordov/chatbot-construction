@@ -87,6 +87,13 @@ class GoogleAuthService {
     const token = await GoogleToken.findOne({ userId });
     return !!token;
   }
+
+  async getUserEmail(userId) {
+    const client = await this.getOAuthClient(userId);
+    const oauth2 = google.oauth2({ auth: client, version: 'v2' });
+    const res = await oauth2.userinfo.get();
+    return res.data.email;
+  }
 }
 
 module.exports = GoogleAuthService;

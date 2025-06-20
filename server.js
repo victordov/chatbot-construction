@@ -1,5 +1,4 @@
 const express = require('express');
-const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const mongoose = require('mongoose');
@@ -60,26 +59,6 @@ if (!fs.existsSync(publicDir)) {
 }
 app.use(express.static(publicDir));
 
-// Set up storage for PDF uploads
-const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    const uploadDir = path.join(__dirname, 'uploads');
-    if (!fs.existsSync(uploadDir)) {
-      fs.mkdirSync(uploadDir);
-    }
-    cb(null, uploadDir);
-  },
-  filename: function (req, file, cb) {
-    cb(null, Date.now() + '-' + file.originalname);
-  }
-});
-const upload = multer({ storage: storage, fileFilter: (req, file, cb) => {
-  if (file.mimetype === 'application/pdf') {
-    cb(null, true);
-  } else {
-    cb(new Error('Only PDF files are allowed!'));
-  }
-}});
 
 // Domain whitelisting middleware
 const allowedDomains = process.env.ALLOWED_DOMAINS
@@ -155,23 +134,6 @@ app.post('/api/chat', (req, res) => {
   res.json({ reply: `You said: ${message}` });
 });
 
-// File upload endpoint
-app.post('/api/upload', upload.single('pdf'), (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({ error: 'No file uploaded or invalid file type.' });
-  }
-  res.json({ filename: req.file.filename, url: `/api/download/${req.file.filename}` });
-});
-
-// File download endpoint
-app.get('/api/download/:filename', (req, res) => {
-  const filePath = path.join(__dirname, 'uploads', req.params.filename);
-  if (fs.existsSync(filePath)) {
-    res.download(filePath);
-  } else {
-    res.status(404).json({ error: 'File not found.' });
-  }
-});
 
 // Register routes
 app.use('/api/session', sessionRoutes);

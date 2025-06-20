@@ -190,9 +190,6 @@ function setupEventHandlers(socket) {
     }
   });
 
-  // Load column configuration
-  loadColumnConfig();
-
   // Socket events
   socket.on('new-chat', function(data) {
     // Update active chats count
