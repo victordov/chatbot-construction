@@ -838,11 +838,11 @@ function applyStickySpreadsheetRows() {
   }
 
   const headerHeight = header ? header.offsetHeight : 0;
-  const first = table.querySelector('tbody tr');
-  if (first) {
-    first.classList.add('sticky-row');
-    first.style.top = `${headerHeight}px`;
-  }
+
+  table.querySelectorAll('tbody tr').forEach(tr => {
+    tr.classList.add('sticky-row');
+    tr.style.top = `${headerHeight}px`;
+  });
 
   enableSpreadsheetColumnResizing(table);
 }
