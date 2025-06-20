@@ -20,7 +20,8 @@ class GoogleAuthService {
     const client = this.createOAuthClient();
     const scopes = [
       'https://www.googleapis.com/auth/spreadsheets.readonly',
-      'https://www.googleapis.com/auth/drive.readonly'
+      'https://www.googleapis.com/auth/drive.readonly',
+      'https://www.googleapis.com/auth/userinfo.email'
     ];
     return client.generateAuthUrl({
       access_type: 'offline',
