@@ -544,6 +544,8 @@ function checkGoogleStatus() {
 }
 
 // Load spreadsheet data and display in table
+let currentDocId = null;
+
 function loadSpreadsheet(event) {
   const btn = event?.currentTarget;
   setLoading(btn, true);
@@ -569,8 +571,8 @@ function loadSpreadsheet(event) {
       if (document.getElementById('knowledge-list')) {
         refreshKnowledge();
       }
+      currentDocId = data.doc._id;
       expandKnowledge(data.doc._id);
-      showStep('kb-step-columns');
     })
     .catch(() => showToast('Failed to load spreadsheet', 'danger'))
     .finally(() => setLoading(btn, false));
@@ -678,8 +680,8 @@ function loadFromModal(event) {
       if (document.getElementById('knowledge-list')) {
         refreshKnowledge();
       }
+      currentDocId = data.doc._id;
       expandKnowledge(data.doc._id);
-      showStep('kb-step-columns');
     })
     .catch(() => showToast('Failed to load spreadsheet', 'danger'))
     .finally(() => setLoading(btn, false));
@@ -702,14 +704,19 @@ function refreshKnowledge(query = '', event) {
         const div = document.createElement('div');
         const expand = document.createElement('button');
         expand.className = 'btn btn-sm btn-outline-primary me-1';
-        expand.textContent = 'Expand';
+        expand.textContent = 'View';
         expand.addEventListener('click', () => expandKnowledge(doc._id));
         const refBtn = document.createElement('button');
-        refBtn.className = 'btn btn-sm btn-outline-secondary';
+        refBtn.className = 'btn btn-sm btn-outline-secondary me-1';
         refBtn.textContent = 'Refresh';
         refBtn.addEventListener('click', event => refreshDocument(doc._id, event));
+        const delBtn = document.createElement('button');
+        delBtn.className = 'btn btn-sm btn-outline-danger';
+        delBtn.textContent = 'Delete';
+        delBtn.addEventListener('click', event => deleteKnowledge(doc._id, event));
         div.appendChild(expand);
         div.appendChild(refBtn);
+        div.appendChild(delBtn);
         li.appendChild(div);
         list.appendChild(li);
       });
@@ -736,6 +743,7 @@ function expandKnowledge(id) {
   fetch(`/api/google/knowledge/${id}`, { headers: { 'x-auth-token': token } })
     .then(res => res.json())
     .then(data => {
+      currentDocId = data.doc._id;
       const table = document.getElementById('spreadsheet-table');
       table.innerHTML = '';
       const headerRow = document.createElement('tr');
@@ -781,6 +789,7 @@ function expandKnowledge(id) {
           }
         }
       }
+      showStep('kb-step-columns');
     })
     .catch(() => showToast('Failed to load document', 'danger'));
 }
@@ -872,6 +881,48 @@ function enableSpreadsheetColumnResizing(table) {
   table.style.width = `${initialWidth}px`;
 }
 
+function showSummary(id) {
+  const token = localStorage.getItem('chatbot-auth-token');
+  fetch(`/api/google/knowledge/${id}`, { headers: { 'x-auth-token': token } })
+    .then(res => res.json())
+    .then(data => {
+      const ul = document.getElementById('kb-summary-details');
+      if (!ul) return;
+      ul.innerHTML = '';
+      const email = document.getElementById('google-account')?.textContent || '';
+      const items = [
+        `Spreadsheet: ${data.doc.title || data.doc.spreadsheetId}`,
+        `Sheet: ${data.doc.sheet || 'Sheet1'}`,
+        `Authorized Account: ${email}`,
+        `Active Columns: ${data.doc.columns.filter(c => !c.exclude).map(c => c.name).join(', ')}`
+      ];
+      items.forEach(text => {
+        const li = document.createElement('li');
+        li.textContent = text;
+        ul.appendChild(li);
+      });
+      showStep('kb-summary');
+    })
+    .catch(() => showToast('Failed to load configuration', 'danger'));
+}
+
+function deleteKnowledge(id, event) {
+  const btn = event?.currentTarget;
+  setLoading(btn, true);
+  const token = localStorage.getItem('chatbot-auth-token');
+  fetch(`/api/google/knowledge/${id}`, { method: 'DELETE', headers: { 'x-auth-token': token } })
+    .then(res => res.json())
+    .then(() => {
+      if (currentDocId === id) {
+        currentDocId = null;
+        showStep('kb-step-connect');
+      }
+      refreshKnowledge();
+    })
+    .catch(() => showToast('Delete failed', 'danger'))
+    .finally(() => setLoading(btn, false));
+}
+
 function showStep(id) {
   document.querySelectorAll('.kb-step').forEach(el => el.classList.add('d-none'));
   const step = document.getElementById(id);
@@ -943,5 +994,28 @@ document.addEventListener('DOMContentLoaded', function() {
   const changeGoogleBtn = document.getElementById('change-google');
   if (changeGoogleBtn) {
     changeGoogleBtn.addEventListener('click', () => showStep('kb-step-connect'));
+  }
+
+  const finishBtn = document.getElementById('finish-kb-setup');
+  if (finishBtn) {
+    finishBtn.addEventListener('click', () => currentDocId && showSummary(currentDocId));
+  }
+
+  const refreshKbBtn = document.getElementById('kb-refresh');
+  if (refreshKbBtn) {
+    refreshKbBtn.addEventListener('click', event => {
+      refreshDocument(currentDocId, event);
+      if (currentDocId) showSummary(currentDocId);
+    });
+  }
+
+  const editKbBtn = document.getElementById('kb-edit');
+  if (editKbBtn) {
+    editKbBtn.addEventListener('click', () => currentDocId && showStep('kb-step-columns'));
+  }
+
+  const disconnectKbBtn = document.getElementById('kb-disconnect');
+  if (disconnectKbBtn) {
+    disconnectKbBtn.addEventListener('click', event => deleteKnowledge(currentDocId, event));
   }
 });

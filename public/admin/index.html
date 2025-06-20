@@ -537,6 +537,17 @@
                                     </form>
                                 </div>
                                 <div class="tab-pane fade" id="knowledge-pane" role="tabpanel">
+                                    <div id="knowledge-management" class="mb-4">
+                                        <div class="d-flex mb-2 align-items-center">
+                                            <h6 class="me-auto mb-0">Saved Spreadsheets</h6>
+                                            <div class="input-group input-group-sm w-auto me-2">
+                                                <input type="text" class="form-control" id="knowledge-query" placeholder="Search Saved">
+                                                <button class="btn btn-outline-secondary" type="button" id="search-knowledge">Search</button>
+                                            </div>
+                                            <button type="button" class="btn btn-sm btn-outline-secondary" id="refresh-knowledge">Refresh</button>
+                                        </div>
+                                        <ul class="list-group mb-3" id="knowledge-list"></ul>
+                                    </div>
                                     <div id="kb-step-connect" class="kb-step">
                                         <h5>Connect a Knowledge Source</h5>
                                         <p>Connect a Google Spreadsheet to provide the chatbot with a knowledge base. The chatbot will use the selected data to answer questions.</p>

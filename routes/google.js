@@ -144,6 +144,17 @@ router.post('/knowledge/:id/columns', auth, async (req, res) => {
   }
 });
 
+// Delete knowledge document
+router.delete('/knowledge/:id', auth, async (req, res) => {
+  try {
+    await knowledgeService.delete(req.user.id, req.params.id);
+    res.json({ success: true });
+  } catch (err) {
+    logger.error('Failed to delete knowledge document', { error: err });
+    res.status(500).json({ error: 'Failed to delete document' });
+  }
+});
+
 // Get names of sheets within a spreadsheet
 router.get('/sheets/:spreadsheetId/names', auth, operator, async (req, res) => {
   try {
