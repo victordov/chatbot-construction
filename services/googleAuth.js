@@ -20,7 +20,8 @@ class GoogleAuthService {
     const client = this.createOAuthClient();
     const scopes = [
       'https://www.googleapis.com/auth/spreadsheets.readonly',
-      'https://www.googleapis.com/auth/drive.readonly'
+      'https://www.googleapis.com/auth/drive.readonly',
+      'https://www.googleapis.com/auth/userinfo.email'
     ];
     return client.generateAuthUrl({
       access_type: 'offline',
@@ -86,6 +87,13 @@ class GoogleAuthService {
   async hasTokens(userId) {
     const token = await GoogleToken.findOne({ userId });
     return !!token;
+  }
+
+  async getUserEmail(userId) {
+    const client = await this.getOAuthClient(userId);
+    const oauth2 = google.oauth2({ auth: client, version: 'v2' });
+    const res = await oauth2.userinfo.get();
+    return res.data.email;
   }
 }
 

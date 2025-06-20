@@ -308,6 +308,7 @@ function displayTasks(tasks) {
   // Add tasks to the list
   tasks.forEach(task => {
     const row = document.createElement('tr');
+    const assigneeDisplay = task.assigneeName || task.assignee?.username || 'Unassigned';
 
     // Format due date
     const dueDate = new Date(task.dueDate);
@@ -392,7 +393,7 @@ function displayTasks(tasks) {
       <td class="description-cell">${task.description.length > 50 ? task.description.substring(0, 50) + '...' : task.description}</td>
       <td>${formattedDate}</td>
       <td></td>
-      <td>${task.assigneeName || 'Unassigned'}</td>
+      <td>${assigneeDisplay}</td>
       <td></td>
     `;
 
@@ -442,6 +443,8 @@ function displayTaskDetails(task) {
   document.getElementById('task-detail-container').dataset.taskId = task._id;
   document.querySelector('.row.mb-3').style.display = 'none';
 
+  const assigneeDisplay = task.assigneeName || task.assignee?.username || 'Unassigned';
+
   // Set task details
   document.getElementById('task-title').textContent = task.title;
   document.getElementById('task-description').textContent = task.description;
@@ -471,7 +474,7 @@ function displayTaskDetails(task) {
   }
 
   // Set assignee
-  document.getElementById('task-assignee').textContent = task.assigneeName || 'Unassigned';
+  document.getElementById('task-assignee').textContent = assigneeDisplay;
 
   // Set status dropdown
   document.getElementById('task-status-update').value = task.status;

@@ -4,6 +4,7 @@
 
 const Task = require('../models/task');
 const Conversation = require('../models/conversation');
+const User = require('../models/user');
 const { logger } = require('./logging');
 
 class TaskService {
@@ -87,6 +88,14 @@ class TaskService {
    */
   async createTask(taskData) {
     try {
+      // Lookup assignee name for easier display later
+      if (taskData.assignee) {
+        const user = await User.findById(taskData.assignee).select('username');
+        if (user) {
+          taskData.assigneeName = user.username;
+        }
+      }
+
       // Create the task
       const task = new Task(taskData);
       await task.save();
@@ -98,6 +107,9 @@ class TaskService {
           { $push: { tasks: task._id } }
         );
       }
+
+      await task.populate('assignee', 'username email')
+        .populate('createdBy', 'username email');
 
       return task;
     } catch (error) {

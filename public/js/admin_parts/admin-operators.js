@@ -516,7 +516,13 @@ function connectGoogleAccount(event) {
   fetch('/api/google/auth/url', { headers: { 'x-auth-token': token } })
     .then(res => res.json())
     .then(data => {
-      window.open(data.url, '_blank');
+      const w = window.open(data.url, '_blank');
+      const poll = setInterval(() => {
+        if (w.closed) {
+          clearInterval(poll);
+          checkGoogleStatus();
+        }
+      }, 1000);
     })
     .catch(() => showToast('Failed to initiate Google OAuth', 'danger'))
     .finally(() => setLoading(btn, false));
@@ -531,10 +537,15 @@ function checkGoogleStatus() {
       if (btn) {
         btn.textContent = data.authorized ? 'Reauthorize Google Account' : 'Connect Google Account';
       }
+      const span = document.getElementById('google-account');
+      if (span) span.textContent = data.email || '';
+      showStep(data.authorized ? 'kb-step-search' : 'kb-step-connect');
     });
 }
 
 // Load spreadsheet data and display in table
+let currentDocId = null;
+
 function loadSpreadsheet(event) {
   const btn = event?.currentTarget;
   setLoading(btn, true);
@@ -542,10 +553,13 @@ function loadSpreadsheet(event) {
   const spreadsheetId = document.getElementById('spreadsheet-id').value;
   const defaultSheet = document.getElementById('default-sheet').checked;
   const sheet = defaultSheet ? 'Sheet1' : document.getElementById('sheet-select').value;
-  const exclude = document.getElementById('exclude-columns').value
-    .split(',')
-    .map(s => s.trim())
-    .filter(Boolean);
+  const excludeInput = document.getElementById('exclude-columns');
+  const exclude = excludeInput
+    ? excludeInput.value
+        .split(',')
+        .map(s => s.trim())
+        .filter(Boolean)
+    : [];
 
   fetch('/api/google/knowledge/import', {
     method: 'POST',
@@ -554,7 +568,10 @@ function loadSpreadsheet(event) {
   })
     .then(res => res.json())
     .then(data => {
-      refreshKnowledge();
+      if (document.getElementById('knowledge-list')) {
+        refreshKnowledge();
+      }
+      currentDocId = data.doc._id;
       expandKnowledge(data.doc._id);
     })
     .catch(() => showToast('Failed to load spreadsheet', 'danger'))
@@ -578,8 +595,8 @@ function searchDrive(event) {
         li.textContent = f.name;
         const btn = document.createElement('button');
         btn.className = 'btn btn-sm btn-primary';
-        btn.textContent = 'Load';
-        btn.addEventListener('click', () => openLoadModal(f.id));
+        btn.textContent = 'Select';
+        btn.addEventListener('click', () => openLoadModal(f.id, f.name));
         li.appendChild(btn);
         list.appendChild(li);
       });
@@ -588,11 +605,14 @@ function searchDrive(event) {
     .finally(() => setLoading(btn, false));
 }
 
-function openLoadModal(id) {
-  document.getElementById('modal-spreadsheet-id').value = id;
-  fetchModalSheetNames(id).then(() => {
-    const modal = new bootstrap.Modal(document.getElementById('loadSheetModal'));
-    modal.show();
+function openLoadModal(id, name) {
+  document.getElementById('spreadsheet-id').value = id;
+  if (name) {
+    const span = document.getElementById('selected-spreadsheet-name');
+    if (span) span.textContent = name;
+  }
+  fetchSheetNames(id).then(() => {
+    showStep('kb-step-sheet');
   });
 }
 
@@ -603,7 +623,7 @@ function importSpreadsheet(id) {
 
 function fetchSheetNames(id) {
   const token = localStorage.getItem('chatbot-auth-token');
-  fetch(`/api/google/sheets/${id}/names`, { headers: { 'x-auth-token': token } })
+  return fetch(`/api/google/sheets/${id}/names`, { headers: { 'x-auth-token': token } })
     .then(res => res.json())
     .then(data => {
       const select = document.getElementById('sheet-select');
@@ -642,10 +662,13 @@ function loadFromModal(event) {
   const spreadsheetId = document.getElementById('modal-spreadsheet-id').value;
   const defaultSheet = document.getElementById('modal-default-sheet').checked;
   const sheet = defaultSheet ? 'Sheet1' : document.getElementById('modal-sheet-select').value;
-  const exclude = document.getElementById('exclude-columns').value
-    .split(',')
-    .map(s => s.trim())
-    .filter(Boolean);
+  const excludeInput = document.getElementById('exclude-columns');
+  const exclude = excludeInput
+    ? excludeInput.value
+        .split(',')
+        .map(s => s.trim())
+        .filter(Boolean)
+    : [];
   fetch('/api/google/knowledge/import', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-auth-token': token },
@@ -654,7 +677,10 @@ function loadFromModal(event) {
     .then(res => res.json())
     .then(data => {
       bootstrap.Modal.getInstance(document.getElementById('loadSheetModal')).hide();
-      refreshKnowledge();
+      if (document.getElementById('knowledge-list')) {
+        refreshKnowledge();
+      }
+      currentDocId = data.doc._id;
       expandKnowledge(data.doc._id);
     })
     .catch(() => showToast('Failed to load spreadsheet', 'danger'))
@@ -678,14 +704,19 @@ function refreshKnowledge(query = '', event) {
         const div = document.createElement('div');
         const expand = document.createElement('button');
         expand.className = 'btn btn-sm btn-outline-primary me-1';
-        expand.textContent = 'Expand';
+        expand.textContent = 'View';
         expand.addEventListener('click', () => expandKnowledge(doc._id));
         const refBtn = document.createElement('button');
-        refBtn.className = 'btn btn-sm btn-outline-secondary';
+        refBtn.className = 'btn btn-sm btn-outline-secondary me-1';
         refBtn.textContent = 'Refresh';
         refBtn.addEventListener('click', event => refreshDocument(doc._id, event));
+        const delBtn = document.createElement('button');
+        delBtn.className = 'btn btn-sm btn-outline-danger';
+        delBtn.textContent = 'Delete';
+        delBtn.addEventListener('click', event => deleteKnowledge(doc._id, event));
         div.appendChild(expand);
         div.appendChild(refBtn);
+        div.appendChild(delBtn);
         li.appendChild(div);
         list.appendChild(li);
       });
@@ -712,6 +743,7 @@ function expandKnowledge(id) {
   fetch(`/api/google/knowledge/${id}`, { headers: { 'x-auth-token': token } })
     .then(res => res.json())
     .then(data => {
+      currentDocId = data.doc._id;
       const table = document.getElementById('spreadsheet-table');
       table.innerHTML = '';
       const headerRow = document.createElement('tr');
@@ -757,6 +789,7 @@ function expandKnowledge(id) {
           }
         }
       }
+      showStep('kb-step-columns');
     })
     .catch(() => showToast('Failed to load document', 'danger'));
 }
@@ -848,8 +881,78 @@ function enableSpreadsheetColumnResizing(table) {
   table.style.width = `${initialWidth}px`;
 }
 
+function saveKnowledgeConfig(event) {
+  if (!currentDocId) return;
+  const btn = event?.currentTarget;
+  setLoading(btn, true);
+  const table = document.getElementById('spreadsheet-table');
+  const excluded = [];
+  table.querySelectorAll('thead th').forEach(th => {
+    const cb = th.querySelector('input[type="checkbox"]');
+    const name = th.textContent.trim();
+    if (cb && !cb.checked) excluded.push(name);
+  });
+  const token = localStorage.getItem('chatbot-auth-token');
+  fetch(`/api/google/knowledge/${currentDocId}/columns`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-auth-token': token },
+    body: JSON.stringify({ excluded })
+  })
+    .then(() => showSummary(currentDocId))
+    .catch(() => showToast('Failed to save configuration', 'danger'))
+    .finally(() => setLoading(btn, false));
+}
+
+function showSummary(id) {
+  const token = localStorage.getItem('chatbot-auth-token');
+  fetch(`/api/google/knowledge/${id}`, { headers: { 'x-auth-token': token } })
+    .then(res => res.json())
+    .then(data => {
+      const ul = document.getElementById('kb-summary-details');
+      if (!ul) return;
+      ul.innerHTML = '';
+      const email = document.getElementById('google-account')?.textContent || '';
+      const items = [
+        `Spreadsheet: ${data.doc.title || data.doc.spreadsheetId}`,
+        `Sheet: ${data.doc.sheet || 'Sheet1'}`,
+        `Authorized Account: ${email}`,
+        `Active Columns: ${data.doc.columns.filter(c => !c.exclude).map(c => c.name).join(', ')}`
+      ];
+      items.forEach(text => {
+        const li = document.createElement('li');
+        li.textContent = text;
+        ul.appendChild(li);
+      });
+      showStep('kb-summary');
+    })
+    .catch(() => showToast('Failed to load configuration', 'danger'));
+}
+
+function deleteKnowledge(id, event) {
+  const btn = event?.currentTarget;
+  setLoading(btn, true);
+  const token = localStorage.getItem('chatbot-auth-token');
+  fetch(`/api/google/knowledge/${id}`, { method: 'DELETE', headers: { 'x-auth-token': token } })
+    .then(res => res.json())
+    .then(() => {
+      if (currentDocId === id) {
+        currentDocId = null;
+        showStep('kb-step-connect');
+      }
+      refreshKnowledge();
+    })
+    .catch(() => showToast('Delete failed', 'danger'))
+    .finally(() => setLoading(btn, false));
+}
+
+function showStep(id) {
+  document.querySelectorAll('.kb-step').forEach(el => el.classList.add('d-none'));
+  const step = document.getElementById(id);
+  if (step) step.classList.remove('d-none');
+}
+
 document.addEventListener('DOMContentLoaded', function() {
-  const loadBtn = document.getElementById('load-spreadsheet');
+  const loadBtn = document.getElementById('load-sheet');
   if (loadBtn) {
     loadBtn.addEventListener('click', loadSpreadsheet);
   }
@@ -879,8 +982,13 @@ document.addEventListener('DOMContentLoaded', function() {
   if (defaultCb && sheetSelect) {
     defaultCb.addEventListener('change', function() {
       sheetSelect.disabled = this.checked;
+      if (loadBtn) loadBtn.disabled = !this.checked && !sheetSelect.value;
     });
     sheetSelect.disabled = defaultCb.checked;
+    if (loadBtn) loadBtn.disabled = !defaultCb.checked && !sheetSelect.value;
+    sheetSelect.addEventListener('change', function() {
+      if (loadBtn) loadBtn.disabled = !defaultCb.checked && !this.value;
+    });
   }
   const idInput = document.getElementById('spreadsheet-id');
   if (idInput) {
@@ -899,5 +1007,37 @@ document.addEventListener('DOMContentLoaded', function() {
       modalSheetSelect.disabled = this.checked;
     });
     modalSheetSelect.disabled = modalDefaultCb.checked;
+  }
+
+  const changeSpreadsheetBtn = document.getElementById('kb-change-spreadsheet');
+  if (changeSpreadsheetBtn) {
+    changeSpreadsheetBtn.addEventListener('click', () => showStep('kb-step-search'));
+  }
+  const changeGoogleBtn = document.getElementById('change-google');
+  if (changeGoogleBtn) {
+    changeGoogleBtn.addEventListener('click', () => showStep('kb-step-connect'));
+  }
+
+  const finishBtn = document.getElementById('finish-kb-setup');
+  if (finishBtn) {
+    finishBtn.addEventListener('click', saveKnowledgeConfig);
+  }
+
+  const refreshKbBtn = document.getElementById('kb-refresh');
+  if (refreshKbBtn) {
+    refreshKbBtn.addEventListener('click', event => {
+      refreshDocument(currentDocId, event);
+      if (currentDocId) showSummary(currentDocId);
+    });
+  }
+
+  const editKbBtn = document.getElementById('kb-edit');
+  if (editKbBtn) {
+    editKbBtn.addEventListener('click', () => currentDocId && showStep('kb-step-columns'));
+  }
+
+  const disconnectKbBtn = document.getElementById('kb-disconnect');
+  if (disconnectKbBtn) {
+    disconnectKbBtn.addEventListener('click', event => deleteKnowledge(currentDocId, event));
   }
 });

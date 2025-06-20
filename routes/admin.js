@@ -1,6 +1,5 @@
 const express = require('express');
 const Conversation = require('../models/conversation');
-const ColumnConfig = require('../models/columnConfig');
 const User = require('../models/user');
 const { auth, operator } = require('../middleware/auth');
 
@@ -350,76 +349,6 @@ router.get('/analytics', async (req, res) => {
   }
 });
 
-// Get column configuration
-router.get('/column-config/:type', async (req, res) => {
-  try {
-    const { type } = req.params;
-
-    // Find existing config or create default
-    let config = await ColumnConfig.findOne({ type });
-
-    if (!config) {
-      // Create default configuration based on pdfGenerator defaults
-      const defaultColumns = [
-        { key: 'address', label: 'Address', enabled: true, order: 0 },
-        { key: 'size', label: 'Size (sq ft)', enabled: true, order: 1 },
-        { key: 'rooms', label: 'Rooms', enabled: true, order: 2 },
-        { key: 'price', label: 'Price', enabled: true, order: 3 },
-        { key: 'details', label: 'Details', enabled: true, order: 4 }
-      ];
-
-      config = new ColumnConfig({
-        type,
-        columns: defaultColumns,
-        createdBy: req.user.id,
-        updatedBy: req.user.id
-      });
-
-      await config.save();
-    }
-
-    res.json(config);
-  } catch (error) {
-    console.error('Error fetching column configuration:', error);
-    res.status(500).json({ error: 'Failed to retrieve column configuration' });
-  }
-});
-
-// Update column configuration
-router.post('/column-config/:type', async (req, res) => {
-  try {
-    const { type } = req.params;
-    const { columns } = req.body;
-
-    if (!Array.isArray(columns)) {
-      return res.status(400).json({ error: 'Invalid columns data' });
-    }
-
-    // Find existing config or create new one
-    let config = await ColumnConfig.findOne({ type });
-
-    if (config) {
-      // Update existing config
-      config.columns = columns;
-      config.updatedBy = req.user.id;
-    } else {
-      // Create new config
-      config = new ColumnConfig({
-        type,
-        columns,
-        createdBy: req.user.id,
-        updatedBy: req.user.id
-      });
-    }
-
-    await config.save();
-
-    res.json({ success: true, config });
-  } catch (error) {
-    console.error('Error updating column configuration:', error);
-    res.status(500).json({ error: 'Failed to update column configuration' });
-  }
-});
 
 // Get operators for task assignment
 router.get('/operators', async (req, res) => {

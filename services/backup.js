@@ -105,6 +105,20 @@ class BackupService {
     logger.info('Starting database backup');
 
     try {
+      // Check if mongodump is installed
+      try {
+        await execAsync('which mongodump || command -v mongodump');
+      } catch (cmdError) {
+        throw new Error(
+          'mongodump command not found. MongoDB Database Tools are required for backups.\n' +
+          'Installation instructions:\n' +
+          '- For macOS: brew install mongodb-database-tools\n' +
+          '- For Ubuntu/Debian: sudo apt-get install mongodb-database-tools\n' +
+          '- For Windows: Download from https://www.mongodb.com/try/download/database-tools\n' +
+          'After installation, ensure the tools are in your system PATH.'
+        );
+      }
+
       // Use mongodump to backup the database
       const command = `mongodump --uri="${this.mongoUri}" --out="${dbBackupPath}"`;
       await execAsync(command);
@@ -230,6 +244,20 @@ class BackupService {
     logger.info('Starting database restoration');
 
     try {
+      // Check if mongorestore is installed
+      try {
+        await execAsync('which mongorestore || command -v mongorestore');
+      } catch (cmdError) {
+        throw new Error(
+          'mongorestore command not found. MongoDB Database Tools are required for restoration.\n' +
+          'Installation instructions:\n' +
+          '- For macOS: brew install mongodb-database-tools\n' +
+          '- For Ubuntu/Debian: sudo apt-get install mongodb-database-tools\n' +
+          '- For Windows: Download from https://www.mongodb.com/try/download/database-tools\n' +
+          'After installation, ensure the tools are in your system PATH.'
+        );
+      }
+
       // Use mongorestore to restore the database
       const command = `mongorestore --uri="${this.mongoUri}" --drop "${dbBackupPath}"`;
       await execAsync(command);

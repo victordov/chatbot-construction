@@ -506,142 +506,93 @@
                             <h5>Dashboard Settings</h5>
                         </div>
                         <div class="card-body">
-                            <form id="settings-form">
-                                <h5 class="mt-0">Notifications</h5>
-                                <div class="mb-3">
-                                    <label for="notification-setting" class="form-label">Notifications</label>
-                                    <select class="form-select" id="notification-setting">
-                                        <option value="all">All notifications</option>
-                                        <option value="important">Important only</option>
-                                        <option value="none">None</option>
-                                    </select>
+                            <ul class="nav nav-tabs mb-3" id="settings-tabs" role="tablist">
+                                <li class="nav-item" role="presentation">
+                                    <button class="nav-link active" id="general-tab" data-bs-toggle="tab" data-bs-target="#general-pane" type="button" role="tab">General</button>
+                                </li>
+                                <li class="nav-item" role="presentation">
+                                    <button class="nav-link" id="knowledge-tab" data-bs-toggle="tab" data-bs-target="#knowledge-pane" type="button" role="tab">Knowledge Base</button>
+                                </li>
+                            </ul>
+                            <div class="tab-content">
+                                <div class="tab-pane fade show active" id="general-pane" role="tabpanel">
+                                    <form id="settings-form">
+                                        <h5 class="mt-0">Notifications</h5>
+                                        <div class="mb-3">
+                                            <label for="notification-setting" class="form-label">Notifications</label>
+                                            <select class="form-select" id="notification-setting">
+                                                <option value="all">All notifications</option>
+                                                <option value="important">Important only</option>
+                                                <option value="none">None</option>
+                                            </select>
+                                        </div>
+                                        <div class="mb-3 form-check">
+                                            <input type="checkbox" class="form-check-input" id="sound-notifications">
+                                            <label class="form-check-label" for="sound-notifications">Enable sound notifications</label>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label for="auto-refresh" class="form-label">Auto-refresh interval (seconds)</label>
+                                            <input type="number" class="form-control" id="auto-refresh" min="5" value="30">
+                                        </div>
+                                    </form>
                                 </div>
-                                <div class="mb-3 form-check">
-                                    <input type="checkbox" class="form-check-input" id="sound-notifications">
-                                    <label class="form-check-label" for="sound-notifications">Enable sound notifications</label>
-                                </div>
-                                <div class="mb-3">
-                                    <label for="auto-refresh" class="form-label">Auto-refresh interval (seconds)</label>
-                                    <input type="number" class="form-control" id="auto-refresh" min="5" value="30">
-                                </div>
-
-                                <h5 class="mt-4">PDF Configuration</h5>
-                                <div class="mb-3 form-check">
-                                    <input type="checkbox" class="form-check-input" id="enable-pdf">
-                                    <label class="form-check-label" for="enable-pdf">Allow chatbot to generate PDFs</label>
-                                </div>
-                                <h6 class="mt-3">PDF Column Configuration</h6>
-                                <div class="mb-3">
-                                    <label class="form-label">Apartment Information Columns</label>
-                                    <div id="column-config-container" class="list-group">
-                                        <!-- Column items will be added here dynamically -->
-                                        <div class="list-group-item">
-                                            <div class="d-flex justify-content-between align-items-center">
-                                                <div>
-                                                    <input type="checkbox" class="form-check-input me-2" id="col-address" checked>
-                                                    <label class="form-check-label" for="col-address">Address</label>
-                                                </div>
-                                                <div>
-                                                    <button class="btn btn-sm btn-outline-secondary move-up">↑</button>
-                                                    <button class="btn btn-sm btn-outline-secondary move-down">↓</button>
-                                                </div>
+                                <div class="tab-pane fade" id="knowledge-pane" role="tabpanel">
+                                    <div id="knowledge-management" class="mb-4">
+                                        <div class="d-flex mb-2 align-items-center">
+                                            <h6 class="me-auto mb-0">Saved Spreadsheets</h6>
+                                            <div class="input-group input-group-sm w-auto me-2">
+                                                <input type="text" class="form-control" id="knowledge-query" placeholder="Search Saved">
+                                                <button class="btn btn-outline-secondary" type="button" id="search-knowledge">Search</button>
                                             </div>
+                                            <button type="button" class="btn btn-sm btn-outline-secondary" id="refresh-knowledge">Refresh</button>
                                         </div>
-                                        <div class="list-group-item">
-                                            <div class="d-flex justify-content-between align-items-center">
-                                                <div>
-                                                    <input type="checkbox" class="form-check-input me-2" id="col-size" checked>
-                                                    <label class="form-check-label" for="col-size">Size (sq ft)</label>
-                                                </div>
-                                                <div>
-                                                    <button class="btn btn-sm btn-outline-secondary move-up">↑</button>
-                                                    <button class="btn btn-sm btn-outline-secondary move-down">↓</button>
-                                                </div>
-                                            </div>
+                                        <ul class="list-group mb-3" id="knowledge-list"></ul>
+                                    </div>
+                                    <div id="kb-step-connect" class="kb-step">
+                                        <h5>Connect a Knowledge Source</h5>
+                                        <p>Connect a Google Spreadsheet to provide the chatbot with a knowledge base. The chatbot will use the selected data to answer questions.</p>
+                                        <button type="button" class="btn btn-primary" id="connect-google">Connect Google Account</button>
+                                    </div>
+                                    <div id="kb-step-search" class="kb-step d-none">
+                                        <h5>Step 1: Find Your Spreadsheet</h5>
+                                        <p>Connected as: <span id="google-account"></span> <button class="btn btn-link btn-sm" id="change-google">Disconnect</button></p>
+                                        <div class="input-group mb-3">
+                                            <input type="text" class="form-control" id="drive-query" placeholder="Search for your spreadsheet by name">
+                                            <button class="btn btn-outline-secondary" type="button" id="search-drive">Search</button>
                                         </div>
-                                        <div class="list-group-item">
-                                            <div class="d-flex justify-content-between align-items-center">
-                                                <div>
-                                                    <input type="checkbox" class="form-check-input me-2" id="col-rooms" checked>
-                                                    <label class="form-check-label" for="col-rooms">Rooms</label>
-                                                </div>
-                                                <div>
-                                                    <button class="btn btn-sm btn-outline-secondary move-up">↑</button>
-                                                    <button class="btn btn-sm btn-outline-secondary move-down">↓</button>
-                                                </div>
-                                            </div>
+                                        <ul class="list-group mb-3" id="drive-results"></ul>
+                                    </div>
+                                    <div id="kb-step-sheet" class="kb-step d-none">
+                                        <h5>Step 2: Choose the Sheet</h5>
+                                        <p>Selected Spreadsheet: <span id="selected-spreadsheet-name"></span> <button class="btn btn-link btn-sm" id="kb-change-spreadsheet">Change</button></p>
+                                        <input type="hidden" id="spreadsheet-id">
+                                        <div class="mb-3">
+                                            <label for="sheet-select" class="form-label">Sheet</label>
+                                            <select class="form-select" id="sheet-select"></select>
                                         </div>
-                                        <div class="list-group-item">
-                                            <div class="d-flex justify-content-between align-items-center">
-                                                <div>
-                                                    <input type="checkbox" class="form-check-input me-2" id="col-price" checked>
-                                                    <label class="form-check-label" for="col-price">Price</label>
-                                                </div>
-                                                <div>
-                                                    <button class="btn btn-sm btn-outline-secondary move-up">↑</button>
-                                                    <button class="btn btn-sm btn-outline-secondary move-down">↓</button>
-                                                </div>
-                                            </div>
+                                        <div class="form-check mb-3">
+                                            <input class="form-check-input" type="checkbox" id="default-sheet" checked>
+                                            <label class="form-check-label" for="default-sheet">Use Sheet1 (default)</label>
                                         </div>
-                                        <div class="list-group-item">
-                                            <div class="d-flex justify-content-between align-items-center">
-                                                <div>
-                                                    <input type="checkbox" class="form-check-input me-2" id="col-details" checked>
-                                                    <label class="form-check-label" for="col-details">Details</label>
-                                                </div>
-                                                <div>
-                                                    <button class="btn btn-sm btn-outline-secondary move-up">↑</button>
-                                                    <button class="btn btn-sm btn-outline-secondary move-down">↓</button>
-                                                </div>
-                                            </div>
+                                        <button type="button" class="btn btn-primary" id="load-sheet" disabled>Load Sheet</button>
+                                    </div>
+                                    <div id="kb-step-columns" class="kb-step d-none">
+                                        <h5>Step 3: Select Columns for the Chatbot</h5>
+                                        <p>Select the columns the chatbot should use as its knowledge. Only data from these columns will be accessible.</p>
+                                        <div class="table-responsive spreadsheet-table-container mb-3">
+                                            <table class="table table-striped" id="spreadsheet-table"></table>
                                         </div>
+                                        <button type="button" class="btn btn-primary" id="finish-kb-setup">Save Configuration</button>
+                                    </div>
+                                    <div id="kb-summary" class="kb-step d-none">
+                                        <h5>✅ Knowledge Base Active</h5>
+                                        <ul id="kb-summary-details" class="mb-3"></ul>
+                                        <button type="button" class="btn btn-outline-secondary me-2" id="kb-refresh">Refresh Data</button>
+                                        <button type="button" class="btn btn-outline-secondary me-2" id="kb-edit">Edit Configuration</button>
+                                        <button type="button" class="btn btn-outline-danger" id="kb-disconnect">Disconnect</button>
                                     </div>
                                 </div>
-
-                                <h5 class="mt-4">Knowledge Configuration</h5>
-                                <div class="mb-3">
-                                    <button type="button" class="btn btn-secondary" id="connect-google">Connect Google Account</button>
-                                </div>
-                                <div class="row g-2 mb-3">
-                                    <div class="col-auto">
-                                        <input type="text" class="form-control" id="drive-query" placeholder="Search Drive">
-                                    </div>
-                                    <div class="col-auto">
-                                        <button type="button" class="btn btn-outline-secondary" id="search-drive">Search</button>
-                                    </div>
-                                </div>
-                                <ul class="list-group mb-3" id="drive-results"></ul>
-                                <div class="d-flex mb-2 align-items-center">
-                                    <h6 class="me-auto mb-0">Saved Spreadsheets</h6>
-                                    <div class="input-group input-group-sm w-auto me-2">
-                                        <input type="text" class="form-control" id="knowledge-query" placeholder="Search Saved">
-                                        <button class="btn btn-outline-secondary" type="button" id="search-knowledge">Search</button>
-                                    </div>
-                                    <button type="button" class="btn btn-sm btn-outline-secondary" id="refresh-knowledge">Refresh</button>
-                                </div>
-                                <ul class="list-group mb-3" id="knowledge-list"></ul>
-                                <div class="mb-3">
-                                    <label for="spreadsheet-id" class="form-label">Spreadsheet ID</label>
-                                    <input type="text" class="form-control" id="spreadsheet-id">
-                                </div>
-                                <div class="mb-3">
-                                    <label for="sheet-select" class="form-label">Sheet</label>
-                                    <select class="form-select" id="sheet-select"></select>
-                                </div>
-                                <div class="form-check mb-3">
-                                    <input class="form-check-input" type="checkbox" id="default-sheet" checked>
-                                    <label class="form-check-label" for="default-sheet">Use Sheet1 (default)</label>
-                                </div>
-                                <div class="mb-3">
-                                    <label for="exclude-columns" class="form-label">Exclude Columns (comma separated)</label>
-                                    <input type="text" class="form-control" id="exclude-columns">
-                                </div>
-                                <button type="button" class="btn btn-secondary mb-3" id="load-spreadsheet">Load Spreadsheet</button>
-                                <div class="table-responsive spreadsheet-table-container">
-                                    <table class="table" id="spreadsheet-table"></table>
-                                </div>
-
-                            </form>
+                            </div>
                         </div>
                     </div>
                 </section>

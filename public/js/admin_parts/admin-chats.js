@@ -730,134 +730,23 @@ function notifyNewChat(chat) {
 }
 
 // Load column configuration
-function loadColumnConfig() {
-  const token = localStorage.getItem('chatbot-auth-token');
-
-  fetch('/api/admin/column-config/apartment_info', {
-    headers: {
-      'x-auth-token': token
-    }
-  })
-    .then(response => response.json())
-    .then(config => {
-      // Clear existing column items
-      const columnContainer = document.getElementById('column-config-container');
-      columnContainer.innerHTML = '';
-
-      // Sort columns by order
-      const columns = config.columns.sort((a, b) => a.order - b.order);
-
-      // Add column items to the container
-      columns.forEach(column => {
-        const item = document.createElement('div');
-        item.className = 'list-group-item';
-        item.setAttribute('data-key', column.key);
-        item.setAttribute('data-order', column.order);
-
-        item.innerHTML = `
-          <div class="d-flex justify-content-between align-items-center">
-            <div>
-              <input type="checkbox" class="form-check-input me-2" id="col-${column.key}" ${column.enabled ? 'checked' : ''}>
-              <label class="form-check-label" for="col-${column.key}">${column.label}</label>
-            </div>
-            <div>
-              <button class="btn btn-sm btn-outline-secondary move-up">↑</button>
-              <button class="btn btn-sm btn-outline-secondary move-down">↓</button>
-            </div>
-          </div>
-        `;
-
-        columnContainer.appendChild(item);
-      });
-
-      // Add event listeners for move up/down buttons
-      document.querySelectorAll('.move-up').forEach(btn => {
-        btn.addEventListener('click', function() {
-          const item = this.closest('.list-group-item');
-          const prev = item.previousElementSibling;
-          if (prev) {
-            columnContainer.insertBefore(item, prev);
-          }
-        });
-      });
-
-      document.querySelectorAll('.move-down').forEach(btn => {
-        btn.addEventListener('click', function() {
-          const item = this.closest('.list-group-item');
-          const next = item.nextElementSibling;
-          if (next) {
-            columnContainer.insertBefore(next, item);
-          }
-        });
-      });
-    })
-    .catch(error => {
-      logger.error('Error loading column configuration:', error);
-    });
-}
 
 // Save settings
 function saveSettings() {
   const notificationSetting = document.getElementById('notification-setting').value;
   const soundNotifications = document.getElementById('sound-notifications').checked;
   const autoRefresh = document.getElementById('auto-refresh').value;
-  const enablePdf = document.getElementById('enable-pdf').checked;
-
   // Save settings to localStorage
   localStorage.setItem('notification-setting', notificationSetting);
   localStorage.setItem('sound-notifications', soundNotifications);
   localStorage.setItem('auto-refresh', autoRefresh);
-  localStorage.setItem('enable-pdf', enablePdf);
 
   // Request notification permission if needed
   if (notificationSetting !== 'none' && 'Notification' in window && Notification.permission !== 'granted') {
     Notification.requestPermission();
   }
 
-  // Save column configuration
-  saveColumnConfig();
-
   showToast('Settings saved successfully', 'success');
-}
-
-// Save column configuration
-function saveColumnConfig() {
-  const token = localStorage.getItem('chatbot-auth-token');
-  const columnContainer = document.getElementById('column-config-container');
-  const columnItems = columnContainer.querySelectorAll('.list-group-item');
-
-  // Build columns array from UI
-  const columns = Array.from(columnItems).map((item, index) => {
-    const key = item.getAttribute('data-key');
-    const checkbox = item.querySelector(`input[id="col-${key}"]`);
-    const label = item.querySelector(`label[for="col-${key}"]`).textContent;
-
-    return {
-      key,
-      label,
-      enabled: checkbox.checked,
-      order: index
-    };
-  });
-
-  // Save to server
-  fetch('/api/admin/column-config/apartment_info', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-auth-token': token
-    },
-    body: JSON.stringify({ columns })
-  })
-    .then(response => response.json())
-    .then(data => {
-      if (!data.success) {
-        logger.error('Error saving column configuration:', data.error);
-      }
-    })
-    .catch(error => {
-      logger.error('Error saving column configuration:', error);
-    });
 }
 
 // Set up connection event handlers

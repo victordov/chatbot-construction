@@ -68,6 +68,15 @@ class KnowledgeService {
       throw error;
     }
   }
+
+  async delete(userId, id) {
+    try {
+      await KnowledgeDocument.deleteOne({ _id: id, userId });
+    } catch (error) {
+      logger.error('Error deleting knowledge document', { error });
+      throw error;
+    }
+  }
 }
 
 module.exports = KnowledgeService;
