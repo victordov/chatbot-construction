@@ -173,7 +173,7 @@
 .spreadsheet-table-container thead th {
   position: sticky;
   top: 0;
-  background: #fff;
+  background: #f8f9fa;
   z-index: 2;
 }
 
@@ -181,15 +181,20 @@
 .spreadsheet-table-container thead tr.sticky-header {
   position: sticky;
   top: 0;
-  background: #fff;
+  background: #f8f9fa;
   z-index: 2;
 }
 
 /* Sticky first row of spreadsheet body */
 .spreadsheet-table-container tbody tr.sticky-row {
   position: sticky;
-  background: #fff;
+  background: #f8f9fa;
   z-index: 1;
+}
+
+/* Subtle zebra striping for readability */
+.spreadsheet-table-container tbody tr:nth-child(even) {
+  background-color: #f9f9f9;
 }
 
 /* Resize handles for spreadsheet columns */
