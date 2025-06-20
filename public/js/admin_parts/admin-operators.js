@@ -826,7 +826,7 @@ function updateColumns(id) {
   });
 }
 
-// Make the first spreadsheet row sticky when scrolling
+// Make each spreadsheet row sticky so short cells stay in view while long cells scroll
 function applyStickySpreadsheetRows() {
   const table = document.getElementById('spreadsheet-table');
   if (!table) return;
