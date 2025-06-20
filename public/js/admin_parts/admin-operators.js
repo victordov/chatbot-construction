@@ -551,10 +551,13 @@ function loadSpreadsheet(event) {
   const spreadsheetId = document.getElementById('spreadsheet-id').value;
   const defaultSheet = document.getElementById('default-sheet').checked;
   const sheet = defaultSheet ? 'Sheet1' : document.getElementById('sheet-select').value;
-  const exclude = document.getElementById('exclude-columns').value
-    .split(',')
-    .map(s => s.trim())
-    .filter(Boolean);
+  const excludeInput = document.getElementById('exclude-columns');
+  const exclude = excludeInput
+    ? excludeInput.value
+        .split(',')
+        .map(s => s.trim())
+        .filter(Boolean)
+    : [];
 
   fetch('/api/google/knowledge/import', {
     method: 'POST',
@@ -657,10 +660,13 @@ function loadFromModal(event) {
   const spreadsheetId = document.getElementById('modal-spreadsheet-id').value;
   const defaultSheet = document.getElementById('modal-default-sheet').checked;
   const sheet = defaultSheet ? 'Sheet1' : document.getElementById('modal-sheet-select').value;
-  const exclude = document.getElementById('exclude-columns').value
-    .split(',')
-    .map(s => s.trim())
-    .filter(Boolean);
+  const excludeInput = document.getElementById('exclude-columns');
+  const exclude = excludeInput
+    ? excludeInput.value
+        .split(',')
+        .map(s => s.trim())
+        .filter(Boolean)
+    : [];
   fetch('/api/google/knowledge/import', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-auth-token': token },
