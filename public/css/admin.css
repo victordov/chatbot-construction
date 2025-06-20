@@ -201,3 +201,8 @@ th .col-resizer {
   cursor: col-resize;
   user-select: none;
 }
+
+.kb-step {
+  max-width: 600px;
+  margin: 0 auto;
+}

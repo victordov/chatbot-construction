@@ -531,6 +531,7 @@ function checkGoogleStatus() {
       if (btn) {
         btn.textContent = data.authorized ? 'Reauthorize Google Account' : 'Connect Google Account';
       }
+      showStep(data.authorized ? 'kb-step-search' : 'kb-step-connect');
     });
 }
 
@@ -554,8 +555,11 @@ function loadSpreadsheet(event) {
   })
     .then(res => res.json())
     .then(data => {
-      refreshKnowledge();
+      if (document.getElementById('knowledge-list')) {
+        refreshKnowledge();
+      }
       expandKnowledge(data.doc._id);
+      showStep('kb-step-columns');
     })
     .catch(() => showToast('Failed to load spreadsheet', 'danger'))
     .finally(() => setLoading(btn, false));
@@ -578,8 +582,8 @@ function searchDrive(event) {
         li.textContent = f.name;
         const btn = document.createElement('button');
         btn.className = 'btn btn-sm btn-primary';
-        btn.textContent = 'Load';
-        btn.addEventListener('click', () => openLoadModal(f.id));
+        btn.textContent = 'Select';
+        btn.addEventListener('click', () => openLoadModal(f.id, f.name));
         li.appendChild(btn);
         list.appendChild(li);
       });
@@ -588,11 +592,14 @@ function searchDrive(event) {
     .finally(() => setLoading(btn, false));
 }
 
-function openLoadModal(id) {
-  document.getElementById('modal-spreadsheet-id').value = id;
-  fetchModalSheetNames(id).then(() => {
-    const modal = new bootstrap.Modal(document.getElementById('loadSheetModal'));
-    modal.show();
+function openLoadModal(id, name) {
+  document.getElementById('spreadsheet-id').value = id;
+  if (name) {
+    const span = document.getElementById('selected-spreadsheet-name');
+    if (span) span.textContent = name;
+  }
+  fetchSheetNames(id).then(() => {
+    showStep('kb-step-sheet');
   });
 }
 
@@ -603,7 +610,7 @@ function importSpreadsheet(id) {
 
 function fetchSheetNames(id) {
   const token = localStorage.getItem('chatbot-auth-token');
-  fetch(`/api/google/sheets/${id}/names`, { headers: { 'x-auth-token': token } })
+  return fetch(`/api/google/sheets/${id}/names`, { headers: { 'x-auth-token': token } })
     .then(res => res.json())
     .then(data => {
       const select = document.getElementById('sheet-select');
@@ -654,8 +661,11 @@ function loadFromModal(event) {
     .then(res => res.json())
     .then(data => {
       bootstrap.Modal.getInstance(document.getElementById('loadSheetModal')).hide();
-      refreshKnowledge();
+      if (document.getElementById('knowledge-list')) {
+        refreshKnowledge();
+      }
       expandKnowledge(data.doc._id);
+      showStep('kb-step-columns');
     })
     .catch(() => showToast('Failed to load spreadsheet', 'danger'))
     .finally(() => setLoading(btn, false));
@@ -848,8 +858,14 @@ function enableSpreadsheetColumnResizing(table) {
   table.style.width = `${initialWidth}px`;
 }
 
+function showStep(id) {
+  document.querySelectorAll('.kb-step').forEach(el => el.classList.add('d-none'));
+  const step = document.getElementById(id);
+  if (step) step.classList.remove('d-none');
+}
+
 document.addEventListener('DOMContentLoaded', function() {
-  const loadBtn = document.getElementById('load-spreadsheet');
+  const loadBtn = document.getElementById('load-sheet');
   if (loadBtn) {
     loadBtn.addEventListener('click', loadSpreadsheet);
   }
@@ -879,8 +895,13 @@ document.addEventListener('DOMContentLoaded', function() {
   if (defaultCb && sheetSelect) {
     defaultCb.addEventListener('change', function() {
       sheetSelect.disabled = this.checked;
+      if (loadBtn) loadBtn.disabled = !this.checked && !sheetSelect.value;
     });
     sheetSelect.disabled = defaultCb.checked;
+    if (loadBtn) loadBtn.disabled = !defaultCb.checked && !sheetSelect.value;
+    sheetSelect.addEventListener('change', function() {
+      if (loadBtn) loadBtn.disabled = !defaultCb.checked && !this.value;
+    });
   }
   const idInput = document.getElementById('spreadsheet-id');
   if (idInput) {
@@ -899,5 +920,14 @@ document.addEventListener('DOMContentLoaded', function() {
       modalSheetSelect.disabled = this.checked;
     });
     modalSheetSelect.disabled = modalDefaultCb.checked;
+  }
+
+  const changeSpreadsheetBtn = document.getElementById('kb-change-spreadsheet');
+  if (changeSpreadsheetBtn) {
+    changeSpreadsheetBtn.addEventListener('click', () => showStep('kb-step-search'));
+  }
+  const changeGoogleBtn = document.getElementById('change-google');
+  if (changeGoogleBtn) {
+    changeGoogleBtn.addEventListener('click', () => showStep('kb-step-connect'));
   }
 });
