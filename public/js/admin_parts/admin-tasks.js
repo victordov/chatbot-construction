@@ -392,7 +392,7 @@ function displayTasks(tasks) {
       <td class="description-cell">${task.description.length > 50 ? task.description.substring(0, 50) + '...' : task.description}</td>
       <td>${formattedDate}</td>
       <td></td>
-      <td>${task.assigneeName || 'Unassigned'}</td>
+      <td>${task.assigneeName || (task.assignee && task.assignee.username) || 'Unassigned'}</td>
       <td></td>
     `;
 
@@ -471,7 +471,8 @@ function displayTaskDetails(task) {
   }
 
   // Set assignee
-  document.getElementById('task-assignee').textContent = task.assigneeName || 'Unassigned';
+  document.getElementById('task-assignee').textContent =
+    task.assigneeName || (task.assignee && task.assignee.username) || 'Unassigned';
 
   // Set status dropdown
   document.getElementById('task-status-update').value = task.status;
