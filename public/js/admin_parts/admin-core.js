@@ -308,7 +308,8 @@ function getUrlParams() {
 
 // Navigation setup
 function setupNavigation() {
-  const navLinks = document.querySelectorAll('.nav-link');
+  // Only grab sidebar navigation links that switch top-level sections
+  const navLinks = document.querySelectorAll('#sidebar .nav-link[data-section]');
   const sections = document.querySelectorAll('.content-section');
   const sidebarToggle = document.getElementById('sidebarToggle');
   const sidebar = document.getElementById('sidebar');
@@ -320,7 +321,7 @@ function setupNavigation() {
     // If the hash contains a section parameter, switch to that section
     if (params.section) {
       // Find the link with the matching data-section attribute
-      const link = document.querySelector(`.nav-link[data-section="${params.section}"]`);
+      const link = document.querySelector(`#sidebar .nav-link[data-section="${params.section}"]`);
       if (link) {
         // Simulate a click on the link
         link.click();
@@ -335,7 +336,7 @@ function setupNavigation() {
       }
     } else if (params.session) { // If no section parameter but session parameter exists, navigate to active-chats
       // Navigate to active-chats section and view the chat
-      const activeChatsLink = document.querySelector('.nav-link[data-section="active-chats"]');
+      const activeChatsLink = document.querySelector('#sidebar .nav-link[data-section="active-chats"]');
       if (activeChatsLink) {
         activeChatsLink.click();
 
@@ -407,7 +408,7 @@ function setupNavigation() {
   const params = getUrlParams();
   if (params.section) {
     // Find the link with the matching data-section attribute
-    const link = document.querySelector(`.nav-link[data-section="${params.section}"]`);
+    const link = document.querySelector(`#sidebar .nav-link[data-section="${params.section}"]`);
     if (link) {
       // Simulate a click on the link
       link.click();
@@ -435,7 +436,7 @@ function setupNavigation() {
   // Check for session parameter in URL fragment even if no section parameter
   if (!params.section && params.session) {
     // Navigate to active-chats section and view the chat
-    const activeChatsLink = document.querySelector('.nav-link[data-section="active-chats"]');
+    const activeChatsLink = document.querySelector('#sidebar .nav-link[data-section="active-chats"]');
     if (activeChatsLink) {
       activeChatsLink.click();
 
