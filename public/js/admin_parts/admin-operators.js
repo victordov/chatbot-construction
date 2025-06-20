@@ -881,6 +881,28 @@ function enableSpreadsheetColumnResizing(table) {
   table.style.width = `${initialWidth}px`;
 }
 
+function saveKnowledgeConfig(event) {
+  if (!currentDocId) return;
+  const btn = event?.currentTarget;
+  setLoading(btn, true);
+  const table = document.getElementById('spreadsheet-table');
+  const excluded = [];
+  table.querySelectorAll('thead th').forEach(th => {
+    const cb = th.querySelector('input[type="checkbox"]');
+    const name = th.textContent.trim();
+    if (cb && !cb.checked) excluded.push(name);
+  });
+  const token = localStorage.getItem('chatbot-auth-token');
+  fetch(`/api/google/knowledge/${currentDocId}/columns`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-auth-token': token },
+    body: JSON.stringify({ excluded })
+  })
+    .then(() => showSummary(currentDocId))
+    .catch(() => showToast('Failed to save configuration', 'danger'))
+    .finally(() => setLoading(btn, false));
+}
+
 function showSummary(id) {
   const token = localStorage.getItem('chatbot-auth-token');
   fetch(`/api/google/knowledge/${id}`, { headers: { 'x-auth-token': token } })
@@ -998,7 +1020,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
   const finishBtn = document.getElementById('finish-kb-setup');
   if (finishBtn) {
-    finishBtn.addEventListener('click', () => currentDocId && showSummary(currentDocId));
+    finishBtn.addEventListener('click', saveKnowledgeConfig);
   }
 
   const refreshKbBtn = document.getElementById('kb-refresh');
