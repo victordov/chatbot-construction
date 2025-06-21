@@ -1037,43 +1037,10 @@ function setupWebSockets(server) {
         });
       }
 
-      // If it was an operator, check if they were connected to any chats
+      // If it was an operator, keep the chat assignment intact so
+      // refreshing the page doesn't remove them from the conversation.
       if (isOperator) {
-        try {
-          // Find all conversations where this operator was connected
-          const conversations = await Conversation.find({
-            operatorId: socket.user.id,
-            hasOperator: true,
-            status: 'active'
-          });
-
-          const opName = socket.user.displayName || socket.user.username;
-
-          // For each conversation, update the status and notify other operators
-          for (const conversation of conversations) {
-            // Notify all operators that this operator has left the chat
-            io.to('operators').emit('operator-left', {
-              sessionId: conversation.sessionId,
-              operatorId: socket.user.id,
-              operatorName: opName,
-              timestamp: new Date()
-            });
-
-            // Update the conversation in the database
-            await Conversation.findOneAndUpdate(
-              { _id: conversation._id },
-              {
-                $set: {
-                  hasOperator: false,
-                  operatorId: null,
-                  operatorName: null
-                }
-              }
-            );
-          }
-        } catch (error) {
-          logger.error('Error handling operator disconnect:', { error });
-        }
+        logger.info('Operator disconnected, assignments preserved');
       }
     });
   });
