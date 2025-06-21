@@ -827,6 +827,7 @@ function updateColumns(id) {
 }
 
 // Make each spreadsheet row sticky so short cells stay in view while long cells scroll
+// and adjust z-index on scroll so the active row isn't hidden by others
 function applyStickySpreadsheetRows() {
   const table = document.getElementById('spreadsheet-table');
   if (!table) return;
@@ -839,10 +840,32 @@ function applyStickySpreadsheetRows() {
 
   const headerHeight = header ? header.offsetHeight : 0;
 
-  table.querySelectorAll('tbody tr').forEach(tr => {
+  const rows = Array.from(table.querySelectorAll('tbody tr'));
+  rows.forEach(tr => {
     tr.classList.add('sticky-row');
     tr.style.top = `${headerHeight}px`;
+    tr.style.zIndex = 1;
   });
+
+  const container = table.closest('.spreadsheet-table-container');
+  if (container) {
+    const updateZIndex = () => {
+      let activeRow = null;
+      rows.forEach(tr => {
+        const { top } = tr.getBoundingClientRect();
+        const { top: cTop } = container.getBoundingClientRect();
+        if (top - cTop <= headerHeight) {
+          if (!activeRow || top > activeRow.top) {
+            activeRow = { tr, top };
+          }
+        }
+      });
+      rows.forEach(tr => (tr.style.zIndex = 1));
+      if (activeRow) activeRow.tr.style.zIndex = 2;
+    };
+    container.addEventListener('scroll', updateZIndex);
+    updateZIndex();
+  }
 
   enableSpreadsheetColumnResizing(table);
 }

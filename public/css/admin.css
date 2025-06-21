@@ -185,7 +185,7 @@
   z-index: 2;
 }
 
-/* Sticky spreadsheet rows */
+/* Sticky spreadsheet rows. JS will update z-index while scrolling */
 .spreadsheet-table-container tbody tr.sticky-row {
   position: sticky;
   background: #f8f9fa;
