@@ -229,3 +229,7 @@ th .col-resizer {
 #sidebar .sidebar-profile button {
   color: #fff;
 }
+
+.user-name {
+  margin-top: 0.25rem;
+}

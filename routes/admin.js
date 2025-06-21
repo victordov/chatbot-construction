@@ -20,11 +20,24 @@ router.get('/active-chats', async (req, res) => {
         domain: 1,
         hasOperator: 1,
         operatorName: 1,
+        metadata: 1,
         'messages.length': { $size: '$messages' }
       }
     ).sort({ lastActivity: -1 });
 
-    res.json({ chats: activeChatsSummary });
+    const chats = activeChatsSummary.map(chat => ({
+      sessionId: chat.sessionId,
+      startedAt: chat.startedAt,
+      domain: chat.domain,
+      hasOperator: chat.hasOperator,
+      operatorName: chat.operatorName,
+      userName:
+        chat.metadata &&
+        (chat.metadata.name || (chat.metadata.get && chat.metadata.get('name'))),
+      'messages.length': chat['messages.length']
+    }));
+
+    res.json({ chats });
   } catch (error) {
     console.error('Error fetching active chats:', error);
     res.status(500).json({ error: 'Failed to retrieve active chats' });
@@ -71,7 +84,15 @@ router.get('/chat/:sessionId', async (req, res) => {
       return res.status(404).json({ error: 'Conversation not found' });
     }
 
-    res.json(conversation);
+    const userName =
+      conversation.metadata &&
+      (conversation.metadata.name ||
+        (conversation.metadata.get && conversation.metadata.get('name')));
+
+    const convoObj = conversation.toObject();
+    convoObj.userName = userName;
+
+    res.json(convoObj);
   } catch (error) {
     console.error('Error fetching chat:', error);
     res.status(500).json({ error: 'Failed to retrieve chat' });

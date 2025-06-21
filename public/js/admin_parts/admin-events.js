@@ -219,6 +219,11 @@ function setupEventHandlers(socket) {
     updateChatOperatorStatus(data.sessionId, false, data.operatorName);
   });
 
+  // Update user name when details change
+  socket.on('user-details-updated', function(data) {
+    updateChatUserName(data.sessionId, data.name);
+  });
+
   socket.on('new-message', function(data) {
     // Add message to chat if it's currently selected
     const selectedChatId = joinChatBtn.getAttribute('data-session-id');
