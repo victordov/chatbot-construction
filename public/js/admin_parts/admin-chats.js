@@ -387,6 +387,7 @@ function addChatToList(chat) {
     </div>
     <p class="mb-1">Messages: ${chat.messages ? chat.messages.length : (chat['messages.length'] || 0)}</p>
     <small>From: ${chat.domain || 'Unknown'}</small>
+    <div class="operator-name small text-muted mt-1">${hasOperator && chat.operatorName ? `Operator: ${chat.operatorName}` : ''}</div>
   `;
 
   chatList.appendChild(chatItem);
@@ -850,7 +851,7 @@ function calculateDuration(start, end) {
 }
 
 // Update chat operator status
-function updateChatOperatorStatus(sessionId, hasOperator) {
+function updateChatOperatorStatus(sessionId, hasOperator, operatorName = '') {
   // Find the chat item
   const chatItem = document.querySelector(`#active-chat-list a[data-session-id="${sessionId}"]`);
   if (!chatItem) {
@@ -866,6 +867,12 @@ function updateChatOperatorStatus(sessionId, hasOperator) {
   // Update the status class
   statusIndicator.classList.remove('has-operator', 'no-operator');
   statusIndicator.classList.add(hasOperator ? 'has-operator' : 'no-operator');
+
+  // Update operator name display
+  const opNameEl = chatItem.querySelector('.operator-name');
+  if (opNameEl) {
+    opNameEl.textContent = hasOperator && operatorName ? `Operator: ${operatorName}` : '';
+  }
 
   // If this operator joined the chat, add it to the joined chats set
   if (hasOperator) {

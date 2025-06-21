@@ -14,7 +14,14 @@ router.get('/active-chats', async (req, res) => {
   try {
     const activeChatsSummary = await Conversation.find(
       { status: 'active' },
-      { sessionId: 1, startedAt: 1, domain: 1, 'messages.length': { $size: '$messages' } }
+      {
+        sessionId: 1,
+        startedAt: 1,
+        domain: 1,
+        hasOperator: 1,
+        operatorName: 1,
+        'messages.length': { $size: '$messages' }
+      }
     ).sort({ lastActivity: -1 });
 
     res.json({ chats: activeChatsSummary });

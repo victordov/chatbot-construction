@@ -944,6 +944,7 @@ function setupWebSockets(server) {
           io.to('operators').emit('operator-left', {
             sessionId,
             operatorId: socket.user.id,
+            operatorName: opName,
             timestamp: new Date()
           });
         }
@@ -993,6 +994,7 @@ function setupWebSockets(server) {
           io.to('operators').emit('operator-left', {
             sessionId,
             operatorId: socket.user.id,
+            operatorName: opName,
             timestamp: new Date()
           });
         }
@@ -1045,12 +1047,15 @@ function setupWebSockets(server) {
             status: 'active'
           });
 
+          const opName = socket.user.displayName || socket.user.username;
+
           // For each conversation, update the status and notify other operators
           for (const conversation of conversations) {
             // Notify all operators that this operator has left the chat
             io.to('operators').emit('operator-left', {
               sessionId: conversation.sessionId,
               operatorId: socket.user.id,
+              operatorName: opName,
               timestamp: new Date()
             });
 
