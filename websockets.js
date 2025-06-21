@@ -77,7 +77,9 @@ function setupWebSockets(server) {
     // Track client's session and role
     let clientSessionId = null;
     let encryptionEnabled = false;
-    const isOperator = socket.user && socket.user.role === 'admin';
+    const isOperator =
+      socket.user &&
+      (socket.user.role === 'admin' || socket.user.role === 'operator');
 
     // Send server's public key to client for encryption setup
     const serverPublicKey = encryptionService.getServerPublicKey();
