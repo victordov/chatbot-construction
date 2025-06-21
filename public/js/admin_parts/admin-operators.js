@@ -57,6 +57,14 @@ function setupContactInfoManagement(token) {
     openContactInfoModal();
   });
 
+  // Request user to provide details
+  const requestBtn = document.getElementById('request-user-info-btn');
+  if (requestBtn) {
+    requestBtn.addEventListener('click', function() {
+      requestUserInfo();
+    });
+  }
+
   // Set up event listener for save button
   document.getElementById('save-contact-info-btn').addEventListener('click', function() {
     saveContactInfo(token);
@@ -165,6 +173,17 @@ function saveContactInfo(token) {
       logger.error('Error saving contact information:', error);
       showNotification('Error', 'Failed to save contact information', 'error');
     });
+}
+
+// Request user to provide contact information via widget
+function requestUserInfo() {
+  const conversation = window.currentConversation;
+  if (!conversation) return;
+  const socket = window.adminSocket;
+  if (socket) {
+    socket.emit('request-user-details', { sessionId: conversation.sessionId });
+    showNotification('Info Request', 'User has been asked to provide contact info', 'info');
+  }
 }
 
 function showNotification(title, message, type = 'info') {

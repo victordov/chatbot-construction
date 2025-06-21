@@ -859,6 +859,15 @@ function setupWebSockets(server) {
       }
     });
 
+    // Operator requests the user to provide contact details
+    socket.on('request-user-details', (data) => {
+      if (!isOperator) {
+        return;
+      }
+      const { sessionId } = data;
+      io.to(sessionId).emit('request-user-details');
+    });
+
     // Handle toggling suggestions for a chat
     socket.on('toggle-suggestions', async (data) => {
       if (!isOperator) {

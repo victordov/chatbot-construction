@@ -225,6 +225,15 @@ function setupEventHandlers(socket) {
   // Update user name when details change
   socket.on('user-details-updated', function(data) {
     updateChatUserName(data.sessionId, data.name);
+    if (window.currentConversation && window.currentConversation.sessionId === data.sessionId) {
+      if (!window.currentConversation.metadata) {
+        window.currentConversation.metadata = {};
+      }
+      window.currentConversation.metadata.name = data.name;
+      window.currentConversation.metadata.email = data.email;
+      window.currentConversation.metadata.phone = data.phone;
+      displayUserContactInfo(window.currentConversation);
+    }
   });
 
   socket.on('new-message', function(data) {
