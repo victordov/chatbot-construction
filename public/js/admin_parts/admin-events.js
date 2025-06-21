@@ -79,6 +79,9 @@ function setupEventHandlers(socket) {
     const operatorName = window.currentUser ? (window.currentUser.displayName || window.currentUser.username) : 'Admin';
     socket.emit('operator-takeover', { sessionId, operatorName });
 
+    // Immediately reflect in the active chat list
+    updateChatOperatorStatus(sessionId, true, operatorName);
+
     // Add this chat to the joined chats set
     window.joinedChats.add(sessionId);
     // Save joined chats to localStorage
