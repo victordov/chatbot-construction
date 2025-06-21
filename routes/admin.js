@@ -89,7 +89,8 @@ router.get('/chat/:sessionId', async (req, res) => {
       (conversation.metadata.name ||
         (conversation.metadata.get && conversation.metadata.get('name')));
 
-    const convoObj = conversation.toObject();
+    // Convert Map fields like `metadata` into plain objects
+    const convoObj = conversation.toObject({ flattenMaps: true });
     convoObj.userName = userName;
 
     res.json(convoObj);
