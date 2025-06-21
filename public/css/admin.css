@@ -185,7 +185,7 @@
   z-index: 2;
 }
 
-/* Sticky first row of spreadsheet body */
+/* Sticky spreadsheet rows. JS will update z-index while scrolling */
 .spreadsheet-table-container tbody tr.sticky-row {
   position: sticky;
   background: #f8f9fa;
@@ -216,4 +216,20 @@ th .col-resizer {
 /* Allow the columns step to expand fully for the table */
 #kb-step-columns {
   max-width: none;
+}
+
+/* Sidebar profile section */
+#sidebar .sidebar-profile {
+  border-top: 1px solid #444;
+  padding-top: 1rem;
+  padding-bottom: 1rem;
+  color: #fff;
+}
+
+#sidebar .sidebar-profile button {
+  color: #fff;
+}
+
+.user-name {
+  margin-top: 0.25rem;
 }

@@ -57,6 +57,14 @@ function setupContactInfoManagement(token) {
     openContactInfoModal();
   });
 
+  // Request user to provide details
+  const requestBtn = document.getElementById('request-user-info-btn');
+  if (requestBtn) {
+    requestBtn.addEventListener('click', function() {
+      requestUserInfo();
+    });
+  }
+
   // Set up event listener for save button
   document.getElementById('save-contact-info-btn').addEventListener('click', function() {
     saveContactInfo(token);
@@ -167,6 +175,17 @@ function saveContactInfo(token) {
     });
 }
 
+// Request user to provide contact information via widget
+function requestUserInfo() {
+  const conversation = window.currentConversation;
+  if (!conversation) return;
+  const socket = window.adminSocket;
+  if (socket) {
+    socket.emit('request-user-details', { sessionId: conversation.sessionId });
+    showNotification('Info Request', 'User has been asked to provide contact info', 'info');
+  }
+}
+
 function showNotification(title, message, type = 'info') {
   showToast(`${title}: ${message}`, type);
 }
@@ -198,6 +217,7 @@ function loadAllOperators() {
 
         row.innerHTML = `
           <td>${operator.username}</td>
+          <td>${operator.displayName || '-'}</td>
           <td>${operator.name || '-'}</td>
           <td>${operator.email}</td>
           <td>
@@ -282,6 +302,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
 function createOperator() {
   const username = document.getElementById('operator-username').value;
+  const displayName = document.getElementById('operator-display-name').value;
   const name = document.getElementById('operator-name').value;
   const email = document.getElementById('operator-email').value;
   const password = document.getElementById('operator-password').value;
@@ -304,7 +325,7 @@ function createOperator() {
       'Content-Type': 'application/json',
       'x-auth-token': token
     },
-    body: JSON.stringify({ username, name, email, password, confirmPassword })
+    body: JSON.stringify({ username, displayName, name, email, password, confirmPassword })
   })
     .then(response => response.json())
     .then(data => {
@@ -389,6 +410,7 @@ function openEditOperatorModal(event) {
       // Fill the form with operator details
       document.getElementById('edit-operator-id').value = operator._id;
       document.getElementById('edit-operator-username').value = operator.username;
+      document.getElementById('edit-operator-display-name').value = operator.displayName || '';
       document.getElementById('edit-operator-name').value = operator.name || '';
       document.getElementById('edit-operator-email').value = operator.email;
 
@@ -421,6 +443,7 @@ document.addEventListener('DOMContentLoaded', function() {
 function editOperator() {
   const operatorId = document.getElementById('edit-operator-id').value;
   const username = document.getElementById('edit-operator-username').value;
+  const displayName = document.getElementById('edit-operator-display-name').value;
   const name = document.getElementById('edit-operator-name').value;
   const email = document.getElementById('edit-operator-email').value;
   const token = localStorage.getItem('chatbot-auth-token');
@@ -436,7 +459,7 @@ function editOperator() {
       'Content-Type': 'application/json',
       'x-auth-token': token
     },
-    body: JSON.stringify({ username, name, email })
+    body: JSON.stringify({ username, displayName, name, email })
   })
     .then(response => response.json())
     .then(data => {
@@ -826,7 +849,8 @@ function updateColumns(id) {
   });
 }
 
-// Make the first spreadsheet row sticky when scrolling
+// Make each spreadsheet row sticky so short cells stay in view while long cells scroll
+// and adjust z-index on scroll so the active row isn't hidden by others
 function applyStickySpreadsheetRows() {
   const table = document.getElementById('spreadsheet-table');
   if (!table) return;
@@ -838,10 +862,32 @@ function applyStickySpreadsheetRows() {
   }
 
   const headerHeight = header ? header.offsetHeight : 0;
-  const first = table.querySelector('tbody tr');
-  if (first) {
-    first.classList.add('sticky-row');
-    first.style.top = `${headerHeight}px`;
+
+  const rows = Array.from(table.querySelectorAll('tbody tr'));
+  rows.forEach(tr => {
+    tr.classList.add('sticky-row');
+    tr.style.top = `${headerHeight}px`;
+    tr.style.zIndex = 1;
+  });
+
+  const container = table.closest('.spreadsheet-table-container');
+  if (container) {
+    const updateZIndex = () => {
+      let activeRow = null;
+      rows.forEach(tr => {
+        const { top } = tr.getBoundingClientRect();
+        const { top: cTop } = container.getBoundingClientRect();
+        if (top - cTop <= headerHeight) {
+          if (!activeRow || top > activeRow.top) {
+            activeRow = { tr, top };
+          }
+        }
+      });
+      rows.forEach(tr => (tr.style.zIndex = 1));
+      if (activeRow) activeRow.tr.style.zIndex = 2;
+    };
+    container.addEventListener('scroll', updateZIndex);
+    updateZIndex();
   }
 
   enableSpreadsheetColumnResizing(table);

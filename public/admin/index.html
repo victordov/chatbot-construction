@@ -57,6 +57,11 @@
                             </a>
                         </li>
                     </ul>
+                    <div class="sidebar-profile text-center mt-4">
+                        <div id="profile-name"></div>
+                        <div id="profile-email" class="small"></div>
+                        <button class="btn btn-sm btn-outline-light mt-2" id="logout-btn">Logout</button>
+                    </div>
                 </div>
             </nav>
 
@@ -157,7 +162,10 @@
                                         <div class="card">
                                             <div class="card-header d-flex justify-content-between align-items-center">
                                                 <h6 class="mb-0">User Contact Information</h6>
-                                                <button class="btn btn-sm btn-outline-primary" id="edit-contact-info-btn">Edit</button>
+                                                <div>
+                                                    <button class="btn btn-sm btn-outline-secondary me-2" id="request-user-info-btn">Request Info</button>
+                                                    <button class="btn btn-sm btn-outline-primary" id="edit-contact-info-btn">Edit</button>
+                                                </div>
                                             </div>
                                             <div class="card-body">
                                                 <div class="row">
@@ -482,6 +490,7 @@
                                     <thead>
                                         <tr>
                                             <th>Username</th>
+                                            <th>Display Name</th>
                                             <th>Name</th>
                                             <th>Email</th>
                                             <th>Status</th>
@@ -615,6 +624,10 @@
                             <input type="text" class="form-control" id="operator-username" required>
                         </div>
                         <div class="mb-3">
+                            <label for="operator-display-name" class="form-label">Display Name</label>
+                            <input type="text" class="form-control" id="operator-display-name">
+                        </div>
+                        <div class="mb-3">
                             <label for="operator-name" class="form-label">Name</label>
                             <input type="text" class="form-control" id="operator-name">
                             <div class="form-text">Full name of the operator (optional)</div>
@@ -658,6 +671,10 @@
                         <div class="mb-3">
                             <label for="edit-operator-username" class="form-label">Username</label>
                             <input type="text" class="form-control" id="edit-operator-username" required>
+                        </div>
+                        <div class="mb-3">
+                            <label for="edit-operator-display-name" class="form-label">Display Name</label>
+                            <input type="text" class="form-control" id="edit-operator-display-name">
                         </div>
                         <div class="mb-3">
                             <label for="edit-operator-name" class="form-label">Name</label>

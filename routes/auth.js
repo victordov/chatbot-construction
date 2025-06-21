@@ -46,6 +46,7 @@ router.post('/login', async (req, res) => {
       user: {
         id: user._id,
         username: user.username,
+        displayName: user.displayName,
         email: user.email,
         role: user.role
       }
@@ -59,7 +60,7 @@ router.post('/login', async (req, res) => {
 // Register route (admin only)
 router.post('/register', async (req, res) => {
   try {
-    const { username, email, password, role } = req.body;
+    const { username, email, password, role, displayName } = req.body;
 
     // Check if user already exists
     const existingUser = await User.findOne({ $or: [{ username }, { email }] });
@@ -72,7 +73,8 @@ router.post('/register', async (req, res) => {
       username,
       email,
       password,
-      role: role || 'operator'
+      role: role || 'operator',
+      displayName
     });
 
     await user.save();
@@ -82,6 +84,7 @@ router.post('/register', async (req, res) => {
       user: {
         id: user._id,
         username: user.username,
+        displayName: user.displayName,
         email: user.email,
         role: user.role
       }
@@ -114,6 +117,7 @@ router.get('/verify', async (req, res) => {
       user: {
         id: user._id,
         username: user.username,
+        displayName: user.displayName,
         email: user.email,
         role: user.role
       }

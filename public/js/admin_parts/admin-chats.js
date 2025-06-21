@@ -284,7 +284,7 @@ function loadActiveChats(socket, token) {
             logger.info('Automatically rejoining chat:', chat.sessionId);
             socket.emit('operator-takeover', {
               sessionId: chat.sessionId,
-              operatorName: window.currentUser ? window.currentUser.username : 'Admin'
+              operatorName: window.currentUser ? (window.currentUser.displayName || window.currentUser.username) : 'Admin'
             });
           }
         });
@@ -377,6 +377,11 @@ function addChatToList(chat) {
   const hasOperator = chat.hasOperator || window.joinedChats.has(chat.sessionId);
   const statusClass = hasOperator ? 'has-operator' : 'no-operator';
 
+  const userName =
+    chat.userName ||
+    (chat.metadata &&
+      (chat.metadata.name || (chat.metadata.get && chat.metadata.get('name'))));
+
   chatItem.innerHTML = `
     <div class="d-flex w-100 justify-content-between">
       <h6 class="mb-1">
@@ -387,6 +392,8 @@ function addChatToList(chat) {
     </div>
     <p class="mb-1">Messages: ${chat.messages ? chat.messages.length : (chat['messages.length'] || 0)}</p>
     <small>From: ${chat.domain || 'Unknown'}</small>
+    <div class="user-name small text-muted">${userName ? `User: ${userName}` : ''}</div>
+    <div class="operator-name small text-muted mt-1">${hasOperator && chat.operatorName ? `Operator: ${chat.operatorName}` : ''}</div>
   `;
 
   chatList.appendChild(chatItem);
@@ -850,7 +857,7 @@ function calculateDuration(start, end) {
 }
 
 // Update chat operator status
-function updateChatOperatorStatus(sessionId, hasOperator) {
+function updateChatOperatorStatus(sessionId, hasOperator, operatorName = '') {
   // Find the chat item
   const chatItem = document.querySelector(`#active-chat-list a[data-session-id="${sessionId}"]`);
   if (!chatItem) {
@@ -867,11 +874,27 @@ function updateChatOperatorStatus(sessionId, hasOperator) {
   statusIndicator.classList.remove('has-operator', 'no-operator');
   statusIndicator.classList.add(hasOperator ? 'has-operator' : 'no-operator');
 
+  // Update operator name display
+  const opNameEl = chatItem.querySelector('.operator-name');
+  if (opNameEl) {
+    opNameEl.textContent = hasOperator && operatorName ? `Operator: ${operatorName}` : '';
+  }
+
   // If this operator joined the chat, add it to the joined chats set
   if (hasOperator) {
     window.joinedChats.add(sessionId);
     // Save joined chats to localStorage
     window.saveJoinedChats();
+  }
+}
+
+// Update chat user name display
+function updateChatUserName(sessionId, userName) {
+  const chatItem = document.querySelector(`#active-chat-list a[data-session-id="${sessionId}"]`);
+  if (!chatItem) return;
+  const userEl = chatItem.querySelector('.user-name');
+  if (userEl) {
+    userEl.textContent = userName ? `User: ${userName}` : '';
   }
 }
 

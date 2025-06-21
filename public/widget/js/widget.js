@@ -592,6 +592,23 @@
         updateMessageReadStatus(data.messageId);
       });
 
+      // Show user details form when requested by operator
+      socket.on('request-user-details', () => {
+        if (!chatWindow.classList.contains('open')) {
+          toggleChatWindow();
+        }
+        userDetailsForm.style.display = 'block';
+        chatMessagesContainer.style.display = 'none';
+        fileIndicator.style.display = 'none';
+        const nameInput = document.getElementById('chatbot-user-name');
+        if (nameInput) {
+          nameInput.value = localStorage.getItem('chatbotUserName') || '';
+          nameInput.focus();
+        }
+        document.getElementById('chatbot-user-email').value = localStorage.getItem('chatbotUserEmail') || '';
+        document.getElementById('chatbot-user-phone').value = localStorage.getItem('chatbotUserPhone') || '';
+      });
+
       // Handle connection events
       socket.on('connect', () => {
         logger.log('Socket connected');

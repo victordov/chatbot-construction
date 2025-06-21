@@ -77,7 +77,9 @@ function setupWebSockets(server) {
     // Track client's session and role
     let clientSessionId = null;
     let encryptionEnabled = false;
-    const isOperator = socket.user && socket.user.role === 'admin';
+    const isOperator =
+      socket.user &&
+      (socket.user.role === 'admin' || socket.user.role === 'operator');
 
     // Send server's public key to client for encryption setup
     const serverPublicKey = encryptionService.getServerPublicKey();
@@ -687,7 +689,7 @@ function setupWebSockets(server) {
             content: message,
             sender: 'operator',
             operatorId: socket.user.id,
-            operatorName: socket.user.username,
+            operatorName: socket.user.displayName || socket.user.username,
             timestamp: new Date()
           });
 
@@ -697,7 +699,7 @@ function setupWebSockets(server) {
           // Send to user
           io.to(sessionId).emit('operator-message', {
             text: message,
-            senderName: socket.user.username,
+            senderName: socket.user.displayName || socket.user.username,
             timestamp: new Date()
           });
         }
@@ -813,7 +815,7 @@ function setupWebSockets(server) {
             content: messageContent,
             sender: 'operator',
             operatorId: socket.user.id,
-            operatorName: socket.user.username,
+            operatorName: socket.user.displayName || socket.user.username,
             timestamp: new Date()
           };
 
@@ -839,7 +841,7 @@ function setupWebSockets(server) {
           // Send to user
           io.to(sessionId).emit('operator-message', {
             text: messageContent,
-            senderName: socket.user.username,
+            senderName: socket.user.displayName || socket.user.username,
             timestamp: new Date()
           });
 
@@ -848,7 +850,7 @@ function setupWebSockets(server) {
             sessionId,
             suggestionId,
             operatorId: socket.user.id,
-            operatorName: socket.user.username,
+            operatorName: socket.user.displayName || socket.user.username,
             wasEdited: !!edited,
             timestamp: new Date()
           });
@@ -857,6 +859,15 @@ function setupWebSockets(server) {
         logger.error('Error handling suggestion use:', { error });
         socket.emit('error', { message: 'Failed to use suggestion' });
       }
+    });
+
+    // Operator requests the user to provide contact details
+    socket.on('request-user-details', (data) => {
+      if (!isOperator) {
+        return;
+      }
+      const { sessionId } = data;
+      io.to(sessionId).emit('request-user-details');
     });
 
     // Handle toggling suggestions for a chat
@@ -932,17 +943,19 @@ function setupWebSockets(server) {
         );
 
         if (conversation) {
+          const opName = socket.user.displayName || socket.user.username;
           io.to(sessionId).emit('operator-message', {
             text: passToBot
-              ? `${socket.user.username} has left the conversation. The chatbot will assist you.`
-              : `${socket.user.username} has left the conversation. Please wait for the next available operator.`,
-            senderName: socket.user.username,
+              ? `${opName} has left the conversation. The chatbot will assist you.`
+              : `${opName} has left the conversation. Please wait for the next available operator.`,
+            senderName: opName,
             timestamp: new Date()
           });
 
           io.to('operators').emit('operator-left', {
             sessionId,
             operatorId: socket.user.id,
+            operatorName: opName,
             timestamp: new Date()
           });
         }
@@ -992,6 +1005,7 @@ function setupWebSockets(server) {
           io.to('operators').emit('operator-left', {
             sessionId,
             operatorId: socket.user.id,
+            operatorName: opName,
             timestamp: new Date()
           });
         }
@@ -1034,40 +1048,10 @@ function setupWebSockets(server) {
         });
       }
 
-      // If it was an operator, check if they were connected to any chats
+      // If it was an operator, keep the chat assignment intact so
+      // refreshing the page doesn't remove them from the conversation.
       if (isOperator) {
-        try {
-          // Find all conversations where this operator was connected
-          const conversations = await Conversation.find({
-            operatorId: socket.user.id,
-            hasOperator: true,
-            status: 'active'
-          });
-
-          // For each conversation, update the status and notify other operators
-          for (const conversation of conversations) {
-            // Notify all operators that this operator has left the chat
-            io.to('operators').emit('operator-left', {
-              sessionId: conversation.sessionId,
-              operatorId: socket.user.id,
-              timestamp: new Date()
-            });
-
-            // Update the conversation in the database
-            await Conversation.findOneAndUpdate(
-              { _id: conversation._id },
-              {
-                $set: {
-                  hasOperator: false,
-                  operatorId: null,
-                  operatorName: null
-                }
-              }
-            );
-          }
-        } catch (error) {
-          logger.error('Error handling operator disconnect:', { error });
-        }
+        logger.info('Operator disconnected, assignments preserved');
       }
     });
   });
