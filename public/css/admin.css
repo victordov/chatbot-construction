@@ -217,3 +217,15 @@ th .col-resizer {
 #kb-step-columns {
   max-width: none;
 }
+
+/* Sidebar profile section */
+#sidebar .sidebar-profile {
+  border-top: 1px solid #444;
+  padding-top: 1rem;
+  padding-bottom: 1rem;
+  color: #fff;
+}
+
+#sidebar .sidebar-profile button {
+  color: #fff;
+}

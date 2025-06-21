@@ -687,7 +687,7 @@ function setupWebSockets(server) {
             content: message,
             sender: 'operator',
             operatorId: socket.user.id,
-            operatorName: socket.user.username,
+            operatorName: socket.user.displayName || socket.user.username,
             timestamp: new Date()
           });
 
@@ -697,7 +697,7 @@ function setupWebSockets(server) {
           // Send to user
           io.to(sessionId).emit('operator-message', {
             text: message,
-            senderName: socket.user.username,
+            senderName: socket.user.displayName || socket.user.username,
             timestamp: new Date()
           });
         }
@@ -813,7 +813,7 @@ function setupWebSockets(server) {
             content: messageContent,
             sender: 'operator',
             operatorId: socket.user.id,
-            operatorName: socket.user.username,
+            operatorName: socket.user.displayName || socket.user.username,
             timestamp: new Date()
           };
 
@@ -839,7 +839,7 @@ function setupWebSockets(server) {
           // Send to user
           io.to(sessionId).emit('operator-message', {
             text: messageContent,
-            senderName: socket.user.username,
+            senderName: socket.user.displayName || socket.user.username,
             timestamp: new Date()
           });
 
@@ -848,7 +848,7 @@ function setupWebSockets(server) {
             sessionId,
             suggestionId,
             operatorId: socket.user.id,
-            operatorName: socket.user.username,
+            operatorName: socket.user.displayName || socket.user.username,
             wasEdited: !!edited,
             timestamp: new Date()
           });
@@ -932,11 +932,12 @@ function setupWebSockets(server) {
         );
 
         if (conversation) {
+          const opName = socket.user.displayName || socket.user.username;
           io.to(sessionId).emit('operator-message', {
             text: passToBot
-              ? `${socket.user.username} has left the conversation. The chatbot will assist you.`
-              : `${socket.user.username} has left the conversation. Please wait for the next available operator.`,
-            senderName: socket.user.username,
+              ? `${opName} has left the conversation. The chatbot will assist you.`
+              : `${opName} has left the conversation. Please wait for the next available operator.`,
+            senderName: opName,
             timestamp: new Date()
           });
 

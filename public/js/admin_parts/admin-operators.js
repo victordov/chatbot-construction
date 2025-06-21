@@ -198,6 +198,7 @@ function loadAllOperators() {
 
         row.innerHTML = `
           <td>${operator.username}</td>
+          <td>${operator.displayName || '-'}</td>
           <td>${operator.name || '-'}</td>
           <td>${operator.email}</td>
           <td>
@@ -282,6 +283,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
 function createOperator() {
   const username = document.getElementById('operator-username').value;
+  const displayName = document.getElementById('operator-display-name').value;
   const name = document.getElementById('operator-name').value;
   const email = document.getElementById('operator-email').value;
   const password = document.getElementById('operator-password').value;
@@ -304,7 +306,7 @@ function createOperator() {
       'Content-Type': 'application/json',
       'x-auth-token': token
     },
-    body: JSON.stringify({ username, name, email, password, confirmPassword })
+    body: JSON.stringify({ username, displayName, name, email, password, confirmPassword })
   })
     .then(response => response.json())
     .then(data => {
@@ -389,6 +391,7 @@ function openEditOperatorModal(event) {
       // Fill the form with operator details
       document.getElementById('edit-operator-id').value = operator._id;
       document.getElementById('edit-operator-username').value = operator.username;
+      document.getElementById('edit-operator-display-name').value = operator.displayName || '';
       document.getElementById('edit-operator-name').value = operator.name || '';
       document.getElementById('edit-operator-email').value = operator.email;
 
@@ -421,6 +424,7 @@ document.addEventListener('DOMContentLoaded', function() {
 function editOperator() {
   const operatorId = document.getElementById('edit-operator-id').value;
   const username = document.getElementById('edit-operator-username').value;
+  const displayName = document.getElementById('edit-operator-display-name').value;
   const name = document.getElementById('edit-operator-name').value;
   const email = document.getElementById('edit-operator-email').value;
   const token = localStorage.getItem('chatbot-auth-token');
@@ -436,7 +440,7 @@ function editOperator() {
       'Content-Type': 'application/json',
       'x-auth-token': token
     },
-    body: JSON.stringify({ username, name, email })
+    body: JSON.stringify({ username, displayName, name, email })
   })
     .then(response => response.json())
     .then(data => {

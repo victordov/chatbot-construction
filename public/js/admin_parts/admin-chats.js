@@ -284,7 +284,7 @@ function loadActiveChats(socket, token) {
             logger.info('Automatically rejoining chat:', chat.sessionId);
             socket.emit('operator-takeover', {
               sessionId: chat.sessionId,
-              operatorName: window.currentUser ? window.currentUser.username : 'Admin'
+              operatorName: window.currentUser ? (window.currentUser.displayName || window.currentUser.username) : 'Admin'
             });
           }
         });
