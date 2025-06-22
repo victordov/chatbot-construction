@@ -167,7 +167,8 @@ document.addEventListener('DOMContentLoaded', function() {
       return response.json();
     })
     .then(data => {
-    // Initialize dashboard
+      localStorage.setItem('chatbot-user', JSON.stringify(data.user));
+      // Initialize dashboard
       initializeDashboard(token, data.user);
     })
     .catch(error => {
@@ -197,6 +198,21 @@ function initializeDashboard(token, user) {
 
   // Store current user
   window.currentUser = user;
+
+  // Populate sidebar profile
+  const nameEl = document.getElementById('profile-name');
+  const emailEl = document.getElementById('profile-email');
+  if (nameEl) nameEl.textContent = user.displayName || user.username;
+  if (emailEl) emailEl.textContent = user.email;
+
+  const logoutBtn = document.getElementById('logout-btn');
+  if (logoutBtn) {
+    logoutBtn.addEventListener('click', () => {
+      localStorage.removeItem('chatbot-auth-token');
+      localStorage.removeItem('chatbot-user');
+      window.location.href = '/admin/login.html';
+    });
+  }
 
   // Helper function to save joined chats to localStorage
   window.saveJoinedChats = function() {

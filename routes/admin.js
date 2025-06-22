@@ -14,10 +14,30 @@ router.get('/active-chats', async (req, res) => {
   try {
     const activeChatsSummary = await Conversation.find(
       { status: 'active' },
-      { sessionId: 1, startedAt: 1, domain: 1, 'messages.length': { $size: '$messages' } }
+      {
+        sessionId: 1,
+        startedAt: 1,
+        domain: 1,
+        hasOperator: 1,
+        operatorName: 1,
+        metadata: 1,
+        'messages.length': { $size: '$messages' }
+      }
     ).sort({ lastActivity: -1 });
 
-    res.json({ chats: activeChatsSummary });
+    const chats = activeChatsSummary.map(chat => ({
+      sessionId: chat.sessionId,
+      startedAt: chat.startedAt,
+      domain: chat.domain,
+      hasOperator: chat.hasOperator,
+      operatorName: chat.operatorName,
+      userName:
+        chat.metadata &&
+        (chat.metadata.name || (chat.metadata.get && chat.metadata.get('name'))),
+      'messages.length': chat['messages.length']
+    }));
+
+    res.json({ chats });
   } catch (error) {
     console.error('Error fetching active chats:', error);
     res.status(500).json({ error: 'Failed to retrieve active chats' });
@@ -64,7 +84,16 @@ router.get('/chat/:sessionId', async (req, res) => {
       return res.status(404).json({ error: 'Conversation not found' });
     }
 
-    res.json(conversation);
+    const userName =
+      conversation.metadata &&
+      (conversation.metadata.name ||
+        (conversation.metadata.get && conversation.metadata.get('name')));
+
+    // Convert Map fields like `metadata` into plain objects
+    const convoObj = conversation.toObject({ flattenMaps: true });
+    convoObj.userName = userName;
+
+    res.json(convoObj);
   } catch (error) {
     console.error('Error fetching chat:', error);
     res.status(500).json({ error: 'Failed to retrieve chat' });
@@ -356,7 +385,7 @@ router.get('/operators', async (req, res) => {
     // Find all active operators
     const operators = await User.find(
       { role: 'operator', isActive: true },
-      { _id: 1, username: 1, email: 1 }
+      { _id: 1, username: 1, displayName: 1, email: 1 }
     );
 
     res.json({ operators });
@@ -372,7 +401,7 @@ router.get('/all-operators', async (req, res) => {
     // Find all operators regardless of active status
     const operators = await User.find(
       { role: 'operator' },
-      { _id: 1, username: 1, name: 1, email: 1, isActive: 1, createdAt: 1, lastLogin: 1 }
+      { _id: 1, username: 1, displayName: 1, name: 1, email: 1, isActive: 1, createdAt: 1, lastLogin: 1 }
     );
 
     res.json({ operators });
@@ -385,7 +414,7 @@ router.get('/all-operators', async (req, res) => {
 // Create a new operator
 router.post('/operators', async (req, res) => {
   try {
-    const { username, email, password, confirmPassword, name } = req.body;
+    const { username, email, password, confirmPassword, name, displayName } = req.body;
 
     // Validate input
     if (!username || !email || !password || !confirmPassword) {
@@ -412,6 +441,7 @@ router.post('/operators', async (req, res) => {
     const operator = new User({
       username,
       name,
+      displayName,
       email,
       password,
       role: 'operator',
@@ -426,6 +456,7 @@ router.post('/operators', async (req, res) => {
       operator: {
         _id: operator._id,
         username: operator.username,
+        displayName: operator.displayName,
         name: operator.name,
         email: operator.email,
         isActive: operator.isActive
@@ -468,6 +499,7 @@ router.patch('/operators/:id', async (req, res) => {
       operator: {
         _id: operator._id,
         username: operator.username,
+        displayName: operator.displayName,
         name: operator.name,
         email: operator.email,
         isActive: operator.isActive
@@ -483,7 +515,7 @@ router.patch('/operators/:id', async (req, res) => {
 router.put('/operators/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const { username, name, email } = req.body;
+    const { username, name, displayName, email } = req.body;
 
     // Validate input
     if (!username || !email) {
@@ -521,6 +553,7 @@ router.put('/operators/:id', async (req, res) => {
     // Update operator details
     operator.username = username;
     operator.name = name;
+    operator.displayName = displayName;
     operator.email = email;
 
     await operator.save();
@@ -531,6 +564,7 @@ router.put('/operators/:id', async (req, res) => {
       operator: {
         _id: operator._id,
         username: operator.username,
+        displayName: operator.displayName,
         name: operator.name,
         email: operator.email,
         isActive: operator.isActive

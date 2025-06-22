@@ -76,8 +76,11 @@ function setupEventHandlers(socket) {
 
     // Notify that operator has joined
     const sessionId = this.getAttribute('data-session-id');
-    const operatorName = 'Admin'; // Use actual operator name if available
+    const operatorName = window.currentUser ? (window.currentUser.displayName || window.currentUser.username) : 'Admin';
     socket.emit('operator-takeover', { sessionId, operatorName });
+
+    // Immediately reflect in the active chat list
+    updateChatOperatorStatus(sessionId, true, operatorName);
 
     // Add this chat to the joined chats set
     window.joinedChats.add(sessionId);
@@ -212,11 +215,25 @@ function setupEventHandlers(socket) {
 
   // Listen for operator join/leave events
   socket.on('operator-joined', function(data) {
-    updateChatOperatorStatus(data.sessionId, true);
+    updateChatOperatorStatus(data.sessionId, true, data.operatorName);
   });
 
   socket.on('operator-left', function(data) {
-    updateChatOperatorStatus(data.sessionId, false);
+    updateChatOperatorStatus(data.sessionId, false, data.operatorName);
+  });
+
+  // Update user name when details change
+  socket.on('user-details-updated', function(data) {
+    updateChatUserName(data.sessionId, data.name);
+    if (window.currentConversation && window.currentConversation.sessionId === data.sessionId) {
+      if (!window.currentConversation.metadata) {
+        window.currentConversation.metadata = {};
+      }
+      window.currentConversation.metadata.name = data.name;
+      window.currentConversation.metadata.email = data.email;
+      window.currentConversation.metadata.phone = data.phone;
+      displayUserContactInfo(window.currentConversation);
+    }
   });
 
   socket.on('new-message', function(data) {
