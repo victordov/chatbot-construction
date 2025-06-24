@@ -1,5 +1,5 @@
 /**
- * This script creates an initial admin user in the database
+ * This script creates an initial superadmin user in the database
  * Run with: node create-admin.js
  */
 
@@ -11,12 +11,12 @@ const { logger } = require('./services/logging');
 // Load environment variables
 dotenv.config();
 
-// Default admin credentials
+// Default superadmin credentials
 const DEFAULT_ADMIN = {
   username: 'admin',
   password: 'Admin123!',
   email: 'admin@chatbot.com',
-  role: 'admin'
+  role: 'superadmin'
 };
 
 async function createAdmin() {

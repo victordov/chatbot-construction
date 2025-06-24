@@ -292,11 +292,134 @@ function toggleOperatorStatus(event) {
     });
 }
 
+// Load companies for dropdowns
+function loadCompaniesForDropdown(selectElement, selectedCompanyId = null) {
+  const token = localStorage.getItem('chatbot-auth-token');
+  const currentUser = JSON.parse(localStorage.getItem('chatbot-user'));
+
+  // Clear existing options (except the first one)
+  while (selectElement.options.length > 1) {
+    selectElement.remove(1);
+  }
+
+  // If user is a company admin, they can only assign to their own company
+  if (currentUser.role === 'company_admin' && currentUser.company) {
+    const option = document.createElement('option');
+    option.value = currentUser.company.id;
+    option.textContent = currentUser.company.name;
+    option.selected = true;
+    selectElement.appendChild(option);
+
+    // Disable the select element since there's only one option
+    selectElement.disabled = true;
+    return;
+  }
+
+  // For superadmins, load all companies
+  fetch('/api/companies', {
+    method: 'GET',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-auth-token': token
+    }
+  })
+    .then(response => response.json())
+    .then(data => {
+      data.companies.forEach(company => {
+        const option = document.createElement('option');
+        option.value = company._id;
+        option.textContent = company.name;
+
+        // Select the company if it matches the selectedCompanyId
+        if (selectedCompanyId && company._id === selectedCompanyId) {
+          option.selected = true;
+        }
+
+        selectElement.appendChild(option);
+      });
+    })
+    .catch(error => {
+      console.error('Error loading companies:', error);
+      showToast('Failed to load companies', 'danger');
+    });
+}
+
+// Handle role selection changes
+function handleRoleChange(roleSelect, companySelect, companyContainer) {
+  const currentUser = JSON.parse(localStorage.getItem('chatbot-user'));
+
+  // Hide superadmin option for non-superadmins
+  const superadminOption = roleSelect.querySelector('option[value="superadmin"]');
+  if (superadminOption) {
+    superadminOption.style.display = currentUser.role === 'superadmin' ? 'block' : 'none';
+  }
+
+  // Show/hide company selection based on role
+  roleSelect.addEventListener('change', function() {
+    const selectedRole = this.value;
+
+    if (selectedRole === 'superadmin') {
+      companyContainer.style.display = 'none';
+      companySelect.required = false;
+    } else {
+      companyContainer.style.display = 'block';
+      companySelect.required = true;
+    }
+  });
+
+  // Initial setup based on current role
+  const selectedRole = roleSelect.value;
+  if (selectedRole === 'superadmin') {
+    companyContainer.style.display = 'none';
+    companySelect.required = false;
+  } else {
+    companyContainer.style.display = 'block';
+    companySelect.required = true;
+  }
+
+  // Company admins can only create operators
+  if (currentUser.role === 'company_admin') {
+    // Hide company_admin and superadmin options
+    Array.from(roleSelect.options).forEach(option => {
+      if (option.value !== 'operator') {
+        option.style.display = 'none';
+      }
+    });
+
+    // Set to operator and disable
+    roleSelect.value = 'operator';
+    roleSelect.disabled = true;
+  }
+}
+
 // Create new operator
 document.addEventListener('DOMContentLoaded', function() {
   const createOperatorBtn = document.getElementById('create-operator-btn');
   if (createOperatorBtn) {
     createOperatorBtn.addEventListener('click', createOperator);
+  }
+
+  // Setup role and company selection for create operator form
+  const roleSelect = document.getElementById('operator-role');
+  const companySelect = document.getElementById('operator-company');
+  const companyContainer = document.getElementById('company-selection-container');
+
+  if (roleSelect && companySelect && companyContainer) {
+    // Load companies for dropdown
+    loadCompaniesForDropdown(companySelect);
+
+    // Setup role change handler
+    handleRoleChange(roleSelect, companySelect, companyContainer);
+  }
+
+  // Setup role and company selection for edit operator form
+  const editRoleSelect = document.getElementById('edit-operator-role');
+  const editCompanySelect = document.getElementById('edit-operator-company');
+  const editCompanyContainer = document.getElementById('edit-company-selection-container');
+
+  if (editRoleSelect && editCompanySelect && editCompanyContainer) {
+    // Setup role change handler
+    handleRoleChange(editRoleSelect, editCompanySelect, editCompanyContainer);
   }
 });
 
@@ -305,6 +428,8 @@ function createOperator() {
   const displayName = document.getElementById('operator-display-name').value;
   const name = document.getElementById('operator-name').value;
   const email = document.getElementById('operator-email').value;
+  const role = document.getElementById('operator-role').value;
+  const companyId = document.getElementById('operator-company').value;
   const password = document.getElementById('operator-password').value;
   const confirmPassword = document.getElementById('operator-confirm-password').value;
   const token = localStorage.getItem('chatbot-auth-token');
@@ -319,13 +444,28 @@ function createOperator() {
     return;
   }
 
+  // Validate company selection for non-superadmin roles
+  if (role !== 'superadmin' && !companyId) {
+    showToast('Please select a company', 'warning');
+    return;
+  }
+
   fetch('/api/admin/operators', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'x-auth-token': token
     },
-    body: JSON.stringify({ username, displayName, name, email, password, confirmPassword })
+    body: JSON.stringify({ 
+      username, 
+      displayName, 
+      name, 
+      email, 
+      role,
+      companyId: role !== 'superadmin' ? companyId : null,
+      password, 
+      confirmPassword 
+    })
   })
     .then(response => response.json())
     .then(data => {
@@ -414,6 +554,24 @@ function openEditOperatorModal(event) {
       document.getElementById('edit-operator-name').value = operator.name || '';
       document.getElementById('edit-operator-email').value = operator.email;
 
+      // Set role if available
+      const roleSelect = document.getElementById('edit-operator-role');
+      if (roleSelect && operator.role) {
+        roleSelect.value = operator.role;
+
+        // Trigger change event to update company field visibility
+        const event = new Event('change');
+        roleSelect.dispatchEvent(event);
+      }
+
+      // Load companies and set selected company if available
+      const companySelect = document.getElementById('edit-operator-company');
+      if (companySelect && operator.company) {
+        loadCompaniesForDropdown(companySelect, operator.company.id);
+      } else if (companySelect) {
+        loadCompaniesForDropdown(companySelect);
+      }
+
       // Store operator ID for reset password
       document.getElementById('reset-password-operator-id').value = operator._id;
 
@@ -446,10 +604,25 @@ function editOperator() {
   const displayName = document.getElementById('edit-operator-display-name').value;
   const name = document.getElementById('edit-operator-name').value;
   const email = document.getElementById('edit-operator-email').value;
+  const role = document.getElementById('edit-operator-role').value;
+  const companyId = document.getElementById('edit-operator-company').value;
   const token = localStorage.getItem('chatbot-auth-token');
+  const currentUser = JSON.parse(localStorage.getItem('chatbot-user'));
 
   if (!username || !email) {
     showToast('Username and email are required', 'warning');
+    return;
+  }
+
+  // Validate company selection for non-superadmin roles
+  if (role !== 'superadmin' && !companyId) {
+    showToast('Please select a company', 'warning');
+    return;
+  }
+
+  // Company admins can only create operators
+  if (currentUser.role === 'company_admin' && role !== 'operator') {
+    showToast('Company admins can only create operators', 'warning');
     return;
   }
 
@@ -459,7 +632,14 @@ function editOperator() {
       'Content-Type': 'application/json',
       'x-auth-token': token
     },
-    body: JSON.stringify({ username, displayName, name, email })
+    body: JSON.stringify({ 
+      username, 
+      displayName, 
+      name, 
+      email,
+      role,
+      companyId: role !== 'superadmin' ? companyId : null
+    })
   })
     .then(response => response.json())
     .then(data => {

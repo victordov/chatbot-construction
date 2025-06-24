@@ -29,8 +29,15 @@ const UserSchema = new mongoose.Schema({
   },
   role: {
     type: String,
-    enum: ['admin', 'operator'],
+    enum: ['superadmin', 'company_admin', 'operator'],
     default: 'operator'
+  },
+  company: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Company',
+    required: function() {
+      return this.role === 'company_admin' || this.role === 'operator';
+    }
   },
   isActive: {
     type: Boolean,
@@ -42,6 +49,10 @@ const UserSchema = new mongoose.Schema({
   createdAt: {
     type: Date,
     default: Date.now
+  },
+  createdBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
   }
 });
 

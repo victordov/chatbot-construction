@@ -1,7 +1,8 @@
 const express = require('express');
 const Conversation = require('../models/conversation');
 const User = require('../models/user');
-const { auth, operator } = require('../middleware/auth');
+const Company = require('../models/company');
+const { auth, operator, superadmin } = require('../middleware/auth');
 
 const router = express.Router();
 
@@ -12,8 +13,16 @@ router.use(operator);
 // Get active conversations
 router.get('/active-chats', async (req, res) => {
   try {
+    // Build query based on user role
+    let query = { status: 'active' };
+
+    // If not superadmin, filter by company
+    if (req.user.role !== 'superadmin' && req.user.company) {
+      query.company = req.user.company.id;
+    }
+
     const activeChatsSummary = await Conversation.find(
-      { status: 'active' },
+      query,
       {
         sessionId: 1,
         startedAt: 1,
@@ -21,9 +30,10 @@ router.get('/active-chats', async (req, res) => {
         hasOperator: 1,
         operatorName: 1,
         metadata: 1,
+        company: 1,
         'messages.length': { $size: '$messages' }
       }
-    ).sort({ lastActivity: -1 });
+    ).populate('company', 'name').sort({ lastActivity: -1 });
 
     const chats = activeChatsSummary.map(chat => ({
       sessionId: chat.sessionId,
@@ -34,6 +44,10 @@ router.get('/active-chats', async (req, res) => {
       userName:
         chat.metadata &&
         (chat.metadata.name || (chat.metadata.get && chat.metadata.get('name'))),
+      company: chat.company ? {
+        id: chat.company._id,
+        name: chat.company.name
+      } : null,
       'messages.length': chat['messages.length']
     }));
 
@@ -62,12 +76,45 @@ router.get('/chat-history', async (req, res) => {
       };
     }
 
+    // If not superadmin, filter by company
+    if (req.user.role !== 'superadmin' && req.user.company) {
+      // If search query exists, add company filter to it
+      if (Object.keys(query).length > 0) {
+        query = {
+          $and: [
+            query,
+            { company: req.user.company.id }
+          ]
+        };
+      } else {
+        // Otherwise just set the company filter
+        query.company = req.user.company.id;
+      }
+    }
+
     const chatHistory = await Conversation.find(
       query,
-      { sessionId: 1, startedAt: 1, endedAt: 1, status: 1, domain: 1, 'messages.length': { $size: '$messages' } }
-    ).sort({ startedAt: -1 }).limit(100);
+      { 
+        sessionId: 1, 
+        startedAt: 1, 
+        endedAt: 1, 
+        status: 1, 
+        domain: 1, 
+        company: 1,
+        'messages.length': { $size: '$messages' } 
+      }
+    ).populate('company', 'name').sort({ startedAt: -1 }).limit(100);
 
-    res.json({ history: chatHistory });
+    // Format the response
+    const history = chatHistory.map(chat => ({
+      ...chat.toObject(),
+      company: chat.company ? {
+        id: chat.company._id,
+        name: chat.company.name
+      } : null
+    }));
+
+    res.json({ history });
   } catch (error) {
     console.error('Error fetching chat history:', error);
     res.status(500).json({ error: 'Failed to retrieve chat history' });
@@ -174,17 +221,25 @@ router.post('/chat/:sessionId/end', async (req, res) => {
 // Get analytics data
 router.get('/analytics', async (req, res) => {
   try {
+    // Create base query for company filtering
+    let companyFilter = {};
+    if (req.user.role !== 'superadmin' && req.user.company) {
+      companyFilter = { company: req.user.company.id };
+    }
+
     // Get total chats today
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
     const totalChatsToday = await Conversation.countDocuments({
-      startedAt: { $gte: today }
+      startedAt: { $gte: today },
+      ...companyFilter
     });
 
     // Get active chats
     const activeChats = await Conversation.countDocuments({
-      status: 'active'
+      status: 'active',
+      ...companyFilter
     });
 
     // Get chat volume per day for the last 7 days
@@ -194,7 +249,8 @@ router.get('/analytics', async (req, res) => {
     const chatVolumePerDay = await Conversation.aggregate([
       {
         $match: {
-          startedAt: { $gte: last7Days }
+          startedAt: { $gte: last7Days },
+          ...(companyFilter.company ? { company: mongoose.Types.ObjectId(companyFilter.company) } : {})
         }
       },
       {
@@ -223,7 +279,8 @@ router.get('/analytics', async (req, res) => {
     const chatVolumeOverTime = await Conversation.aggregate([
       {
         $match: {
-          startedAt: { $gte: last12Months }
+          startedAt: { $gte: last12Months },
+          ...(companyFilter.company ? { company: mongoose.Types.ObjectId(companyFilter.company) } : {})
         }
       },
       {
@@ -248,7 +305,10 @@ router.get('/analytics', async (req, res) => {
     responseSince.setDate(responseSince.getDate() - 7);
 
     const convsForResponse = await Conversation.find(
-      { startedAt: { $gte: responseSince } },
+      { 
+        startedAt: { $gte: responseSince },
+        ...companyFilter
+      },
       { messages: 1, startedAt: 1 }
     ).lean();
 
@@ -298,7 +358,12 @@ router.get('/analytics', async (req, res) => {
     // Helper to compute conversation metrics for a period
     async function conversationMetricsBetween(start, end) {
       const result = await Conversation.aggregate([
-        { $match: { startedAt: { $gte: start, $lt: end } } },
+        { 
+          $match: { 
+            startedAt: { $gte: start, $lt: end },
+            ...(companyFilter.company ? { company: mongoose.Types.ObjectId(companyFilter.company) } : {})
+          } 
+        },
         {
           $project: {
             messagesCount: { $size: '$messages' },
@@ -363,6 +428,18 @@ router.get('/analytics', async (req, res) => {
       }
     };
 
+    // Get company information if applicable
+    let companyInfo = null;
+    if (req.user.company) {
+      const company = await Company.findById(req.user.company.id);
+      if (company) {
+        companyInfo = {
+          id: company._id,
+          name: company.name
+        };
+      }
+    }
+
     res.json({
       totalChatsToday,
       activeChats,
@@ -370,7 +447,8 @@ router.get('/analytics', async (req, res) => {
       chatVolumeOverTime,
       avgResponseTime,
       responseTimeOverTime,
-      conversationMetrics
+      conversationMetrics,
+      company: companyInfo
     });
   } catch (error) {
     console.error('Error fetching analytics:', error);
@@ -382,11 +460,19 @@ router.get('/analytics', async (req, res) => {
 // Get operators for task assignment
 router.get('/operators', async (req, res) => {
   try {
-    // Find all active operators
+    // Build query based on user role
+    let query = { role: 'operator', isActive: true };
+
+    // If not superadmin, filter by company
+    if (req.user.role !== 'superadmin' && req.user.company) {
+      query.company = req.user.company.id;
+    }
+
+    // Find operators
     const operators = await User.find(
-      { role: 'operator', isActive: true },
-      { _id: 1, username: 1, displayName: 1, email: 1 }
-    );
+      query,
+      { _id: 1, username: 1, displayName: 1, email: 1, company: 1 }
+    ).populate('company', 'name');
 
     res.json({ operators });
   } catch (error) {
@@ -398,11 +484,19 @@ router.get('/operators', async (req, res) => {
 // Get all operators (including inactive)
 router.get('/all-operators', async (req, res) => {
   try {
-    // Find all operators regardless of active status
+    // Build query based on user role
+    let query = { role: 'operator' };
+
+    // If not superadmin, filter by company
+    if (req.user.role !== 'superadmin' && req.user.company) {
+      query.company = req.user.company.id;
+    }
+
+    // Find operators
     const operators = await User.find(
-      { role: 'operator' },
-      { _id: 1, username: 1, displayName: 1, name: 1, email: 1, isActive: 1, createdAt: 1, lastLogin: 1 }
-    );
+      query,
+      { _id: 1, username: 1, displayName: 1, name: 1, email: 1, isActive: 1, createdAt: 1, lastLogin: 1, company: 1 }
+    ).populate('company', 'name');
 
     res.json({ operators });
   } catch (error) {
@@ -414,7 +508,8 @@ router.get('/all-operators', async (req, res) => {
 // Create a new operator
 router.post('/operators', async (req, res) => {
   try {
-    const { username, email, password, confirmPassword, name, displayName } = req.body;
+    const { username, email, password, confirmPassword, name, displayName, companyId } = req.body;
+    const currentUser = req.user;
 
     // Validate input
     if (!username || !email || !password || !confirmPassword) {
@@ -437,6 +532,33 @@ router.post('/operators', async (req, res) => {
       });
     }
 
+    // Determine company assignment
+    let company = null;
+
+    // If company ID is provided, validate it
+    if (companyId) {
+      company = await Company.findById(companyId);
+      if (!company) {
+        return res.status(400).json({ error: 'Company not found' });
+      }
+
+      // Company admins can only create operators for their own company
+      if (currentUser.role === 'company_admin' && 
+          (!currentUser.company || currentUser.company.id.toString() !== companyId)) {
+        return res.status(403).json({ error: 'You can only create operators for your own company' });
+      }
+    } else {
+      // If no company ID is provided, use the current user's company (for company admins)
+      if (currentUser.role === 'company_admin') {
+        if (!currentUser.company) {
+          return res.status(400).json({ error: 'Company is required' });
+        }
+        company = await Company.findById(currentUser.company.id);
+      } else if (currentUser.role !== 'superadmin') {
+        return res.status(400).json({ error: 'Company is required' });
+      }
+    }
+
     // Create new operator
     const operator = new User({
       username,
@@ -445,7 +567,9 @@ router.post('/operators', async (req, res) => {
       email,
       password,
       role: 'operator',
-      isActive: true
+      company: company ? company._id : null,
+      isActive: true,
+      createdBy: currentUser.id
     });
 
     await operator.save();
@@ -459,7 +583,11 @@ router.post('/operators', async (req, res) => {
         displayName: operator.displayName,
         name: operator.name,
         email: operator.email,
-        isActive: operator.isActive
+        isActive: operator.isActive,
+        company: company ? {
+          id: company._id,
+          name: company.name
+        } : null
       }
     });
   } catch (error) {
@@ -515,7 +643,8 @@ router.patch('/operators/:id', async (req, res) => {
 router.put('/operators/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const { username, name, displayName, email } = req.body;
+    const { username, name, displayName, email, role, companyId } = req.body;
+    const currentUser = req.user;
 
     // Validate input
     if (!username || !email) {
@@ -523,14 +652,28 @@ router.put('/operators/:id', async (req, res) => {
     }
 
     // Find operator
-    const operator = await User.findById(id);
+    const operator = await User.findById(id).populate('company');
 
     if (!operator) {
       return res.status(404).json({ error: 'Operator not found' });
     }
 
-    if (operator.role !== 'operator') {
-      return res.status(400).json({ error: 'User is not an operator' });
+    // Check if user has permission to edit this operator
+    if (currentUser.role === 'company_admin') {
+      // Company admins can only edit operators from their own company
+      if (!operator.company || operator.company._id.toString() !== currentUser.company.id.toString()) {
+        return res.status(403).json({ error: 'You can only edit operators from your own company' });
+      }
+
+      // Company admins can't change operators to other roles
+      if (role && role !== 'operator') {
+        return res.status(403).json({ error: 'Company admins can only create operators' });
+      }
+
+      // Company admins can't change operators to other companies
+      if (companyId && companyId !== currentUser.company.id.toString()) {
+        return res.status(403).json({ error: 'Company admins can only assign operators to their own company' });
+      }
     }
 
     // Check if username or email is already taken by another user
@@ -550,11 +693,42 @@ router.put('/operators/:id', async (req, res) => {
       }
     }
 
+    // Validate role and company
+    let company = operator.company;
+    const newRole = role || operator.role;
+
+    // Superadmin can only be created by another superadmin
+    if (newRole === 'superadmin' && currentUser.role !== 'superadmin') {
+      return res.status(403).json({ error: 'Only superadmins can create other superadmins' });
+    }
+
+    // Validate company exists if companyId is provided
+    if (companyId && (newRole === 'company_admin' || newRole === 'operator')) {
+      company = await Company.findById(companyId);
+      if (!company) {
+        return res.status(400).json({ error: 'Company not found' });
+      }
+    } else if (!companyId && (newRole === 'company_admin' || newRole === 'operator') && !operator.company) {
+      // Company is required for company_admin and operator roles
+      return res.status(400).json({ error: 'Company is required for company admin and operator roles' });
+    }
+
     // Update operator details
     operator.username = username;
     operator.name = name;
     operator.displayName = displayName;
     operator.email = email;
+
+    // Only update role and company if provided and user has permission
+    if (role && (currentUser.role === 'superadmin' || (currentUser.role === 'company_admin' && role === 'operator'))) {
+      operator.role = role;
+    }
+
+    if (companyId && (newRole === 'company_admin' || newRole === 'operator')) {
+      operator.company = company._id;
+    } else if (newRole === 'superadmin') {
+      operator.company = null;
+    }
 
     await operator.save();
 
@@ -567,6 +741,11 @@ router.put('/operators/:id', async (req, res) => {
         displayName: operator.displayName,
         name: operator.name,
         email: operator.email,
+        role: operator.role,
+        company: operator.company ? {
+          id: operator.company._id,
+          name: company.name
+        } : null,
         isActive: operator.isActive
       }
     });

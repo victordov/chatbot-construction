@@ -83,7 +83,37 @@ The server will run on the port specified in your `.env` file (default: 3000).
 
 ---
 
-## 6. Additional Notes
+## 6. Multi-tenant Architecture
+
+The application supports a multi-tenant architecture with the following roles:
+
+- **Superadmin**: Can manage all companies, create company admins, and view all data.
+- **Company Admin**: Can manage operators within their company and view data related to their company.
+- **Operator**: Can handle chats assigned to them within their company.
+
+### Migration from Single-tenant to Multi-tenant
+
+If you're upgrading from a previous version, you'll need to run the migration script to update existing admin users to superadmins:
+
+```sh
+node migrate-admin-users.js
+```
+
+This script will find all users with the role 'admin' and update them to 'superadmin'.
+
+### Creating a Superadmin
+
+To create the first superadmin user:
+
+```sh
+node create-admin.js
+```
+
+This will create a superadmin user with the default credentials (username: admin, password: Admin123!).
+
+---
+
+## 7. Additional Notes
 - **Static files** are served from the `public/` directory.
 - **Logs** are stored in the `logs/` directory.
 - **Backups** are stored in the `backups/` directory.
@@ -91,7 +121,7 @@ The server will run on the port specified in your `.env` file (default: 3000).
 
 ---
 
-## 7. Testing
+## 8. Testing
 Run all tests with:
 ```sh
 npm test
@@ -99,7 +129,7 @@ npm test
 
 ---
 
-## 8. Troubleshooting
+## 9. Troubleshooting
 - Ensure all required environment variables are set.
 - Check `logs/` for error logs.
 - MongoDB must be running and accessible.

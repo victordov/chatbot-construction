@@ -103,6 +103,10 @@ const ConversationSchema = new mongoose.Schema({
   lastActivity: {
     type: Date,
     default: Date.now
+  },
+  company: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Company'
   }
 });
 
@@ -111,6 +115,7 @@ ConversationSchema.index({ sessionId: 1 });
 ConversationSchema.index({ userId: 1 });
 ConversationSchema.index({ status: 1 });
 ConversationSchema.index({ lastActivity: 1 });
+ConversationSchema.index({ company: 1 });
 
 const Conversation = mongoose.model('Conversation', ConversationSchema);
 
