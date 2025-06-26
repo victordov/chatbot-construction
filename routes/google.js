@@ -15,6 +15,10 @@ const knowledgeService = new KnowledgeService();
 // Generate OAuth URL
 router.get('/auth/url', auth, (req, res) => {
   try {
+    if (!authService.isGoogleConfigured()) {
+      return res.status(503).json({ error: 'Google OAuth is not configured' });
+    }
+    
     const url = authService.generateAuthUrl(req.user.id.toString());
     res.json({ url });
   } catch (err) {
@@ -30,6 +34,10 @@ router.get('/oauth2callback', async (req, res) => {
     return res.status(400).send('Invalid OAuth response');
   }
   try {
+    if (!authService.isGoogleConfigured()) {
+      return res.status(503).send('Google OAuth is not configured');
+    }
+    
     await authService.handleOAuthCallback(state, code);
     res.send('Google authorization successful. You can close this window.');
   } catch (err) {
@@ -41,6 +49,10 @@ router.get('/oauth2callback', async (req, res) => {
 // Save OAuth tokens
 router.post('/token', auth, async (req, res) => {
   try {
+    if (!authService.isGoogleConfigured()) {
+      return res.status(503).json({ error: 'Google OAuth is not configured' });
+    }
+    
     await authService.saveTokens(req.user.id, req.body);
     res.json({ success: true });
   } catch (err) {
@@ -52,6 +64,10 @@ router.post('/token', auth, async (req, res) => {
 // Check if user already authorized
 router.get('/status', auth, async (req, res) => {
   try {
+    if (!authService.isGoogleConfigured()) {
+      return res.json({ authorized: false, email: null, configured: false });
+    }
+    
     const authorized = await authService.hasTokens(req.user.id);
     let email = null;
     if (authorized) {
@@ -61,7 +77,7 @@ router.get('/status', auth, async (req, res) => {
         logger.error('Failed to fetch Google user email', { error: err });
       }
     }
-    res.json({ authorized, email });
+    res.json({ authorized, email, configured: true });
   } catch (err) {
     logger.error('Failed to check Google auth status', { error: err });
     res.status(500).json({ error: 'Failed to check status' });
@@ -72,6 +88,10 @@ router.get('/status', auth, async (req, res) => {
 router.get('/drive/search', auth, async (req, res) => {
   const query = req.query.q || '';
   try {
+    if (!authService.isGoogleConfigured()) {
+      return res.status(503).json({ error: 'Google OAuth is not configured' });
+    }
+    
     logger.info('Drive search requested', { userId: req.user.id, query });
     const files = await driveService.searchSpreadsheets(req.user.id, query);
     res.json({ files });
@@ -84,6 +104,10 @@ router.get('/drive/search', auth, async (req, res) => {
 // Import spreadsheet and store as knowledge document
 router.post('/knowledge/import', auth, async (req, res) => {
   try {
+    if (!authService.isGoogleConfigured()) {
+      return res.status(503).json({ error: 'Google OAuth is not configured' });
+    }
+    
     const { spreadsheetId, sheet, exclude } = req.body;
     const doc = await knowledgeService.importSpreadsheet(
       req.user.id,
@@ -124,6 +148,10 @@ router.get('/knowledge/:id', auth, async (req, res) => {
 // Refresh document from Google
 router.post('/knowledge/:id/refresh', auth, async (req, res) => {
   try {
+    if (!authService.isGoogleConfigured()) {
+      return res.status(503).json({ error: 'Google OAuth is not configured' });
+    }
+    
     const doc = await knowledgeService.refresh(req.user.id, req.params.id);
     res.json({ doc });
   } catch (err) {
@@ -158,6 +186,10 @@ router.delete('/knowledge/:id', auth, async (req, res) => {
 // Get names of sheets within a spreadsheet
 router.get('/sheets/:spreadsheetId/names', auth, operator, async (req, res) => {
   try {
+    if (!authService.isGoogleConfigured()) {
+      return res.status(503).json({ error: 'Google OAuth is not configured' });
+    }
+    
     const { names, title } = await sheetsService.getSheetNames(
       req.user.id,
       req.params.spreadsheetId
@@ -172,6 +204,10 @@ router.get('/sheets/:spreadsheetId/names', auth, operator, async (req, res) => {
 // Get spreadsheet data
 router.get('/sheets/:spreadsheetId', auth, operator, async (req, res) => {
   try {
+    if (!authService.isGoogleConfigured()) {
+      return res.status(503).json({ error: 'Google OAuth is not configured' });
+    }
+    
     const exclude = req.query.exclude ? req.query.exclude.split(',') : [];
     const data = await sheetsService.getSheetData(
       req.user.id,

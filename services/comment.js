@@ -4,9 +4,14 @@
 
 const Comment = require('../models/comment');
 const Task = require('../models/task');
+const ActivityService = require('./activity');
 const { logger } = require('./logging');
 
 class CommentService {
+  constructor() {
+    this.activityService = new ActivityService();
+  }
+
   /**
    * Get all comments for a task
    * @param {string} taskId - Task ID
@@ -56,12 +61,13 @@ class CommentService {
   /**
    * Create a new comment
    * @param {Object} commentData - Comment data
+   * @param {Object} authorUser - User who created the comment
    * @returns {Promise<Object>} - Created comment
    */
-  async createComment(commentData) {
+  async createComment(commentData, authorUser = null) {
     try {
       // Verify task exists
-      const task = await Task.findById(commentData.taskId);
+      const task = await Task.findById(commentData.taskId).populate('company', 'name');
       if (!task) {
         throw new Error('Task not found');
       }
@@ -72,6 +78,11 @@ class CommentService {
 
       // Populate author information
       await comment.populate('author', 'username email');
+
+      // Log comment activity
+      if (authorUser) {
+        await this.activityService.logCommentAdded(task, comment, authorUser);
+      }
 
       return comment;
     } catch (error) {

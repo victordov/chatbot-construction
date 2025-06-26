@@ -52,12 +52,12 @@ router.get('/', auth, operator, async (req, res) => {
 
     // Handle search parameter
     if (req.query.search) {
-      const tasks = await taskService.searchTasks(req.query.search);
+      const tasks = await taskService.searchTasks(req.query.search, req.user.company?.id, req.user.role);
       return res.json({ tasks });
     }
 
-    // Get tasks with filters
-    const tasks = await taskService.getTasks(filters);
+    // Get tasks with filters and company scoping
+    const tasks = await taskService.getTasks(filters, req.user.company?.id, req.user.role);
 
     res.json({ tasks });
   } catch (error) {
@@ -69,7 +69,7 @@ router.get('/', auth, operator, async (req, res) => {
 // Get a task by ID
 router.get('/:id', auth, operator, async (req, res) => {
   try {
-    const task = await taskService.getTaskById(req.params.id);
+    const task = await taskService.getTaskById(req.params.id, req.user.company?.id, req.user.role);
 
     res.json({ task });
   } catch (error) {
@@ -112,7 +112,8 @@ router.post('/', auth, operator, async (req, res) => {
       assignee: assignee === '' ? null : assignee,
       status: 'open',
       contactInfo,
-      createdBy: req.user.id
+      createdBy: req.user.id,
+      company: req.user.company?.id
     };
 
     // Handle conversationId - it could be a sessionId (string) or an ObjectId
@@ -132,7 +133,7 @@ router.post('/', auth, operator, async (req, res) => {
     }
 
     // Create the task
-    const task = await taskService.createTask(taskData);
+    const task = await taskService.createTask(taskData, req.user);
 
     // Emit WebSocket event for task creation
     try {
@@ -193,7 +194,7 @@ router.put('/:id', auth, operator, async (req, res) => {
     }
 
     // Update the task
-    const task = await taskService.updateTask(req.params.id, updateData);
+    const task = await taskService.updateTask(req.params.id, updateData, req.user, req.user.company?.id, req.user.role);
 
     // Emit WebSocket event for task update
     try {
@@ -217,8 +218,8 @@ router.put('/:id', auth, operator, async (req, res) => {
 // Delete a task
 router.delete('/:id', auth, operator, async (req, res) => {
   try {
-    // Delete the task
-    await taskService.deleteTask(req.params.id);
+    // Delete the task with user context for activity logging
+    const deletedTask = await taskService.deleteTask(req.params.id, req.user.company, req.user);
 
     // Emit WebSocket event for task deletion
     try {
@@ -309,7 +310,7 @@ router.post('/:id/comments', auth, operator, async (req, res) => {
     };
 
     // Create the comment
-    const comment = await commentService.createComment(commentData);
+    const comment = await commentService.createComment(commentData, req.user);
 
     // Emit WebSocket event for comment creation
     try {
@@ -450,7 +451,7 @@ router.post('/:id/follow-ups', auth, operator, async (req, res) => {
     };
 
     // Create the follow-up task
-    const task = await taskService.createFollowUpTask(req.params.id, taskData);
+    const task = await taskService.createFollowUpTask(req.params.id, taskData, req.user);
 
     // Emit WebSocket event for task creation
     try {
@@ -468,6 +469,25 @@ router.post('/:id/follow-ups', auth, operator, async (req, res) => {
 
     logger.error(`Error creating follow-up task for task with ID ${req.params.id}`, { error });
     res.status(500).json({ error: 'Failed to create follow-up task' });
+  }
+});
+
+// Get activities for a task
+router.get('/:id/activities', auth, operator, async (req, res) => {
+  try {
+    const ActivityService = require('../services/activity');
+    const activityService = new ActivityService();
+    
+    const activities = await activityService.getTaskActivities(req.params.id, req.user.company?.id, req.user.role);
+    
+    res.json({ activities });
+  } catch (error) {
+    if (error.message === 'Task not found' || error.message === 'Access denied: Task not accessible') {
+      return res.status(404).json({ error: 'Task not found or access denied' });
+    }
+
+    logger.error(`Error getting activities for task ${req.params.id}`, { error });
+    res.status(500).json({ error: 'Failed to get task activities' });
   }
 });
 

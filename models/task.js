@@ -72,6 +72,13 @@ const TaskSchema = new mongoose.Schema({
     ref: 'User',
     required: true
   },
+  // Company reference for multi-tenancy
+  company: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Company',
+    required: false, // Made optional to support super admin users
+    default: null
+  },
   createdAt: {
     type: Date,
     default: Date.now
@@ -92,6 +99,7 @@ TaskSchema.index({ dueDate: 1 });
 TaskSchema.index({ priority: 1 });
 TaskSchema.index({ conversationId: 1 });
 TaskSchema.index({ parentTaskId: 1 });
+TaskSchema.index({ company: 1 });
 TaskSchema.index({ 'contactInfo.email': 1 });
 TaskSchema.index({ 'contactInfo.phone': 1 });
 TaskSchema.index({ 'contactInfo.name': 1 });

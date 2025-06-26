@@ -5,17 +5,29 @@
 const Task = require('../models/task');
 const Conversation = require('../models/conversation');
 const User = require('../models/user');
+const ActivityService = require('./activity');
 const { logger } = require('./logging');
 
 class TaskService {
+  constructor() {
+    this.activityService = new ActivityService();
+  }
+
   /**
    * Get all tasks with optional filtering
    * @param {Object} filters - Optional filters for tasks
+   * @param {string} userCompanyId - User's company ID for filtering (null for super admin)
+   * @param {string} userRole - User's role to determine access level
    * @returns {Promise<Array>} - Array of tasks
    */
-  async getTasks(filters = {}) {
+  async getTasks(filters = {}, userCompanyId = null, userRole = null) {
     try {
       const query = {};
+
+      // Apply company filter for multi-tenancy (skip for super admin)
+      if (userRole !== 'superadmin' && userCompanyId) {
+        query.company = userCompanyId;
+      }
 
       // Apply filters if provided
       if (filters.status) {
@@ -53,6 +65,7 @@ class TaskService {
       const tasks = await Task.find(query)
         .populate('assignee', 'username email')
         .populate('createdBy', 'username email')
+        .populate('company', 'name')
         .sort({ createdAt: -1 });
 
       // Check if each task has follow-ups
@@ -73,15 +86,25 @@ class TaskService {
   /**
    * Get a task by ID
    * @param {string} taskId - Task ID
+   * @param {string} userCompanyId - User's company ID for access control (null for super admin)
+   * @param {string} userRole - User's role to determine access level
    * @returns {Promise<Object>} - Task object
    */
-  async getTaskById(taskId) {
+  async getTaskById(taskId, userCompanyId = null, userRole = null) {
     try {
-      const task = await Task.findById(taskId)
+      const query = { _id: taskId };
+      
+      // Apply company filter for multi-tenancy (skip for super admin)
+      if (userRole !== 'superadmin' && userCompanyId) {
+        query.company = userCompanyId;
+      }
+
+      const task = await Task.findOne(query)
         .populate('assignee', 'username email')
         .populate('createdBy', 'username email')
         .populate('conversationId', 'messages sessionId')
-        .populate('parentTaskId', 'title');
+        .populate('parentTaskId', 'title')
+        .populate('company', 'name');
 
       if (!task) {
         throw new Error('Task not found');
@@ -97,9 +120,10 @@ class TaskService {
   /**
    * Create a new task
    * @param {Object} taskData - Task data
+   * @param {Object} createdByUser - User who created the task
    * @returns {Promise<Object>} - Created task
    */
-  async createTask(taskData) {
+  async createTask(taskData, createdByUser = null) {
     try {
       // Lookup assignee name for easier display later
       if (taskData.assignee) {
@@ -124,8 +148,14 @@ class TaskService {
       // Populate both fields in a single call
       await task.populate([
         { path: 'assignee', select: 'username email' },
-        { path: 'createdBy', select: 'username email' }
+        { path: 'createdBy', select: 'username email' },
+        { path: 'company', select: 'name' }
       ]);
+
+      // Log task creation activity
+      if (createdByUser) {
+        await this.activityService.logTaskCreated(task, createdByUser);
+      }
 
       return task;
     } catch (error) {
@@ -142,10 +172,16 @@ class TaskService {
    * Update a task
    * @param {string} taskId - Task ID
    * @param {Object} updateData - Data to update
+   * @param {Object} updatedByUser - User who updated the task
+   * @param {string} userCompanyId - User's company ID for access control (null for super admin)
+   * @param {string} userRole - User's role to determine access level
    * @returns {Promise<Object>} - Updated task
    */
-  async updateTask(taskId, updateData) {
+  async updateTask(taskId, updateData, updatedByUser = null, userCompanyId = null, userRole = null) {
     try {
+      // First get the original task to track changes
+      const originalTask = await this.getTaskById(taskId, userCompanyId, userRole);
+      
       // Add updatedAt timestamp
       updateData.updatedAt = new Date();
 
@@ -154,16 +190,66 @@ class TaskService {
         updateData.completedAt = new Date();
       }
 
-      const task = await Task.findByIdAndUpdate(
-        taskId,
+      const query = { _id: taskId };
+      // Apply company filter for regular users (skip for super admin)
+      if (userRole !== 'superadmin' && userCompanyId) {
+        query.company = userCompanyId;
+      }
+
+      const task = await Task.findOneAndUpdate(
+        query,
         updateData,
         { new: true, runValidators: true }
       ).populate('assignee', 'username email')
         .populate('createdBy', 'username email')
-        .populate('parentTaskId', 'title');
+        .populate('parentTaskId', 'title')
+        .populate('company', 'name');
 
       if (!task) {
         throw new Error('Task not found');
+      }
+
+      // Log specific activities for important changes
+      if (updatedByUser) {
+        logger.info('Task update - user object for activity logging', { 
+          userId: updatedByUser.id, 
+          username: updatedByUser.username,
+          company: updatedByUser.company,
+          userKeys: Object.keys(updatedByUser)
+        });
+        
+        // Log status change
+        if (updateData.status && updateData.status !== originalTask.status) {
+          await this.activityService.logStatusChanged(task, originalTask.status, updateData.status, updatedByUser);
+          
+          // Log task completion if status changed to completed
+          if (updateData.status === 'completed') {
+            await this.activityService.logTaskCompleted(task, updatedByUser);
+          }
+        }
+
+        // Log priority change
+        if (updateData.priority && updateData.priority !== originalTask.priority) {
+          await this.activityService.logPriorityChanged(task, originalTask.priority, updateData.priority, updatedByUser);
+        }
+
+        // Log due date change
+        if (updateData.dueDate && new Date(updateData.dueDate).getTime() !== new Date(originalTask.dueDate).getTime()) {
+          await this.activityService.logDueDateChanged(task, originalTask.dueDate, updateData.dueDate, updatedByUser);
+        }
+
+        // Log generic task update for other fields
+        const significantFields = ['title', 'description', 'contactInfo'];
+        const changedSignificantFields = {};
+        significantFields.forEach(field => {
+          if (updateData[field] !== undefined && JSON.stringify(updateData[field]) !== JSON.stringify(originalTask[field])) {
+            changedSignificantFields[field] = updateData[field];
+          }
+        });
+
+        if (Object.keys(changedSignificantFields).length > 0) {
+          await this.activityService.logTaskUpdated(task, changedSignificantFields, updatedByUser);
+        }
       }
 
       return task;
@@ -178,12 +264,30 @@ class TaskService {
    * @param {string} taskId - Task ID
    * @returns {Promise<boolean>} - Success status
    */
-  async deleteTask(taskId) {
+  async deleteTask(taskId, userCompanyId = null, user = null) {
     try {
-      const task = await Task.findById(taskId);
+      const query = { _id: taskId };
+      
+      // Apply company filter for multi-tenancy
+      if (userCompanyId) {
+        query.company = userCompanyId;
+      }
+
+      const task = await Task.findOne(query);
 
       if (!task) {
         throw new Error('Task not found');
+      }
+
+      // Log activity before deletion
+      if (user) {
+        await this.activityService.logActivity({
+          taskId: task._id,
+          userId: user.id,
+          action: 'deleted',
+          details: `Task "${task.title}" was deleted`,
+          company: task.company
+        });
       }
 
       // If task is linked to a conversation, update the conversation
@@ -196,7 +300,7 @@ class TaskService {
 
       await Task.findByIdAndDelete(taskId);
 
-      return true;
+      return task; // Return the deleted task for reference
     } catch (error) {
       logger.error(`Error deleting task with ID ${taskId}`, { error });
       throw new Error('Failed to delete task');
@@ -260,9 +364,10 @@ class TaskService {
    * Create a follow-up task
    * @param {string} parentTaskId - Parent task ID
    * @param {Object} taskData - Task data
+   * @param {Object} createdByUser - User who created the task
    * @returns {Promise<Object>} - Created follow-up task
    */
-  async createFollowUpTask(parentTaskId, taskData) {
+  async createFollowUpTask(parentTaskId, taskData, createdByUser = null) {
     try {
       // Get the parent task
       const parentTask = await this.getTaskById(parentTaskId);
@@ -273,6 +378,11 @@ class TaskService {
 
       // Set the parent task ID
       taskData.parentTaskId = parentTaskId;
+
+      // Inherit company from parent task
+      if (parentTask.company) {
+        taskData.company = parentTask.company._id || parentTask.company;
+      }
 
       // If parent task has a conversation, link the follow-up task to the same conversation
       if (parentTask.conversationId) {
@@ -285,7 +395,7 @@ class TaskService {
       }
 
       // Create the follow-up task
-      const task = await this.createTask(taskData);
+      const task = await this.createTask(taskData, createdByUser);
 
       return task;
     } catch (error) {
@@ -297,9 +407,11 @@ class TaskService {
   /**
    * Search for tasks
    * @param {string} searchTerm - Search term
+   * @param {string} userCompanyId - User's company ID for filtering (null for super admin)
+   * @param {string} userRole - User's role to determine access level
    * @returns {Promise<Array>} - Array of matching tasks
    */
-  async searchTasks(searchTerm) {
+  async searchTasks(searchTerm, userCompanyId = null, userRole = null) {
     try {
       if (!searchTerm) {
         return [];
@@ -308,8 +420,8 @@ class TaskService {
       // Create a regex for case-insensitive search
       const searchRegex = new RegExp(searchTerm, 'i');
 
-      // Search in title, description, and contact info
-      const tasks = await Task.find({
+      // Build query with company filter
+      const query = {
         $or: [
           { title: searchRegex },
           { description: searchRegex },
@@ -317,9 +429,18 @@ class TaskService {
           { 'contactInfo.email': searchRegex },
           { 'contactInfo.phone': searchRegex }
         ]
-      })
+      };
+
+      // Apply company filter for multi-tenancy (skip for super admin)
+      if (userRole !== 'superadmin' && userCompanyId) {
+        query.company = userCompanyId;
+      }
+
+      // Search in title, description, and contact info
+      const tasks = await Task.find(query)
         .populate('assignee', 'username email')
         .populate('createdBy', 'username email')
+        .populate('company', 'name')
         .sort({ createdAt: -1 });
 
       return tasks;

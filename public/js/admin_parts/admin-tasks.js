@@ -512,6 +512,7 @@ function loadTaskDetails(taskId) {
     .then(data => {
       displayTaskDetails(data.task);
       loadTaskComments(taskId);
+      loadTaskActivities(taskId);
     })
     .catch(error => {
       logger.error('Error loading task details:', error);
@@ -656,6 +657,96 @@ function loadTaskComments(taskId) {
       logger.error('Error loading comments:', error);
       showNotification('Error', 'Failed to load comments', 'error');
     });
+}
+
+function loadTaskActivities(taskId) {
+  fetch(`/api/tasks/${taskId}/activities`, {
+    method: 'GET',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-auth-token': localStorage.getItem('chatbot-auth-token')
+    }
+  })
+    .then(response => {
+      if (!response.ok) {
+        throw new Error('Failed to load task activities');
+      }
+      return response.json();
+    })
+    .then(data => {
+      displayTaskActivities(data.activities);
+    })
+    .catch(error => {
+      logger.error('Error loading task activities:', error);
+      // Don't show error notification for activities as it's not critical
+      // Just display empty state
+      displayTaskActivities([]);
+    });
+}
+
+// Display task activities
+function displayTaskActivities(activities) {
+  const activityList = document.getElementById('task-activity-list');
+  
+  // Clear existing activities
+  activityList.innerHTML = '';
+
+  if (activities.length === 0) {
+    activityList.innerHTML = '<li class="list-group-item text-center text-muted">No activity yet</li>';
+    return;
+  }
+
+  activities.forEach(activity => {
+    const activityItem = document.createElement('li');
+    activityItem.className = 'list-group-item';
+
+    // Format timestamp
+    const timestamp = new Date(activity.createdAt);
+    const formattedTime = timestamp.toLocaleString();
+
+    // Get activity icon based on type
+    const icon = getActivityIcon(activity.type);
+
+    // Create activity content
+    activityItem.innerHTML = `
+      <div class="d-flex align-items-start">
+        <div class="me-2">
+          <i data-feather="${icon}" class="text-muted" style="width: 16px; height: 16px;"></i>
+        </div>
+        <div class="flex-grow-1">
+          <div class="fw-bold">${activity.userName}</div>
+          <div class="text-muted small">${activity.description}</div>
+          <div class="text-muted small">${formattedTime}</div>
+        </div>
+      </div>
+    `;
+
+    activityList.appendChild(activityItem);
+  });
+
+  // Initialize Feather icons for the new activity items
+  feather.replace();
+}
+
+// Get appropriate icon for activity type
+function getActivityIcon(activityType) {
+  const iconMap = {
+    'task_created': 'plus',
+    'task_updated': 'edit',
+    'task_assigned': 'user',
+    'task_unassigned': 'user-x',
+    'status_changed': 'check-circle',
+    'priority_changed': 'flag',
+    'due_date_changed': 'calendar',
+    'comment_added': 'message-circle',
+    'comment_updated': 'edit',
+    'comment_deleted': 'trash-2',
+    'follow_up_created': 'git-branch',
+    'task_completed': 'check',
+    'task_deleted': 'trash-2'
+  };
+
+  return iconMap[activityType] || 'activity';
 }
 
 function loadFollowUpTasks(taskId) {
@@ -1007,6 +1098,12 @@ function saveTask(token) {
 
         showNotification('Success', taskId ? 'Task updated successfully' : 'Task created successfully', 'success');
 
+        // If we're viewing a task and it was updated, reload the activities
+        const currentTaskId = document.querySelector('#task-detail-container')?.dataset.taskId;
+        if (taskId && currentTaskId === taskId) {
+          loadTaskActivities(taskId);
+        }
+
         loadTasks();
       })
     .catch(error => {
@@ -1035,6 +1132,8 @@ function updateTaskStatus(token, status) {
     .then(
       data => {
         showNotification('Success', 'Task status updated successfully', 'success');
+        // Reload activities to show the status change
+        loadTaskActivities(taskId);
       })
     .catch(error => {
       logger.error('Error updating task status:', error);
@@ -1068,6 +1167,8 @@ function addComment(token) {
       data => {
         document.getElementById('comment-input').value = '';
         loadTaskComments(taskId);
+        // Reload activities to show the new comment
+        loadTaskActivities(taskId);
       })
     .catch(error => {
       logger.error('Error adding comment:', error);
