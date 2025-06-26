@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>React Flow v12 Test</title>
+    
+    <!-- React Flow CSS -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xyflow/react@12.0.4/dist/style.css">
+    
+    <!-- React and React DOM -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    
+    <!-- React Flow v12 -->
+    <script src="https://cdn.jsdelivr.net/npm/@xyflow/react@12.0.4/dist/umd/index.js"></script>
+</head>
+<body>
+    <div id="container" style="width: 100vw; height: 100vh; background: #f5f5f5;"></div>
+    
+    <script>
+        console.log('=== React Flow v12 Test ===');
+        console.log('React available:', !!window.React);
+        console.log('ReactDOM available:', !!window.ReactDOM);
+        console.log('ReactFlow available:', !!window.ReactFlow);
+        
+        if (window.ReactFlow) {
+            console.log('ReactFlow keys:', Object.keys(window.ReactFlow));
+            
+            const { ReactFlow, Controls, Background, useNodesState, useEdgesState } = window.ReactFlow;
+            
+            console.log('Components available:', {
+                ReactFlow: !!ReactFlow,
+                Controls: !!Controls,
+                Background: !!Background,
+                useNodesState: !!useNodesState,
+                useEdgesState: !!useEdgesState
+            });
+            
+            try {
+                const { useState, useCallback } = React;
+                
+                const SimpleFlow = () => {
+                    const [nodes, setNodes, onNodesChange] = useNodesState([{
+                        id: '1',
+                        type: 'default',
+                        data: { label: 'Test Node' },
+                        position: { x: 100, y: 100 }
+                    }]);
+                    
+                    const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+                    
+                    return React.createElement(
+                        'div',
+                        { style: { width: '100%', height: '100%' } },
+                        React.createElement(ReactFlow, {
+                            nodes: nodes,
+                            edges: edges,
+                            onNodesChange: onNodesChange,
+                            onEdgesChange: onEdgesChange,
+                            fitView: true
+                        }, [
+                            React.createElement(Controls, { key: 'controls' }),
+                            React.createElement(Background, { key: 'background' })
+                        ])
+                    );
+                };
+                
+                // Render with React 18 API
+                const root = ReactDOM.createRoot(document.getElementById('container'));
+                root.render(React.createElement(SimpleFlow));
+                console.log('✅ React Flow v12 rendered successfully');
+                
+            } catch (error) {
+                console.error('❌ Error rendering React Flow v12:', error);
+            }
+        } else {
+            console.error('❌ ReactFlow not available');
+            document.getElementById('container').innerHTML = '<h1>ReactFlow not loaded</h1>';
+        }
+    </script>
+</body>
+</html>

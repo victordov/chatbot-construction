@@ -16,6 +16,8 @@ const taskRoutes = require('./routes/task');
 const googleRoutes = require('./routes/google');
 const companyRoutes = require('./routes/company');
 const notificationRoutes = require('./routes/notification');
+const workflowRoutes = require('./routes/workflow');
+const workflowExecutionRoutes = require('./routes/workflow-execution');
 // eslint-disable-next-line no-unused-vars
 const { apiLimiter, chatLimiter } = require('./middleware/rateLimiter');
 const DataRetentionService = require('./services/dataRetention');
@@ -148,6 +150,8 @@ app.use('/api/operations', operationsRoutes);
 app.use('/api/google', googleRoutes);
 app.use('/api/tasks', taskRoutes);
 app.use('/api/companies', companyRoutes);
+app.use('/api/workflows', workflowRoutes);
+app.use('/api/workflow-execution', workflowExecutionRoutes);
 app.use('/api/notifications', notificationRoutes);
 
 app.get('/', (req, res) => {
@@ -158,6 +162,9 @@ app.get('/', (req, res) => {
 const io = setupWebSockets(server);
 // Set the io instance in the socketManager
 socketManager.setIo(io);
+
+// Initialize workflow execution services
+workflowExecutionRoutes.initializeServices(socketManager);
 
 // Initialize data retention service
 const dataRetention = new DataRetentionService({

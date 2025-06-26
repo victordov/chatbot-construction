@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>React Flow Test</title>
+    
+    <!-- React Flow CSS -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/react-flow-renderer@10.3.17/dist/style.css">
+    
+    <!-- React and React DOM -->
+    <script crossorigin src="https://unpkg.com/react@17/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@17/umd/react-dom.production.min.js"></script>
+    
+    <!-- React Flow v10 -->
+    <script src="https://cdn.jsdelivr.net/npm/react-flow-renderer@10.3.17/dist/umd/index.js"></script>
+</head>
+<body>
+    <div id="test-container" style="width: 100vw; height: 100vh;"></div>
+    
+    <script>
+        console.log('Testing React Flow loading...');
+        console.log('React available:', !!window.React);
+        console.log('ReactDOM available:', !!window.ReactDOM);
+        console.log('ReactFlowRenderer available:', !!window.ReactFlowRenderer);
+        
+        if (window.ReactFlowRenderer) {
+            console.log('ReactFlowRenderer keys:', Object.keys(window.ReactFlowRenderer));
+            
+            // Try to create a simple React Flow instance
+            const { ReactFlow, Controls, Background, BackgroundVariant } = window.ReactFlowRenderer;
+            const { useState } = React;
+            
+            const TestFlow = () => {
+                const [nodes] = useState([]);
+                const [edges] = useState([]);
+                
+                return React.createElement(
+                    'div',
+                    { style: { width: '100%', height: '100%' } },
+                    React.createElement(ReactFlow, {
+                        nodes: nodes,
+                        edges: edges
+                    }, [
+                        React.createElement(Controls, { key: 'controls' }),
+                        React.createElement(Background, { key: 'background', variant: BackgroundVariant.Dots })
+                    ])
+                );
+            };
+            
+            const container = document.getElementById('test-container');
+            const root = ReactDOM.render(React.createElement(TestFlow), container);
+            
+            console.log('React Flow test rendered successfully!');
+        } else {
+            console.error('ReactFlowRenderer not available!');
+            document.getElementById('test-container').innerHTML = '<h1>ReactFlowRenderer not loaded!</h1>';
+        }
+    </script>
+</body>
+</html>
