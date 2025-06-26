@@ -97,9 +97,9 @@ router.post('/', auth, operator, async (req, res) => {
     } = req.body;
 
     // Validate required fields
-    if (!title || !description || !dueDate || !assignee) {
+    if (!title || !description || !dueDate) {
       return res.status(400).json({
-        error: 'Please provide title, description, due date, and assignee'
+        error: 'Please provide title, description, and due date'
       });
     }
 
@@ -109,7 +109,7 @@ router.post('/', auth, operator, async (req, res) => {
       description,
       dueDate,
       priority: priority || 'medium',
-      assignee,
+      assignee: assignee === '' ? null : assignee,
       status: 'open',
       contactInfo,
       createdBy: req.user.id
@@ -163,7 +163,8 @@ router.put('/:id', auth, operator, async (req, res) => {
       dueDate,
       priority,
       status,
-      contactInfo
+      contactInfo,
+      parentTaskId
     } = req.body;
 
     // Create update data object
@@ -186,6 +187,9 @@ router.put('/:id', auth, operator, async (req, res) => {
     }
     if (contactInfo) {
       updateData.contactInfo = contactInfo;
+    }
+    if (parentTaskId) {
+      updateData.parentTaskId = parentTaskId;
     }
 
     // Update the task
@@ -399,6 +403,71 @@ router.delete('/:id/comments/:commentId', auth, operator, async (req, res) => {
 
     logger.error(`Error deleting comment with ID ${req.params.commentId}`, { error });
     res.status(500).json({ error: 'Failed to delete comment' });
+  }
+});
+
+// Get follow-up tasks for a task
+router.get('/:id/follow-ups', auth, operator, async (req, res) => {
+  try {
+    const tasks = await taskService.getFollowUpTasks(req.params.id);
+    res.json({ tasks });
+  } catch (error) {
+    logger.error(`Error getting follow-up tasks for task with ID ${req.params.id}`, { error });
+    res.status(500).json({ error: 'Failed to get follow-up tasks' });
+  }
+});
+
+// Create a follow-up task
+router.post('/:id/follow-ups', auth, operator, async (req, res) => {
+  try {
+    // Extract task data from request body
+    const {
+      title,
+      description,
+      dueDate,
+      priority,
+      assignee,
+      contactInfo
+    } = req.body;
+
+    // Validate required fields
+    if (!title || !description || !dueDate) {
+      return res.status(400).json({
+        error: 'Please provide title, description, and due date'
+      });
+    }
+
+    // Create task data object
+    const taskData = {
+      title,
+      description,
+      dueDate,
+      priority: priority || 'medium',
+      assignee: assignee === '' ? null : assignee,
+      status: 'open',
+      contactInfo,
+      createdBy: req.user.id
+    };
+
+    // Create the follow-up task
+    const task = await taskService.createFollowUpTask(req.params.id, taskData);
+
+    // Emit WebSocket event for task creation
+    try {
+      const io = socketManager.getIo();
+      io.emit('task-created', { task });
+    } catch (socketError) {
+      logger.error('Error emitting task-created event', { error: socketError });
+    }
+
+    res.status(201).json({ task });
+  } catch (error) {
+    if (error.message === 'Parent task not found') {
+      return res.status(404).json({ error: 'Parent task not found' });
+    }
+
+    logger.error(`Error creating follow-up task for task with ID ${req.params.id}`, { error });
+    res.status(500).json({ error: 'Failed to create follow-up task' });
   }
 });
 

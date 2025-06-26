@@ -1,3 +1,28 @@
+/**
+ * Markdown Support for Task Descriptions
+ * 
+ * We use the marked.js library to render Markdown in task descriptions.
+ * This allows users to format their task descriptions with:
+ * - Headers (# Header)
+ * - Bold text (**bold**)
+ * - Italic text (*italic*)
+ * - Lists (- item)
+ * - Links ([text](url))
+ * - And other Markdown features
+ * 
+ * Security is ensured by enabling the sanitize option to prevent XSS attacks.
+ */
+// Configure marked.js for Markdown rendering
+if (typeof marked !== 'undefined') {
+  marked.setOptions({
+    gfm: true, // GitHub Flavored Markdown
+    breaks: true, // Convert line breaks to <br>
+    sanitize: true, // Sanitize HTML to prevent XSS attacks
+    smartLists: true, // Use smarter list behavior
+    smartypants: false // Don't use "smart" typographic punctuation
+  });
+}
+
 // Task Management Functions
 function setupTaskManagement(token) {
   // Set up event listeners for task-related buttons
@@ -66,6 +91,20 @@ function setupTaskManagement(token) {
   document.getElementById('back-to-tasks-btn').addEventListener('click', function() {
     showTaskList();
   });
+
+  document.getElementById('edit-task-btn').addEventListener('click', function() {
+    const taskId = document.getElementById('task-detail-container').dataset.taskId;
+    editTaskFromDetails(taskId);
+  });
+
+  // Check URL parameters for task ID
+  const params = getUrlParams();
+  if (params.section === 'tasks' && params.taskId) {
+    // Small delay to ensure the section is loaded
+    setTimeout(() => {
+      loadTaskDetails(params.taskId);
+    }, 100);
+  }
 
   // Set up event listeners for task filters
   document.getElementById('task-status-filter').addEventListener('change', function() {
@@ -314,6 +353,13 @@ function displayTasks(tasks) {
     const dueDate = new Date(task.dueDate);
     const formattedDate = dueDate.toLocaleDateString();
 
+    // Check if task is overdue
+    const now = new Date();
+    if (dueDate < now && task.status !== 'completed') {
+      row.classList.add('overdue-task');
+      row.style.color = '#dc3545'; // Bootstrap danger color
+    }
+
     // Create priority badge
     const priorityBadge = document.createElement('span');
     priorityBadge.className = 'badge';
@@ -387,10 +433,43 @@ function displayTasks(tasks) {
     actionsCell.appendChild(editBtn);
     actionsCell.appendChild(deleteBtn);
 
+    // Add follow-up indicator if task has follow-ups
+    if (task.hasFollowUps) {
+      const followUpIndicator = document.createElement('span');
+      followUpIndicator.className = 'badge bg-info ms-2';
+      followUpIndicator.innerHTML = '<i data-feather="git-branch"></i>';
+      followUpIndicator.title = 'Has follow-up tasks';
+      followUpIndicator.style.cursor = 'pointer';
+      followUpIndicator.addEventListener('click', function(e) {
+        e.stopPropagation();
+        loadTaskDetails(task._id);
+      });
+      actionsCell.appendChild(followUpIndicator);
+    }
+
+    // Add parent task indicator if this is a follow-up task
+    if (task.parentTaskId) {
+      const parentTaskIndicator = document.createElement('span');
+      parentTaskIndicator.className = 'badge bg-secondary ms-2';
+      parentTaskIndicator.innerHTML = '<i data-feather="corner-right-up"></i>';
+      parentTaskIndicator.title = 'Follow-up task';
+      parentTaskIndicator.style.cursor = 'pointer';
+      actionsCell.appendChild(parentTaskIndicator);
+    }
+
+    // Process description for the task list
+    // In the list view, we show a plain text preview of the description
+    // We don't render Markdown here since it's just a truncated preview
+    // and rendering HTML in a truncated string could lead to broken tags
+    let processedDescription = task.description;
+    if (processedDescription.length > 50) {
+      processedDescription = processedDescription.substring(0, 50) + '...';
+    }
+
     // Add cells to row
     row.innerHTML = `
       <td>${task.title}</td>
-      <td class="description-cell">${task.description.length > 50 ? task.description.substring(0, 50) + '...' : task.description}</td>
+      <td class="description-cell">${processedDescription}</td>
       <td>${formattedDate}</td>
       <td></td>
       <td>${assigneeDisplay}</td>
@@ -414,6 +493,9 @@ function displayTasks(tasks) {
 }
 
 function loadTaskDetails(taskId) {
+  // Update URL with task ID
+  updateUrlWithParams({ section: 'tasks', taskId: taskId });
+
   fetch(`/api/tasks/${taskId}`, {
     method: 'GET',
     headers: {
@@ -443,15 +525,43 @@ function displayTaskDetails(task) {
   document.getElementById('task-detail-container').dataset.taskId = task._id;
   document.querySelector('.row.mb-3').style.display = 'none';
 
+  // Show parent task info if this is a follow-up task
+  const parentTaskInfo = document.getElementById('parent-task-info');
+  if (task.parentTaskId) {
+    parentTaskInfo.style.display = 'block';
+    document.getElementById('parent-task-title').textContent = task.parentTaskId.title || 'Parent Task';
+    document.getElementById('parent-task-link').onclick = function() {
+      loadTaskDetails(task.parentTaskId._id);
+      return false;
+    };
+  } else {
+    parentTaskInfo.style.display = 'none';
+  }
+
+  // Load follow-up tasks if any
+  loadFollowUpTasks(task._id);
+
   const assigneeDisplay = task.assigneeName || task.assignee?.username || 'Unassigned';
 
   // Set task details
   document.getElementById('task-title').textContent = task.title;
-  document.getElementById('task-description').textContent = task.description;
+
+  // Render task description with Markdown
+  // This converts Markdown syntax to HTML for display
+  // The sanitize option is enabled to prevent XSS attacks
+  const descriptionElement = document.getElementById('task-description');
+  descriptionElement.innerHTML = marked.parse(task.description, { sanitize: true });
 
   // Format due date
   const dueDate = new Date(task.dueDate);
   document.getElementById('task-due-date').textContent = dueDate.toLocaleDateString();
+
+  // Check if task is overdue
+  const now = new Date();
+  if (dueDate < now && task.status !== 'completed') {
+    document.getElementById('task-due-date').classList.add('text-danger');
+    document.getElementById('task-due-date').innerHTML += ' <span class="badge bg-danger">OVERDUE</span>';
+  }
 
   // Set priority with appropriate styling
   const prioritySpan = document.getElementById('task-priority');
@@ -478,6 +588,12 @@ function displayTaskDetails(task) {
 
   // Set status dropdown
   document.getElementById('task-status-update').value = task.status;
+
+  // Add Create Follow-up button
+  const createFollowUpBtn = document.getElementById('create-follow-up-btn');
+  createFollowUpBtn.onclick = function() {
+    openFollowUpTaskModal(task._id);
+  };
 
   // Set conversation link if available
   const conversationLink = document.getElementById('task-conversation-link');
@@ -542,6 +658,106 @@ function loadTaskComments(taskId) {
     });
 }
 
+function loadFollowUpTasks(taskId) {
+  fetch(`/api/tasks/${taskId}/follow-ups`, {
+    method: 'GET',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-auth-token': localStorage.getItem('chatbot-auth-token')
+    }
+  })
+    .then(response => {
+      if (!response.ok) {
+        throw new Error('Failed to load follow-up tasks');
+      }
+      return response.json();
+    })
+    .then(data => {
+      displayFollowUpTasks(data.tasks);
+    })
+    .catch(error => {
+      logger.error('Error loading follow-up tasks:', error);
+      showNotification('Error', 'Failed to load follow-up tasks', 'error');
+    });
+}
+
+function displayFollowUpTasks(tasks) {
+  const followUpsList = document.getElementById('follow-ups-list');
+  const followUpsSection = document.getElementById('follow-ups-section');
+
+  // Clear existing follow-up tasks
+  followUpsList.innerHTML = '';
+
+  if (tasks.length === 0) {
+    followUpsSection.style.display = 'none';
+    return;
+  }
+
+  followUpsSection.style.display = 'block';
+
+  tasks.forEach(task => {
+    const taskItem = document.createElement('div');
+    taskItem.className = 'card mb-2';
+
+    // Format due date
+    const dueDate = new Date(task.dueDate);
+    const formattedDate = dueDate.toLocaleDateString();
+
+    // Check if task is overdue
+    const now = new Date();
+    let overdueClass = '';
+    let overdueLabel = '';
+
+    if (dueDate < now && task.status !== 'completed') {
+      overdueClass = 'text-danger';
+      overdueLabel = ' <span class="badge bg-danger">OVERDUE</span>';
+    }
+
+    // Create status badge
+    const statusBadge = document.createElement('span');
+    statusBadge.className = 'badge';
+
+    switch (task.status) {
+    case 'open':
+      statusBadge.className += ' bg-secondary';
+      break;
+    case 'in_progress':
+      statusBadge.className += ' bg-primary';
+      break;
+    case 'completed':
+      statusBadge.className += ' bg-success';
+      break;
+    }
+
+    const statusText = task.status === 'in_progress' ? 'In Progress' :
+      task.status.charAt(0).toUpperCase() + task.status.slice(1);
+    statusBadge.textContent = statusText;
+
+    taskItem.innerHTML = `
+      <div class="card-body">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <h6 class="mb-0"><a href="#" class="follow-up-link">${task.title}</a></h6>
+          <div>
+            ${statusBadge.outerHTML}
+          </div>
+        </div>
+        <div class="d-flex justify-content-between align-items-center">
+          <small class="text-muted">Assigned to: ${task.assigneeName || task.assignee?.username || 'Unassigned'}</small>
+          <small class="${overdueClass}">Due: ${formattedDate}${overdueLabel}</small>
+        </div>
+      </div>
+    `;
+
+    // Add click event to the follow-up link
+    taskItem.querySelector('.follow-up-link').addEventListener('click', function(e) {
+      e.preventDefault();
+      loadTaskDetails(task._id);
+    });
+
+    followUpsList.appendChild(taskItem);
+  });
+}
+
 function displayComments(comments) {
   const commentsList = document.getElementById('comments-list');
 
@@ -587,6 +803,9 @@ function openTaskModal(conversationId = null, task = null) {
       const taskModal = new bootstrap.Modal(document.getElementById('taskModal'));
       taskModal.show();
     });
+
+  // Hide parent task info by default
+  document.getElementById('parent-task-info-modal').style.display = 'none';
 
   if (conversationId) {
     document.getElementById('conversation-id').value = conversationId;
@@ -665,6 +884,14 @@ function openTaskModal(conversationId = null, task = null) {
     document.getElementById('task-priority-input').value = task.priority;
     document.getElementById('task-assignee-input').value = task.assignee;
 
+    // Show parent task info if this is a follow-up task
+    if (task.parentTaskId) {
+      document.getElementById('parent-task-info-modal').style.display = 'block';
+      document.getElementById('parent-task-title-modal').textContent = 
+        task.parentTaskId.title || 'Parent Task';
+      document.getElementById('parent-task-id').value = task.parentTaskId._id || task.parentTaskId;
+    }
+
     if (task.contactInfo) {
       document.getElementById('contact-name-input').value = task.contactInfo.name || '';
       document.getElementById('contact-email-input').value = task.contactInfo.email || '';
@@ -732,10 +959,7 @@ function saveTask(token) {
     isValid = false;
   }
 
-  if (!assignee) {
-    assigneeInput.classList.add('is-invalid');
-    isValid = false;
-  }
+  // Assignee is optional, no validation needed
 
   if (!isValid) {
     return;
@@ -752,6 +976,12 @@ function saveTask(token) {
 
   if (conversationId) {
     taskData.conversationId = conversationId;
+  }
+
+  // Handle parent task ID for follow-up tasks
+  const parentTaskId = document.getElementById('parent-task-id').value;
+  if (parentTaskId) {
+    taskData.parentTaskId = parentTaskId;
   }
 
   const method = taskId ? 'PUT' : 'POST';
@@ -842,6 +1072,97 @@ function addComment(token) {
     .catch(error => {
       logger.error('Error adding comment:', error);
       showNotification('Error', 'Failed to add comment', 'error');
+    });
+}
+
+function openFollowUpTaskModal(parentTaskId) {
+  document.getElementById('task-form').reset();
+
+  // Get the parent task details
+  fetch(`/api/tasks/${parentTaskId}`, {
+    method: 'GET',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-auth-token': localStorage.getItem('chatbot-auth-token')
+    }
+  })
+    .then(response => {
+      if (!response.ok) {
+        throw new Error('Failed to load parent task details');
+      }
+      return response.json();
+    })
+    .then(data => {
+      const parentTask = data.task;
+
+      // Set parent task info
+      document.getElementById('parent-task-info-modal').style.display = 'block';
+      document.getElementById('parent-task-title-modal').textContent = parentTask.title;
+
+      // Set default due date (7 days after parent task due date)
+      const parentDueDate = new Date(parentTask.dueDate);
+      const followUpDueDate = new Date(parentDueDate);
+      followUpDueDate.setDate(followUpDueDate.getDate() + 7);
+      const formattedDate = followUpDueDate.toISOString().split('T')[0];
+      document.getElementById('task-due-date-input').value = formattedDate;
+
+      // Set parent task ID
+      document.getElementById('parent-task-id').value = parentTaskId;
+
+      // Set conversation ID if available
+      if (parentTask.conversationId) {
+        document.getElementById('conversation-id').value = 
+          parentTask.conversationId._id || parentTask.conversationId;
+      }
+
+      // Set contact info if available
+      if (parentTask.contactInfo) {
+        document.getElementById('contact-name-input').value = parentTask.contactInfo.name || '';
+        document.getElementById('contact-email-input').value = parentTask.contactInfo.email || '';
+        document.getElementById('contact-phone-input').value = parentTask.contactInfo.phone || '';
+
+        document.getElementById('name-missing').style.display = !parentTask.contactInfo.name ? 'block' : 'none';
+        document.getElementById('email-missing').style.display = !parentTask.contactInfo.email ? 'block' : 'none';
+        document.getElementById('phone-missing').style.display = !parentTask.contactInfo.phone ? 'block' : 'none';
+      }
+
+      // Update modal title and button text
+      document.getElementById('taskModalLabel').textContent = 'Create Follow-up Task';
+      document.getElementById('save-task-btn').textContent = 'Create Follow-up Task';
+
+      // Load operators and show modal
+      loadOperators(localStorage.getItem('chatbot-auth-token'))
+        .then(() => {
+          const taskModal = new bootstrap.Modal(document.getElementById('taskModal'));
+          taskModal.show();
+        });
+    })
+    .catch(error => {
+      logger.error('Error loading parent task details:', error);
+      showNotification('Error', 'Failed to load parent task details', 'error');
+    });
+}
+
+function editTaskFromDetails(taskId) {
+  fetch(`/api/tasks/${taskId}`, {
+    method: 'GET',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-auth-token': localStorage.getItem('chatbot-auth-token')
+    }
+  })
+    .then(response => {
+      if (!response.ok) {
+        throw new Error('Failed to load task details');
+      }
+      return response.json();
+    })
+    .then(data => {
+      openTaskModal(null, data.task);
+    })
+    .catch(error => {
+      logger.error('Error loading task for editing:', error);
+      showNotification('Error', 'Failed to load task for editing', 'error');
     });
 }
 

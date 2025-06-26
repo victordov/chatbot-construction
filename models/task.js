@@ -20,8 +20,7 @@ const TaskSchema = new mongoose.Schema({
   },
   assignee: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
-    required: true
+    ref: 'User'
   },
   assigneeName: {
     type: String
@@ -34,6 +33,10 @@ const TaskSchema = new mongoose.Schema({
   conversationId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Conversation'
+  },
+  parentTaskId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Task'
   },
   contactInfo: {
     name: {
@@ -88,6 +91,7 @@ TaskSchema.index({ status: 1 });
 TaskSchema.index({ dueDate: 1 });
 TaskSchema.index({ priority: 1 });
 TaskSchema.index({ conversationId: 1 });
+TaskSchema.index({ parentTaskId: 1 });
 TaskSchema.index({ 'contactInfo.email': 1 });
 TaskSchema.index({ 'contactInfo.phone': 1 });
 TaskSchema.index({ 'contactInfo.name': 1 });

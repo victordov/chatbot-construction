@@ -15,6 +15,7 @@ const operationsRoutes = require('./routes/operations');
 const taskRoutes = require('./routes/task');
 const googleRoutes = require('./routes/google');
 const companyRoutes = require('./routes/company');
+const notificationRoutes = require('./routes/notification');
 // eslint-disable-next-line no-unused-vars
 const { apiLimiter, chatLimiter } = require('./middleware/rateLimiter');
 const DataRetentionService = require('./services/dataRetention');
@@ -23,6 +24,7 @@ const { metricsMiddleware } = require('./services/monitoring');
 const AlertService = require('./services/alerting');
 const BackupService = require('./services/backup');
 const WidgetUpdateService = require('./services/widgetUpdate');
+const schedulerService = require('./services/scheduler');
 const session = require('express-session');
 const { v4: uuidv4 } = require('uuid');
 
@@ -146,6 +148,7 @@ app.use('/api/operations', operationsRoutes);
 app.use('/api/google', googleRoutes);
 app.use('/api/tasks', taskRoutes);
 app.use('/api/companies', companyRoutes);
+app.use('/api/notifications', notificationRoutes);
 
 app.get('/', (req, res) => {
   res.send('Chatbot server is running.');
@@ -183,6 +186,9 @@ const widgetUpdateService = new WidgetUpdateService({
   currentVersion: process.env.WIDGET_VERSION || '1.0.0'
 });
 widgetUpdateService.start();
+
+// Initialize scheduler service for task notifications
+schedulerService.initialize();
 
 // Start the server
 server.listen(PORT, () => {

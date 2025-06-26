@@ -283,7 +283,7 @@ function initializeDashboard(token, user) {
 }
 
 // Helper function to update URL with query parameters
-function updateUrlWithParams(params) {
+window.updateUrlWithParams = function(params) {
   const url = new URL(window.location.href);
 
   // Clear existing parameters
@@ -301,7 +301,7 @@ function updateUrlWithParams(params) {
 }
 
 // Helper function to get query parameters from URL and fragment
-function getUrlParams() {
+window.getUrlParams = function() {
   const params = {};
 
   // Parse query parameters
@@ -349,6 +349,7 @@ function setupNavigation() {
             viewChatHistory(params.session);
           }, 100);
         }
+
       }
     } else if (params.session) { // If no section parameter but session parameter exists, navigate to active-chats
       // Navigate to active-chats section and view the chat
@@ -405,9 +406,13 @@ function setupNavigation() {
       const sectionId = this.getAttribute('data-section');
       document.getElementById(sectionId + '-section').classList.add('active');
 
-      // If tasks section is clicked, load operators
+      // If tasks section is clicked, load operators and show task list
       if (sectionId === 'tasks') {
         loadOperators(localStorage.getItem('chatbot-auth-token'));
+        // Make sure we show the task list view instead of task detail view
+        if (typeof showTaskList === 'function') {
+          showTaskList();
+        }
       }
 
       // If operators section is clicked, load all operators
@@ -430,9 +435,14 @@ function setupNavigation() {
       link.click();
     }
 
-    // If tasks section is loaded directly, load operators
+    // If tasks section is loaded directly, load operators and show task list
     if (params.section === 'tasks') {
       loadOperators(localStorage.getItem('chatbot-auth-token'));
+
+      // If there's no taskId parameter, make sure we show the task list view
+      if (!params.taskId && typeof showTaskList === 'function') {
+        showTaskList();
+      }
     }
 
     // If operators section is loaded directly, load all operators
@@ -447,6 +457,7 @@ function setupNavigation() {
         viewChatHistory(params.session);
       }, 100);
     }
+
   }
 
   // Check for session parameter in URL fragment even if no section parameter

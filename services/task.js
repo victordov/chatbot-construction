@@ -34,6 +34,10 @@ class TaskService {
         query.conversationId = filters.conversationId;
       }
 
+      if (filters.parentTaskId) {
+        query.parentTaskId = filters.parentTaskId;
+      }
+
       if (filters.dueDate) {
         // Handle due date filtering (before, after, between)
         if (filters.dueDate.before) {
@@ -51,7 +55,15 @@ class TaskService {
         .populate('createdBy', 'username email')
         .sort({ createdAt: -1 });
 
-      return tasks;
+      // Check if each task has follow-ups
+      const tasksWithFollowUpInfo = await Promise.all(tasks.map(async (task) => {
+        const taskObj = task.toObject();
+        const followUpCount = await Task.countDocuments({ parentTaskId: task._id });
+        taskObj.hasFollowUps = followUpCount > 0;
+        return taskObj;
+      }));
+
+      return tasksWithFollowUpInfo;
     } catch (error) {
       logger.error('Error getting tasks', { error });
       throw new Error('Failed to get tasks');
@@ -68,7 +80,8 @@ class TaskService {
       const task = await Task.findById(taskId)
         .populate('assignee', 'username email')
         .populate('createdBy', 'username email')
-        .populate('conversationId', 'messages sessionId');
+        .populate('conversationId', 'messages sessionId')
+        .populate('parentTaskId', 'title');
 
       if (!task) {
         throw new Error('Task not found');
@@ -108,8 +121,11 @@ class TaskService {
         );
       }
 
-      await task.populate('assignee', 'username email')
-        .populate('createdBy', 'username email');
+      // Populate both fields in a single call
+      await task.populate([
+        { path: 'assignee', select: 'username email' },
+        { path: 'createdBy', select: 'username email' }
+      ]);
 
       return task;
     } catch (error) {
@@ -143,7 +159,8 @@ class TaskService {
         updateData,
         { new: true, runValidators: true }
       ).populate('assignee', 'username email')
-        .populate('createdBy', 'username email');
+        .populate('createdBy', 'username email')
+        .populate('parentTaskId', 'title');
 
       if (!task) {
         throw new Error('Task not found');
@@ -206,7 +223,8 @@ class TaskService {
         updateData,
         { new: true, runValidators: true }
       ).populate('assignee', 'username email')
-        .populate('createdBy', 'username email');
+        .populate('createdBy', 'username email')
+        .populate('parentTaskId', 'title');
 
       if (!task) {
         throw new Error('Task not found');
@@ -216,6 +234,63 @@ class TaskService {
     } catch (error) {
       logger.error(`Error assigning task with ID ${taskId}`, { error });
       throw new Error('Failed to assign task');
+    }
+  }
+
+  /**
+   * Get follow-up tasks for a parent task
+   * @param {string} parentTaskId - Parent task ID
+   * @returns {Promise<Array>} - Array of follow-up tasks
+   */
+  async getFollowUpTasks(parentTaskId) {
+    try {
+      const tasks = await Task.find({ parentTaskId })
+        .populate('assignee', 'username email')
+        .populate('createdBy', 'username email')
+        .sort({ createdAt: -1 });
+
+      return tasks;
+    } catch (error) {
+      logger.error(`Error getting follow-up tasks for parent task ${parentTaskId}`, { error });
+      throw new Error('Failed to get follow-up tasks');
+    }
+  }
+
+  /**
+   * Create a follow-up task
+   * @param {string} parentTaskId - Parent task ID
+   * @param {Object} taskData - Task data
+   * @returns {Promise<Object>} - Created follow-up task
+   */
+  async createFollowUpTask(parentTaskId, taskData) {
+    try {
+      // Get the parent task
+      const parentTask = await this.getTaskById(parentTaskId);
+
+      if (!parentTask) {
+        throw new Error('Parent task not found');
+      }
+
+      // Set the parent task ID
+      taskData.parentTaskId = parentTaskId;
+
+      // If parent task has a conversation, link the follow-up task to the same conversation
+      if (parentTask.conversationId) {
+        taskData.conversationId = parentTask.conversationId._id || parentTask.conversationId;
+      }
+
+      // If contact info is not provided, use the parent task's contact info
+      if (!taskData.contactInfo && parentTask.contactInfo) {
+        taskData.contactInfo = parentTask.contactInfo;
+      }
+
+      // Create the follow-up task
+      const task = await this.createTask(taskData);
+
+      return task;
+    } catch (error) {
+      logger.error(`Error creating follow-up task for parent task ${parentTaskId}`, { error });
+      throw new Error('Failed to create follow-up task');
     }
   }
 

@@ -152,6 +152,11 @@
   overflow-y: auto;
 }
 
+/* Overdue task styling */
+.overdue-task {
+  background-color: rgba(220, 53, 69, 0.1);
+}
+
 /* Spreadsheet table with sticky headers */
 .spreadsheet-table-container {
   max-height: 80vh;
@@ -216,6 +221,14 @@ th .col-resizer {
 /* Allow the columns step to expand fully for the table */
 #kb-step-columns {
   max-width: none;
+}
+
+/* Task description styling */
+#task-description {
+  background-color: #f8f9fa;
+  padding: 15px;
+  border-radius: 5px;
+  margin-bottom: 20px;
 }
 
 /* Sidebar profile section */

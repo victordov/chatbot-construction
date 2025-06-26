@@ -38,9 +38,16 @@ const logColors = {
 const consoleFormat = winston.format.combine(
   winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
   winston.format.colorize({ all: true }),
-  winston.format.printf(
-    (info) => `${info.timestamp} ${info.level}: ${info.message}${info.meta ? ' ' + JSON.stringify(info.meta) : ''}`
-  )
+  winston.format.printf((info) => {
+    // Extract the basic properties that should not be included in metadata
+    const { timestamp, level, message, ...metadata } = info;
+
+    // Check if there's any metadata to display
+    const metadataStr = Object.keys(metadata).length ? 
+      ' ' + JSON.stringify(metadata) : '';
+
+    return `${timestamp} ${level}: ${message}${metadataStr}`;
+  })
 );
 
 const fileFormat = winston.format.combine(
@@ -100,7 +107,6 @@ const httpLogger = (req, res, next) => {
       res.statusCode >= 400 ? 'warn' : 'http';
 
     logger.log(level, message, {
-      meta: {
         method: req.method,
         url: req.originalUrl,
         ip: req.ip,
@@ -108,7 +114,6 @@ const httpLogger = (req, res, next) => {
         userAgent: req.get('user-agent'),
         referrer: req.get('referer'),
         responseTime: duration
-      }
     });
   });
 
@@ -121,11 +126,11 @@ module.exports = {
   httpLogger,
 
   // Shorthand logging methods
-  error: (message, meta) => logger.error(message, { meta }),
-  warn: (message, meta) => logger.warn(message, { meta }),
-  info: (message, meta) => logger.info(message, { meta }),
-  http: (message, meta) => logger.http(message, { meta }),
-  debug: (message, meta) => logger.debug(message, { meta }),
+  error: (message, meta) => logger.error(message, meta),
+  warn: (message, meta) => logger.warn(message, meta),
+  info: (message, meta) => logger.info(message, meta),
+  http: (message, meta) => logger.http(message, meta),
+  debug: (message, meta) => logger.debug(message, meta),
 
   // Stream for Morgan integration if needed
   stream: {
