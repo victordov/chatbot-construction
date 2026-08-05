@@ -96,8 +96,12 @@ class GoogleAuthService {
       }
     });
 
-    // Refresh if expired
-    if (token.expiryDate && token.expiryDate <= Date.now()) {
+    // Refresh when the token is expired, about to expire, or has no recorded
+    // expiry at all. The previous `token.expiryDate && ...` guard skipped the
+    // refresh for an expiryDate of 0, so an already-dead token was handed back
+    // and the next Google API call failed with a 401.
+    const REFRESH_SKEW_MS = 60 * 1000;
+    if (!token.expiryDate || token.expiryDate <= Date.now() + REFRESH_SKEW_MS) {
       await client.getAccessToken();
     }
 

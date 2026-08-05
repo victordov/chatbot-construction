@@ -4,6 +4,8 @@ const Conversation = require('./models/conversation');
 const User = require('./models/user');
 const AIService = require('./services/ai');
 const EncryptionService = require('./services/encryption');
+const tenantService = require('./services/tenant');
+const { operatorRoom, GLOBAL_OPERATOR_ROOM } = require('./socketManager');
 const { logger } = require('./services/logging');
 
 function setupWebSockets(server) {
@@ -13,21 +15,16 @@ function setupWebSockets(server) {
   const io = socketIO(server, {
     cors: {
       origin: function (origin, callback) {
-        // Use the same domain whitelist from the main Express app
-        const allowedDomains = process.env.ALLOWED_DOMAINS
-          ? process.env.ALLOWED_DOMAINS.split(',')
-          : [
-            'http://localhost:3000',
-            'http://localhost:5500', // For local testing
-            'http://127.0.0.1:5500' // For local testing
-            // Add other allowed domains here
-          ];
-
-        if (!origin || allowedDomains.some(domain => origin.startsWith(domain))) {
-          callback(null, true);
-        } else {
-          callback(new Error('Not allowed by CORS'));
+        // No Origin means a non-browser client (or same-origin); tenant domains
+        // are resolved from the database so onboarding a customer does not
+        // require an env change and redeploy.
+        if (!origin) {
+          return callback(null, true);
         }
+
+        tenantService.isOriginAllowed(origin)
+          .then(allowed => callback(allowed ? null : new Error('Not allowed by CORS'), allowed))
+          .catch(error => callback(error));
       },
       methods: ['GET', 'POST'],
       credentials: true
@@ -50,16 +47,19 @@ function setupWebSockets(server) {
       const decoded = jwt.verify(token, process.env.JWT_SECRET || 'chatbot-jwt-secret');
 
       // Check if user still exists and is active
-      const user = await User.findById(decoded.id);
+      const user = await User.findById(decoded.id).select('username displayName role company isActive');
       if (!user || !user.isActive) {
         return next(new Error('Authentication failed'));
       }
 
-      // Add user info to socket
+      // Add user info to socket. `company` is required so operator events can
+      // be scoped to a single tenant instead of a global broadcast room.
       socket.user = {
         id: user._id,
         username: user.username,
-        role: user.role
+        displayName: user.displayName,
+        role: user.role,
+        companyId: user.company ? user.company.toString() : null
       };
 
       next();
@@ -77,9 +77,112 @@ function setupWebSockets(server) {
     // Track client's session and role
     let clientSessionId = null;
     let encryptionEnabled = false;
-    const isOperator =
-      socket.user &&
-      (socket.user.role === 'admin' || socket.user.role === 'operator');
+    // Every staff role counts as an operator here. The old check looked for a
+    // role named 'admin', which does not exist in the User schema, so
+    // superadmins and company admins were silently treated as visitors.
+    const STAFF_ROLES = ['operator', 'company_admin', 'superadmin'];
+    const isOperator = Boolean(socket.user && STAFF_ROLES.includes(socket.user.role));
+    const isSuperadmin = Boolean(socket.user && socket.user.role === 'superadmin');
+    const operatorCompanyId = socket.user ? socket.user.companyId : null;
+    const operatorDisplayName = socket.user
+      ? (socket.user.displayName || socket.user.username)
+      : 'Operator';
+
+    // Company of the visitor on the other end of this socket, resolved from the
+    // widget key / origin so their events reach only their tenant's operators.
+    let clientCompanyId = null;
+
+    /**
+     * Emit to the operators of one tenant (plus superadmins), excluding this
+     * socket. Replaces the previous global 'operators' room, which delivered
+     * every tenant's messages to every tenant's operators.
+     */
+    const toOperators = (companyId, event, payload) => {
+      socket.to(operatorRoom(companyId)).emit(event, payload);
+      socket.to(GLOBAL_OPERATOR_ROOM).emit(event, payload);
+    };
+
+    /** Same, but including this socket (used for operator-originated events). */
+    const allOperators = (companyId, event, payload) => {
+      io.to(operatorRoom(companyId)).emit(event, payload);
+      io.to(GLOBAL_OPERATOR_ROOM).emit(event, payload);
+    };
+
+    /**
+     * Guard for operator actions on a specific conversation. Without this an
+     * operator could join, read, answer or end any session id they can guess,
+     * including conversations belonging to another company.
+     */
+    const canOperateOn = async (sessionId) => {
+      if (!isOperator || !sessionId) {
+        return false;
+      }
+      if (isSuperadmin) {
+        return true;
+      }
+      const conversation = await Conversation.findOne({ sessionId }).select('company').lean();
+      if (!conversation) {
+        return false;
+      }
+      const convCompany = conversation.company ? conversation.company.toString() : null;
+      return Boolean(convCompany && operatorCompanyId && convCompany === operatorCompanyId);
+    };
+
+    /**
+     * Resolve and remember the tenant for the visitor's session, so later
+     * events on this socket can be routed without another database lookup.
+     */
+    const resolveClientCompany = async (sessionId, hints = {}) => {
+      if (clientCompanyId) {
+        return clientCompanyId;
+      }
+
+      const existing = sessionId
+        ? await Conversation.findOne({ sessionId }).select('company').lean()
+        : null;
+
+      if (existing && existing.company) {
+        clientCompanyId = existing.company.toString();
+        return clientCompanyId;
+      }
+
+      const companyId = await tenantService.resolveCompanyId({
+        widgetKey: hints.widgetKey || socket.handshake.auth?.widgetKey || socket.handshake.query?.widgetKey,
+        origin: socket.handshake.headers.origin || socket.handshake.headers.referer
+      });
+
+      clientCompanyId = companyId ? companyId.toString() : null;
+      return clientCompanyId;
+    };
+
+    /**
+     * Find or create the conversation for a session, always stamping the
+     * resolved company so multi-tenant filtering works downstream.
+     */
+    const getOrCreateConversation = async (sessionId, hints = {}) => {
+      let conversation = await Conversation.findOne({ sessionId });
+
+      if (!conversation) {
+        const companyId = await resolveClientCompany(sessionId, hints);
+        conversation = new Conversation({
+          sessionId,
+          company: companyId || undefined,
+          domain: socket.handshake.headers.origin || socket.handshake.headers.referer,
+          messages: []
+        });
+      } else if (!conversation.company) {
+        const companyId = await resolveClientCompany(sessionId, hints);
+        if (companyId) {
+          conversation.company = companyId;
+        }
+      }
+
+      if (conversation.company) {
+        clientCompanyId = conversation.company.toString();
+      }
+
+      return conversation;
+    };
 
     // Send server's public key to client for encryption setup
     const serverPublicKey = encryptionService.getServerPublicKey();
@@ -107,11 +210,23 @@ function setupWebSockets(server) {
       }
     });
     // Join a chat session room
-    socket.on('join', (sessionId) => {
+    socket.on('join', async (sessionId) => {
+      if (typeof sessionId !== 'string' || !sessionId) {
+        return socket.emit('joined-room', { success: false, error: 'Invalid session' });
+      }
+
+      // Operators must prove they own the tenant before eavesdropping on a room.
+      if (isOperator && !(await canOperateOn(sessionId))) {
+        logger.warn('Operator denied join for out-of-tenant session', {
+          sessionId,
+          operator: socket.user.username
+        });
+        return socket.emit('joined-room', { success: false, error: 'Access denied' });
+      }
+
       clientSessionId = sessionId;
       socket.join(sessionId);
       logger.info(`Client joined room: ${sessionId}`);
-      // Send confirmation that client joined the room
       socket.emit('joined-room', {
         success: true,
         room: sessionId
@@ -135,6 +250,11 @@ function setupWebSockets(server) {
 
       // Find existing conversation
       const conversation = await Conversation.findOne({ sessionId });
+      if (conversation && conversation.company) {
+        clientCompanyId = conversation.company.toString();
+      } else {
+        await resolveClientCompany(sessionId, data);
+      }
 
       // If there's an existing conversation, send the last few messages
       if (conversation && conversation.messages.length > 0) {
@@ -189,13 +309,14 @@ function setupWebSockets(server) {
     });
 
     // Handle chat opened event
-    socket.on('chat-opened', (data) => {
+    socket.on('chat-opened', async (data) => {
       const { sessionId } = data;
       clientSessionId = sessionId;
 
       // Notify operators that a chat has been opened
       if (clientSessionId) {
-        socket.to('operators').emit('chat-activity', {
+        await resolveClientCompany(sessionId, data);
+        toOperators(clientCompanyId, 'chat-activity', {
           type: 'opened',
           sessionId: clientSessionId,
           timestamp: new Date()
@@ -210,14 +331,7 @@ function setupWebSockets(server) {
         clientSessionId = sessionId;
 
         // Save user details to conversation metadata
-        let conversation = await Conversation.findOne({ sessionId });
-
-        if (!conversation) {
-          conversation = new Conversation({
-            sessionId,
-            messages: []
-          });
-        }
+        const conversation = await getOrCreateConversation(sessionId, data);
 
         // Initialize metadata if it doesn't exist
         if (!conversation.metadata) {
@@ -235,7 +349,7 @@ function setupWebSockets(server) {
         await conversation.save();
 
         // Notify operators that user details have been updated
-        socket.to('operators').emit('user-details-updated', {
+        toOperators(clientCompanyId, 'user-details-updated', {
           sessionId,
           name,
           email,
@@ -272,14 +386,7 @@ function setupWebSockets(server) {
         }
 
         // Save message to database
-        let conversation = await Conversation.findOne({ sessionId });
-
-        if (!conversation) {
-          conversation = new Conversation({
-            sessionId,
-            messages: []
-          });
-        }
+        const conversation = await getOrCreateConversation(sessionId, data);
 
         // Check if the conversation was ended and reactivate it if needed
         if (conversation.status === 'ended') {
@@ -287,7 +394,7 @@ function setupWebSockets(server) {
           conversation.endedAt = null;
 
           // Notify operators that this chat has been reactivated
-          socket.to('operators').emit('chat-reactivated', {
+          toOperators(clientCompanyId, 'chat-reactivated', {
             sessionId,
             timestamp: new Date()
           });
@@ -338,7 +445,7 @@ function setupWebSockets(server) {
           broadcastData.userName = messageDoc.userName;
         }
 
-        socket.to('operators').emit('new-message', broadcastData);
+        toOperators(clientCompanyId, 'new-message', broadcastData);
 
         // Only generate suggestions if there are operators and suggestions are enabled
         if (conversation.hasOperator) {
@@ -374,7 +481,7 @@ function setupWebSockets(server) {
             await newSuggestion.save();
 
             // Send suggestion to operators
-            socket.to('operators').emit('operator-suggestion', {
+            toOperators(clientCompanyId, 'operator-suggestion', {
               sessionId,
               userMessageId: dbMessageId,
               userMessage: message,
@@ -440,7 +547,7 @@ function setupWebSockets(server) {
 
           socket.emit('bot-message', responseData);
 
-          socket.to('operators').emit('new-message', {
+          toOperators(clientCompanyId, 'new-message', {
             sessionId,
             message: botResponse,
             sender: 'bot',
@@ -464,14 +571,7 @@ function setupWebSockets(server) {
 
       try {
         // Find conversation
-        let conversation = await Conversation.findOne({ sessionId });
-
-        if (!conversation) {
-          conversation = new Conversation({
-            sessionId,
-            messages: []
-          });
-        }
+        const conversation = await getOrCreateConversation(sessionId, data);
 
         // Add file message
         conversation.messages.push({
@@ -509,7 +609,7 @@ function setupWebSockets(server) {
           });
 
           // Send to operators
-          socket.to('operators').emit('new-message', {
+          toOperators(clientCompanyId, 'new-message', {
             sessionId,
             message: response,
             sender: 'bot',
@@ -525,7 +625,7 @@ function setupWebSockets(server) {
       const { sessionId, isTyping } = data;
 
       // Broadcast typing status to operators
-      socket.to('operators').emit('user-typing', {
+      toOperators(clientCompanyId, 'user-typing', {
         sessionId,
         isTyping,
         timestamp: new Date()
@@ -552,7 +652,7 @@ function setupWebSockets(server) {
       const { sessionId, messageId, timestamp } = data;
 
       // Broadcast read receipt to operators
-      socket.to('operators').emit('message-read', {
+      toOperators(clientCompanyId, 'message-read', {
         sessionId,
         messageId,
         timestamp: new Date(timestamp)
@@ -564,7 +664,7 @@ function setupWebSockets(server) {
       const { sessionId } = data;
 
       // Broadcast to operators
-      socket.to('operators').emit('all-messages-read', {
+      toOperators(clientCompanyId, 'all-messages-read', {
         sessionId,
         timestamp: new Date()
       });
@@ -572,10 +672,18 @@ function setupWebSockets(server) {
 
     // Handle operator joining monitoring room
     socket.on('join-operator-room', () => {
-      if (isOperator) {
-        socket.join('operators');
-        logger.info('Operator joined monitoring room');
+      if (!isOperator) {
+        return;
       }
+      if (isSuperadmin) {
+        socket.join(GLOBAL_OPERATOR_ROOM);
+      } else {
+        socket.join(operatorRoom(operatorCompanyId));
+      }
+      logger.info('Operator joined monitoring room', {
+        role: socket.user.role,
+        company: operatorCompanyId
+      });
     });
 
     // Handle operator taking over chat
@@ -585,6 +693,11 @@ function setupWebSockets(server) {
       }
 
       const { sessionId, operatorName } = data;
+
+      if (!(await canOperateOn(sessionId))) {
+        logger.warn('Operator takeover denied', { sessionId, operator: socket.user.username });
+        return socket.emit('error', { message: 'You do not have access to this conversation' });
+      }
 
       // Join the session room to receive real-time updates
       socket.join(sessionId);
@@ -598,7 +711,7 @@ function setupWebSockets(server) {
       });
 
       // Notify all operators that an operator has joined this chat
-      io.to('operators').emit('operator-joined', {
+      allOperators(operatorCompanyId, 'operator-joined', {
         sessionId,
         operatorId: socket.user.id,
         operatorName,
@@ -679,6 +792,11 @@ function setupWebSockets(server) {
         return;
       }
 
+      // Tenant guard: never let an operator act on another company's chat.
+      if (!(await canOperateOn(data && data.sessionId))) {
+        return socket.emit('error', { message: 'You do not have access to this conversation' });
+      }
+
       const { sessionId, message } = data;
 
       try {
@@ -712,6 +830,11 @@ function setupWebSockets(server) {
     socket.on('request-suggestions', async (data) => {
       if (!isOperator) {
         return;
+      }
+
+      // Tenant guard: never let an operator act on another company's chat.
+      if (!(await canOperateOn(data && data.sessionId))) {
+        return socket.emit('error', { message: 'You do not have access to this conversation' });
       }
 
       const { sessionId, messageId } = data;
@@ -790,6 +913,11 @@ function setupWebSockets(server) {
         return;
       }
 
+      // Tenant guard: never let an operator act on another company's chat.
+      if (!(await canOperateOn(data && data.sessionId))) {
+        return socket.emit('error', { message: 'You do not have access to this conversation' });
+      }
+
       const { sessionId, suggestionId, edited } = data;
 
       try {
@@ -846,7 +974,7 @@ function setupWebSockets(server) {
           });
 
           // Notify all operators that the suggestion was used
-          io.to('operators').emit('suggestion-used', {
+          allOperators(operatorCompanyId, 'suggestion-used', {
             sessionId,
             suggestionId,
             operatorId: socket.user.id,
@@ -876,6 +1004,11 @@ function setupWebSockets(server) {
         return;
       }
 
+      // Tenant guard: never let an operator act on another company's chat.
+      if (!(await canOperateOn(data && data.sessionId))) {
+        return socket.emit('error', { message: 'You do not have access to this conversation' });
+      }
+
       const { sessionId, enabled } = data;
 
       try {
@@ -888,7 +1021,7 @@ function setupWebSockets(server) {
 
         if (conversation) {
           // Notify all operators about the change
-          io.to('operators').emit('suggestions-status-changed', {
+          allOperators(operatorCompanyId, 'suggestions-status-changed', {
             sessionId,
             enabled,
             timestamp: new Date()
@@ -926,6 +1059,11 @@ function setupWebSockets(server) {
         return;
       }
 
+      // Tenant guard: never let an operator act on another company's chat.
+      if (!(await canOperateOn(data && data.sessionId))) {
+        return socket.emit('error', { message: 'You do not have access to this conversation' });
+      }
+
       const { sessionId, passToBot } = data;
 
       try {
@@ -952,10 +1090,10 @@ function setupWebSockets(server) {
             timestamp: new Date()
           });
 
-          io.to('operators').emit('operator-left', {
+          allOperators(operatorCompanyId, 'operator-left', {
             sessionId,
             operatorId: socket.user.id,
-            operatorName: opName,
+            operatorName: operatorDisplayName,
             timestamp: new Date()
           });
         }
@@ -968,6 +1106,11 @@ function setupWebSockets(server) {
     socket.on('end-chat', async (data) => {
       if (!isOperator) {
         return;
+      }
+
+      // Tenant guard: never let an operator act on another company's chat.
+      if (!(await canOperateOn(data && data.sessionId))) {
+        return socket.emit('error', { message: 'You do not have access to this conversation' });
       }
 
       const { sessionId } = data;
@@ -996,16 +1139,16 @@ function setupWebSockets(server) {
           });
 
           // Notify all operators that this chat has ended
-          io.to('operators').emit('chat-ended', {
+          allOperators(operatorCompanyId, 'chat-ended', {
             sessionId,
             timestamp: new Date()
           });
 
           // Notify all operators that the operator has left this chat
-          io.to('operators').emit('operator-left', {
+          allOperators(operatorCompanyId, 'operator-left', {
             sessionId,
             operatorId: socket.user.id,
-            operatorName: opName,
+            operatorName: operatorDisplayName,
             timestamp: new Date()
           });
         }
@@ -1022,9 +1165,9 @@ function setupWebSockets(server) {
 
       // If this is an operator, make sure they're still in the operators room
       if (isOperator) {
-        const rooms = Array.from(socket.rooms);
-        if (!rooms.includes('operators')) {
-          socket.join('operators');
+        const room = isSuperadmin ? GLOBAL_OPERATOR_ROOM : operatorRoom(operatorCompanyId);
+        if (!socket.rooms.has(room)) {
+          socket.join(room);
           logger.info('Operator rejoined monitoring room during heartbeat');
         }
       }
@@ -1041,7 +1184,7 @@ function setupWebSockets(server) {
 
       // If it was a user (not an operator), notify operators
       if (!isOperator && clientSessionId) {
-        socket.to('operators').emit('chat-activity', {
+        toOperators(clientCompanyId, 'chat-activity', {
           type: 'closed',
           sessionId: clientSessionId,
           timestamp: new Date()

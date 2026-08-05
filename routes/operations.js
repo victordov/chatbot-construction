@@ -4,7 +4,7 @@
 
 const express = require('express');
 const router = express.Router();
-const { auth } = require('../middleware/auth');
+const { auth, admin, superadmin } = require('../middleware/auth');
 const BackupService = require('../services/backup');
 const WidgetUpdateService = require('../services/widgetUpdate');
 const { logger } = require('../services/logging');
@@ -14,7 +14,7 @@ const backupService = new BackupService();
 const widgetUpdateService = new WidgetUpdateService();
 
 // Get system status
-router.get('/status', auth, async (req, res) => {
+router.get('/status', auth, admin, async (req, res) => {
   try {
     // Get basic system information
     const memoryUsage = process.memoryUsage();
@@ -39,7 +39,7 @@ router.get('/status', auth, async (req, res) => {
 });
 
 // Backup management routes
-router.get('/backups', auth, async (req, res) => {
+router.get('/backups', auth, superadmin, async (req, res) => {
   try {
     const backups = backupService.listBackups();
 
@@ -56,7 +56,7 @@ router.get('/backups', auth, async (req, res) => {
   }
 });
 
-router.post('/backups/create', auth, async (req, res) => {
+router.post('/backups/create', auth, superadmin, async (req, res) => {
   try {
     const result = await backupService.performBackup();
 
@@ -78,7 +78,7 @@ router.post('/backups/create', auth, async (req, res) => {
   }
 });
 
-router.post('/backups/restore', auth, async (req, res) => {
+router.post('/backups/restore', auth, superadmin, async (req, res) => {
   try {
     const { timestamp } = req.body;
 
@@ -106,7 +106,7 @@ router.post('/backups/restore', auth, async (req, res) => {
 });
 
 // Widget version management routes
-router.get('/widget/versions', auth, async (req, res) => {
+router.get('/widget/versions', auth, superadmin, async (req, res) => {
   try {
     const versions = widgetUpdateService.getVersions();
 
@@ -126,7 +126,7 @@ router.get('/widget/versions', auth, async (req, res) => {
   }
 });
 
-router.post('/widget/deploy', auth, async (req, res) => {
+router.post('/widget/deploy', auth, superadmin, async (req, res) => {
   try {
     const { version } = req.body;
 
@@ -153,7 +153,7 @@ router.post('/widget/deploy', auth, async (req, res) => {
   }
 });
 
-router.post('/widget/archive-current', auth, async (req, res) => {
+router.post('/widget/archive-current', auth, superadmin, async (req, res) => {
   try {
     const success = widgetUpdateService.archiveCurrentVersion();
 

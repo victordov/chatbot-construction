@@ -110,12 +110,14 @@ const ConversationSchema = new mongoose.Schema({
   }
 });
 
-// Index for faster querying
-ConversationSchema.index({ sessionId: 1 });
+// Indexes tuned for the dashboard's access patterns.
+// `sessionId` is already indexed by its `unique: true` constraint.
 ConversationSchema.index({ userId: 1 });
-ConversationSchema.index({ status: 1 });
-ConversationSchema.index({ lastActivity: 1 });
-ConversationSchema.index({ company: 1 });
+// Active-chat list: filter by company + status, sort by lastActivity.
+ConversationSchema.index({ company: 1, status: 1, lastActivity: -1 });
+// Chat history and analytics: filter by company, sort/range by startedAt.
+ConversationSchema.index({ company: 1, startedAt: -1 });
+ConversationSchema.index({ status: 1, lastActivity: -1 });
 
 const Conversation = mongoose.model('Conversation', ConversationSchema);
 

@@ -7,6 +7,13 @@ module.exports = {
     '**/tests/**/*.test.js'
   ],
 
+  // Spin up an in-memory MongoDB so the suite runs without a local mongod.
+  globalSetup: '<rootDir>/tests/globalSetup.js',
+  globalTeardown: '<rootDir>/tests/globalTeardown.js',
+
+  // Provide the env vars services expect (JWT secret, Google OAuth, etc.)
+  setupFiles: ['<rootDir>/tests/setup.js'],
+
   // An array of regexp pattern strings that are matched against all test paths
   testPathIgnorePatterns: [
     '/node_modules/'

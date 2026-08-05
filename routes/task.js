@@ -135,13 +135,9 @@ router.post('/', auth, operator, async (req, res) => {
     // Create the task
     const task = await taskService.createTask(taskData, req.user);
 
-    // Emit WebSocket event for task creation
-    try {
-      const io = socketManager.getIo();
-      io.emit('task-created', { task });
-    } catch (socketError) {
-      logger.error('Error emitting task-created event', { error: socketError });
-    }
+    // Notify only this tenant's operators - a global emit would push task
+    // contact details to every connected widget visitor as well.
+    socketManager.emitToOperators(req.user.company?.id, 'task-created', { task });
 
     res.status(201).json({ task });
   } catch (error) {
@@ -196,13 +192,7 @@ router.put('/:id', auth, operator, async (req, res) => {
     // Update the task
     const task = await taskService.updateTask(req.params.id, updateData, req.user, req.user.company?.id, req.user.role);
 
-    // Emit WebSocket event for task update
-    try {
-      const io = socketManager.getIo();
-      io.emit('task-updated', { task });
-    } catch (socketError) {
-      logger.error('Error emitting task-updated event', { error: socketError });
-    }
+    socketManager.emitToOperators(req.user.company?.id, 'task-updated', { task });
 
     res.json({ task });
   } catch (error) {
@@ -219,15 +209,9 @@ router.put('/:id', auth, operator, async (req, res) => {
 router.delete('/:id', auth, operator, async (req, res) => {
   try {
     // Delete the task with user context for activity logging
-    const deletedTask = await taskService.deleteTask(req.params.id, req.user.company, req.user);
+    await taskService.deleteTask(req.params.id, req.user.company, req.user);
 
-    // Emit WebSocket event for task deletion
-    try {
-      const io = socketManager.getIo();
-      io.emit('task-deleted', { taskId: req.params.id });
-    } catch (socketError) {
-      logger.error('Error emitting task-deleted event', { error: socketError });
-    }
+    socketManager.emitToOperators(req.user.company?.id, 'task-deleted', { taskId: req.params.id });
 
     res.json({ success: true, message: 'Task deleted successfully' });
   } catch (error) {
@@ -251,16 +235,12 @@ router.post('/:id/assign', auth, operator, async (req, res) => {
       });
     }
 
+    await taskService.getTaskById(req.params.id, req.user.company?.id, req.user.role);
+
     // Assign the task
     const task = await taskService.assignTask(req.params.id, userId, userName);
 
-    // Emit WebSocket event for task assignment
-    try {
-      const io = socketManager.getIo();
-      io.emit('task-assigned', { task });
-    } catch (socketError) {
-      logger.error('Error emitting task-assigned event', { error: socketError });
-    }
+    socketManager.emitToOperators(req.user.company?.id, 'task-assigned', { task });
 
     res.json({ task });
   } catch (error) {
@@ -276,6 +256,9 @@ router.post('/:id/assign', auth, operator, async (req, res) => {
 // Get comments for a task
 router.get('/:id/comments', auth, operator, async (req, res) => {
   try {
+    // Ensures the task exists and belongs to the caller's company before
+    // exposing its comment thread.
+    await taskService.getTaskById(req.params.id, req.user.company?.id, req.user.role);
     const comments = await commentService.getCommentsByTaskId(req.params.id);
 
     res.json({ comments });
@@ -300,6 +283,8 @@ router.post('/:id/comments', auth, operator, async (req, res) => {
       });
     }
 
+    await taskService.getTaskById(req.params.id, req.user.company?.id, req.user.role);
+
     // Create comment data object
     const commentData = {
       taskId: req.params.id,
@@ -312,13 +297,7 @@ router.post('/:id/comments', auth, operator, async (req, res) => {
     // Create the comment
     const comment = await commentService.createComment(commentData, req.user);
 
-    // Emit WebSocket event for comment creation
-    try {
-      const io = socketManager.getIo();
-      io.emit('comment-created', { comment, taskId: req.params.id });
-    } catch (socketError) {
-      logger.error('Error emitting comment-created event', { error: socketError });
-    }
+    socketManager.emitToOperators(req.user.company?.id, 'comment-created', { comment, taskId: req.params.id });
 
     res.status(201).json({ comment });
   } catch (error) {
@@ -355,13 +334,7 @@ router.put('/:id/comments/:commentId', auth, operator, async (req, res) => {
       req.user.id
     );
 
-    // Emit WebSocket event for comment update
-    try {
-      const io = socketManager.getIo();
-      io.emit('comment-updated', { comment, taskId: req.params.id });
-    } catch (socketError) {
-      logger.error('Error emitting comment-updated event', { error: socketError });
-    }
+    socketManager.emitToOperators(req.user.company?.id, 'comment-updated', { comment, taskId: req.params.id });
 
     res.json({ comment });
   } catch (error) {
@@ -384,13 +357,7 @@ router.delete('/:id/comments/:commentId', auth, operator, async (req, res) => {
     // Delete the comment
     await commentService.deleteComment(req.params.commentId, req.user.id);
 
-    // Emit WebSocket event for comment deletion
-    try {
-      const io = socketManager.getIo();
-      io.emit('comment-deleted', { commentId: req.params.commentId, taskId: req.params.id });
-    } catch (socketError) {
-      logger.error('Error emitting comment-deleted event', { error: socketError });
-    }
+    socketManager.emitToOperators(req.user.company?.id, 'comment-deleted', { commentId: req.params.commentId, taskId: req.params.id });
 
     res.json({ success: true, message: 'Comment deleted successfully' });
   } catch (error) {
@@ -410,6 +377,7 @@ router.delete('/:id/comments/:commentId', auth, operator, async (req, res) => {
 // Get follow-up tasks for a task
 router.get('/:id/follow-ups', auth, operator, async (req, res) => {
   try {
+    await taskService.getTaskById(req.params.id, req.user.company?.id, req.user.role);
     const tasks = await taskService.getFollowUpTasks(req.params.id);
     res.json({ tasks });
   } catch (error) {
@@ -447,19 +415,14 @@ router.post('/:id/follow-ups', auth, operator, async (req, res) => {
       assignee: assignee === '' ? null : assignee,
       status: 'open',
       contactInfo,
-      createdBy: req.user.id
+      createdBy: req.user.id,
+      company: req.user.company?.id
     };
 
     // Create the follow-up task
     const task = await taskService.createFollowUpTask(req.params.id, taskData, req.user);
 
-    // Emit WebSocket event for task creation
-    try {
-      const io = socketManager.getIo();
-      io.emit('task-created', { task });
-    } catch (socketError) {
-      logger.error('Error emitting task-created event', { error: socketError });
-    }
+    socketManager.emitToOperators(req.user.company?.id, 'task-created', { task });
 
     res.status(201).json({ task });
   } catch (error) {

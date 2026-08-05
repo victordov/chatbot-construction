@@ -1,5 +1,8 @@
 // Socket.io instance manager
-// This module provides a way to share the socket.io instance across different modules
+// Shares the socket.io instance across modules and centralises the room naming
+// convention so that events are never broadcast across tenant boundaries.
+
+const { logger } = require('./services/logging');
 
 let io;
 
@@ -16,7 +19,60 @@ function getIo() {
   return io;
 }
 
+/**
+ * Room that every operator of a given company joins. Operators only ever see
+ * events for their own tenant; superadmins additionally join `operators:all`.
+ */
+function operatorRoom(companyId) {
+  return companyId ? `operators:${companyId.toString()}` : 'operators:unassigned';
+}
+
+const GLOBAL_OPERATOR_ROOM = 'operators:all';
+
+/**
+ * Emit an event to every operator of one company plus all superadmins.
+ * Falls back to a no-op (with a log) when sockets are not initialised, so a
+ * missing socket layer can never take down an HTTP request.
+ */
+function emitToOperators(companyId, event, payload) {
+  try {
+    const target = getIo();
+    target.to(operatorRoom(companyId)).emit(event, payload);
+    target.to(GLOBAL_OPERATOR_ROOM).emit(event, payload);
+    return true;
+  } catch (error) {
+    logger.warn(`Unable to emit "${event}" to operators`, { error: error.message });
+    return false;
+  }
+}
+
+/**
+ * Emit to everyone associated with a tenant (operators and superadmins).
+ * Used by the workflow runtime for hot-swap notifications.
+ */
+function broadcastToTenant(tenantId, event, payload) {
+  return emitToOperators(tenantId, event, payload);
+}
+
+/**
+ * Emit to a single chat session room (the visitor plus any joined operators).
+ */
+function emitToSession(sessionId, event, payload) {
+  try {
+    getIo().to(sessionId).emit(event, payload);
+    return true;
+  } catch (error) {
+    logger.warn(`Unable to emit "${event}" to session ${sessionId}`, { error: error.message });
+    return false;
+  }
+}
+
 module.exports = {
   setIo,
-  getIo
+  getIo,
+  operatorRoom,
+  emitToOperators,
+  broadcastToTenant,
+  emitToSession,
+  GLOBAL_OPERATOR_ROOM
 };
