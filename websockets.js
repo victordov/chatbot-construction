@@ -184,6 +184,12 @@ function setupWebSockets(server) {
       return conversation;
     };
 
+    // Staff get a personal room so notifications can be delivered to one user
+    // rather than broadcast to every connected client.
+    if (isOperator && socket.user.id) {
+      socket.join(`user:${socket.user.id}`);
+    }
+
     // Send server's public key to client for encryption setup
     const serverPublicKey = encryptionService.getServerPublicKey();
     socket.emit('encryption-init', {

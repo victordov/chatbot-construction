@@ -11,6 +11,39 @@ class SchedulerService {
   constructor() {
     this.notificationService = new NotificationService();
     this.initialized = false;
+    this.jobs = [];
+  }
+
+  /**
+   * Run the deadline sweep and push the resulting notifications to their
+   * recipients.
+   */
+  async runDeadlineCheck(label) {
+    try {
+      logger.info(`Running scheduled task: ${label}`);
+      const notifications = await this.notificationService.checkTaskDeadlines();
+
+      if (!notifications.length) {
+        return;
+      }
+
+      // Deliver to the assignee's own room instead of io.emit, which broadcast
+      // every notification (including task titles) to every connected client,
+      // widget visitors included.
+      let delivered = 0;
+      for (const notification of notifications) {
+        if (!notification.userId) {
+          continue;
+        }
+        if (socketManager.emitToSession(`user:${notification.userId}`, 'notification-created', { notification })) {
+          delivered += 1;
+        }
+      }
+
+      logger.info(`Created ${notifications.length} deadline notifications (${delivered} delivered live)`);
+    } catch (error) {
+      logger.error(`Error in scheduled task: ${label}`, { error });
+    }
   }
 
   /**
@@ -21,54 +54,27 @@ class SchedulerService {
       return;
     }
 
-    // Schedule task to check deadlines daily at midnight
-    cron.schedule('0 0 * * *', async () => {
-      try {
-        logger.info('Running scheduled task: Check task deadlines');
-        const notifications = await this.notificationService.checkTaskDeadlines();
-        
-        // Emit WebSocket events for new notifications
-        if (notifications.length > 0) {
-          try {
-            const io = socketManager.getIo();
-            for (const notification of notifications) {
-              io.emit('notification-created', { notification });
-            }
-            logger.info(`Created ${notifications.length} deadline notifications`);
-          } catch (socketError) {
-            logger.error('Error emitting notification-created events', { error: socketError });
-          }
-        }
-      } catch (error) {
-        logger.error('Error in scheduled task: Check task deadlines', { error });
-      }
-    });
+    // Daily sweep at midnight catches tasks that became overdue overnight.
+    this.jobs.push(cron.schedule('0 0 * * *', () => this.runDeadlineCheck('daily deadline check')));
 
-    // Schedule task to check deadlines every hour during working hours (8 AM to 6 PM)
-    cron.schedule('0 8-18 * * *', async () => {
-      try {
-        logger.info('Running hourly task: Check task deadlines');
-        const notifications = await this.notificationService.checkTaskDeadlines();
-        
-        // Emit WebSocket events for new notifications
-        if (notifications.length > 0) {
-          try {
-            const io = socketManager.getIo();
-            for (const notification of notifications) {
-              io.emit('notification-created', { notification });
-            }
-            logger.info(`Created ${notifications.length} deadline notifications`);
-          } catch (socketError) {
-            logger.error('Error emitting notification-created events', { error: socketError });
-          }
-        }
-      } catch (error) {
-        logger.error('Error in hourly task: Check task deadlines', { error });
-      }
-    });
+    // Hourly sweep during working hours keeps due-today reminders timely.
+    this.jobs.push(cron.schedule('0 8-18 * * *', () => this.runDeadlineCheck('hourly deadline check')));
 
     this.initialized = true;
     logger.info('Scheduler service initialized');
+  }
+
+  /**
+   * Stop all cron jobs so the process can exit cleanly on SIGTERM.
+   */
+  stop() {
+    this.jobs.forEach(job => {
+      if (job && typeof job.stop === 'function') {
+        job.stop();
+      }
+    });
+    this.jobs = [];
+    this.initialized = false;
   }
 }
 

@@ -1,9 +1,15 @@
 const express = require('express');
 const Conversation = require('../models/conversation');
 const socketManager = require('../socketManager');
+const AIService = require('../services/ai');
+const tenantService = require('../services/tenant');
 const { logger } = require('../services/logging');
 
 const router = express.Router();
+const aiService = new AIService();
+
+const MAX_MESSAGE_LENGTH = 4000;
+const HISTORY_CONTEXT = 10;
 
 // Get chat history for the current session
 router.get('/history', async (req, res) => {
@@ -12,69 +18,130 @@ router.get('/history', async (req, res) => {
       return res.status(400).json({ error: 'No active session' });
     }
 
-    const conversation = await Conversation.findOne({ sessionId: req.session.sessionId });
+    const conversation = await Conversation.findOne(
+      { sessionId: req.session.sessionId },
+      { messages: 1 }
+    ).lean();
 
     if (!conversation) {
       return res.json({ messages: [] });
     }
 
-    res.json({ messages: conversation.messages });
+    res.json({
+      messages: (conversation.messages || []).map(msg => ({
+        content: msg.content,
+        sender: msg.sender,
+        timestamp: msg.timestamp
+      }))
+    });
   } catch (error) {
+    logger.error('Failed to retrieve chat history', { error });
     res.status(500).json({ error: 'Failed to retrieve chat history' });
   }
 });
 
-// Send a message (this will be processed by WebSockets, but we also provide a REST endpoint)
+/**
+ * REST fallback for clients that cannot hold a WebSocket open.
+ *
+ * This previously replied with `Echo: <message>` and ignored the AI service
+ * entirely, so any visitor on the REST path got a placeholder instead of a real
+ * answer. It now follows the same path as the socket handler: persist the
+ * message, hand off to a live operator if one is attached, otherwise generate a
+ * bot reply.
+ */
 router.post('/message', async (req, res) => {
   try {
     if (!req.session || !req.session.sessionId) {
       return res.status(400).json({ error: 'No active session' });
     }
-    logger.info('sending message back to the client: ' + req.body.message);
+
     const { message } = req.body;
 
-    if (!message) {
+    if (!message || typeof message !== 'string' || !message.trim()) {
       return res.status(400).json({ error: 'Message is required' });
     }
 
-    let conversation = await Conversation.findOne({ sessionId: req.session.sessionId });
+    if (message.length > MAX_MESSAGE_LENGTH) {
+      return res.status(400).json({ error: `Message must be ${MAX_MESSAGE_LENGTH} characters or fewer` });
+    }
+
+    const sessionId = req.session.sessionId;
+    const origin = req.get('Origin') || req.get('Referer');
+    let conversation = await Conversation.findOne({ sessionId });
 
     if (!conversation) {
+      // Attribute the conversation to a tenant, otherwise it is invisible to
+      // every company dashboard.
+      const companyId = await tenantService.resolveCompanyId({
+        widgetKey: req.body.widgetKey || req.query.key,
+        origin
+      });
+
       conversation = new Conversation({
-        sessionId: req.session.sessionId,
-        domain: req.get('Origin') || req.get('Referer') || 'unknown',
+        sessionId,
+        company: companyId || undefined,
+        domain: origin || 'unknown',
         messages: []
       });
     }
 
-    // Add user message
+    if (conversation.status === 'ended') {
+      conversation.status = 'active';
+      conversation.endedAt = null;
+    }
+
     conversation.messages.push({
-      content: message,
-      sender: 'user'
+      content: message.trim(),
+      sender: 'user',
+      timestamp: new Date()
     });
-
-    // Update last activity
     conversation.lastActivity = new Date();
-
     await conversation.save();
 
-    // For now, simple echo response (will be replaced with AI integration)
-    const botResponse = `Echo: ${message}`;
+    const companyId = conversation.company ? conversation.company.toString() : null;
 
-    // Add bot response
+    socketManager.emitToOperators(companyId, 'new-message', {
+      sessionId,
+      message: message.trim(),
+      sender: 'user',
+      timestamp: new Date()
+    });
+
+    // A human has the conversation: don't talk over them.
+    if (conversation.hasOperator) {
+      return res.json({ success: true, pendingOperator: true, message: null });
+    }
+
+    if (conversation.botEnabled === false) {
+      return res.json({ success: true, pendingOperator: true, message: null });
+    }
+
+    const history = conversation.messages
+      .slice(-HISTORY_CONTEXT)
+      .map(msg => ({
+        role: msg.sender === 'user' ? 'user' : 'assistant',
+        content: msg.content
+      }));
+
+    const botResponse = await aiService.generateResponse(message.trim(), history);
+
     conversation.messages.push({
       content: botResponse,
-      sender: 'bot'
+      sender: 'bot',
+      timestamp: new Date()
     });
-
+    conversation.lastActivity = new Date();
     await conversation.save();
 
-    // Get the io instance from socketManager
-    const io = socketManager.getIo();
-
-    // Emit the bot response through websocket
-    io.to(req.session.sessionId).emit('bot-message', {
+    socketManager.emitToSession(sessionId, 'bot-message', {
       text: botResponse,
+      timestamp: new Date()
+    });
+
+    socketManager.emitToOperators(companyId, 'new-message', {
+      sessionId,
+      message: botResponse,
+      sender: 'bot',
       timestamp: new Date()
     });
 
@@ -87,6 +154,7 @@ router.post('/message', async (req, res) => {
       }
     });
   } catch (error) {
+    logger.error('Failed to process chat message', { error });
     res.status(500).json({ error: 'Failed to process message' });
   }
 });

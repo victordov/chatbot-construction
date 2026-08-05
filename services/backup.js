@@ -35,6 +35,14 @@ class BackupService {
    * Start the backup schedule
    */
   start() {
+    // Backups shell out to `mongodump`, which is usually absent on developer
+    // machines. Running unconditionally meant every `npm run dev` logged a wall
+    // of installation instructions, training people to ignore error logs.
+    if (process.env.BACKUPS_ENABLED !== 'true') {
+      logger.info('Backup service disabled (set BACKUPS_ENABLED=true to enable)');
+      return;
+    }
+
     logger.info(`Starting backup service with ${this.retentionDays} days retention`);
 
     // Run an initial backup

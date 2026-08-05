@@ -3,9 +3,17 @@ const path = require('path');
 const fs = require('fs');
 const mongoose = require('mongoose');
 const http = require('http');
-const dotenv = require('dotenv');
+const helmet = require('helmet');
+const compression = require('compression');
+const session = require('express-session');
+// connect-mongo v6 ships an ES module; under CommonJS the store is on `.default`.
+const MongoStore = require('connect-mongo').default || require('connect-mongo');
+const { v4: uuidv4 } = require('uuid');
+
+const config = require('./config/env');
 const setupWebSockets = require('./websockets');
 const socketManager = require('./socketManager');
+const tenantService = require('./services/tenant');
 const sessionRoutes = require('./routes/session');
 const chatRoutes = require('./routes/chat');
 const adminRoutes = require('./routes/admin');
@@ -18,8 +26,8 @@ const companyRoutes = require('./routes/company');
 const notificationRoutes = require('./routes/notification');
 const workflowRoutes = require('./routes/workflow');
 const workflowExecutionRoutes = require('./routes/workflow-execution');
-// eslint-disable-next-line no-unused-vars
-const { apiLimiter, chatLimiter } = require('./middleware/rateLimiter');
+const widgetRoutes = require('./routes/widget');
+const { apiLimiter, chatLimiter, authLimiter } = require('./middleware/rateLimiter');
 const DataRetentionService = require('./services/dataRetention');
 const { logger, httpLogger } = require('./services/logging');
 const { metricsMiddleware } = require('./services/monitoring');
@@ -27,120 +35,204 @@ const AlertService = require('./services/alerting');
 const BackupService = require('./services/backup');
 const WidgetUpdateService = require('./services/widgetUpdate');
 const schedulerService = require('./services/scheduler');
-const session = require('express-session');
-const { v4: uuidv4 } = require('uuid');
 
-// Load environment variables
-dotenv.config();
+// ---------------------------------------------------------------------------
+// Configuration
+// ---------------------------------------------------------------------------
+
+const { errors: configErrors, warnings: configWarnings } = config.validate();
+configWarnings.forEach(warning => logger.warn(`Config: ${warning}`));
+if (configErrors.length > 0) {
+  configErrors.forEach(error => logger.error(`Config: ${error}`));
+  throw new Error(`Refusing to start with an insecure configuration:\n  - ${configErrors.join('\n  - ')}`);
+}
 
 const app = express();
-const PORT = process.env.PORT || 3000;
-
-// Create HTTP server
+const PORT = config.port;
 const server = http.createServer(app);
 
-// Database connection
-mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/chatbot', {
-  useNewUrlParser: true,
-  useUnifiedTopology: true
+// Behind a load balancer, express needs to trust X-Forwarded-* so that secure
+// cookies and per-IP rate limiting work against the real client address.
+if (config.trustProxy) {
+  app.set('trust proxy', config.trustProxy);
+}
+
+// ---------------------------------------------------------------------------
+// Database
+// ---------------------------------------------------------------------------
+
+mongoose.connect(config.mongoUri, {
+  serverSelectionTimeoutMS: 10000,
+  maxPoolSize: parseInt(process.env.MONGO_POOL_SIZE, 10) || 20
 }).then(() => {
   logger.info('Connected to MongoDB');
 }).catch(err => {
   logger.error('MongoDB connection error:', err);
 });
 
-app.use(express.json());
+mongoose.connection.on('disconnected', () => logger.warn('MongoDB disconnected'));
+mongoose.connection.on('reconnected', () => logger.info('MongoDB reconnected'));
 
-// Add HTTP request logging
+// ---------------------------------------------------------------------------
+// Core middleware
+// ---------------------------------------------------------------------------
+
+app.use(helmet({
+  // The admin dashboard and widget load Bootstrap/Chart.js/socket.io from CDNs
+  // and use inline styles, so CSP is configured rather than left at helmet's
+  // defaults (which would block them outright).
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", "'unsafe-inline'", 'https://cdn.jsdelivr.net', 'https://unpkg.com'],
+      styleSrc: ["'self'", "'unsafe-inline'", 'https://cdn.jsdelivr.net', 'https://unpkg.com'],
+      imgSrc: ["'self'", 'data:', 'https:'],
+      connectSrc: ["'self'", 'ws:', 'wss:'],
+      fontSrc: ["'self'", 'data:', 'https://cdn.jsdelivr.net'],
+      objectSrc: ["'none'"],
+      frameAncestors: ["'self'"]
+    }
+  },
+  // The widget is embedded cross-origin by design.
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
+  crossOriginEmbedderPolicy: false
+}));
+
+app.use(compression());
+app.use(express.json({ limit: '1mb' }));
+app.use(express.urlencoded({ extended: false, limit: '1mb' }));
 app.use(httpLogger);
-
-// Add Prometheus metrics middleware
 app.use(metricsMiddleware);
 
-// Create and serve static files
+// ---------------------------------------------------------------------------
+// CORS
+// ---------------------------------------------------------------------------
+
+app.use(async (req, res, next) => {
+  const origin = req.get('Origin');
+
+  // Same-origin requests (admin dashboard, direct navigation) send no Origin.
+  if (!origin) {
+    return next();
+  }
+
+  try {
+    // Tenant domains live in the database, so onboarding a customer no longer
+    // requires editing ALLOWED_DOMAINS and redeploying.
+    const allowed = await tenantService.isOriginAllowed(origin);
+
+    if (!allowed) {
+      logger.warn('Blocked cross-origin request', { origin, path: req.path });
+      return res.status(403).json({
+        error: 'Access from this domain is not allowed.',
+        message: 'Please register this domain for your company in the admin dashboard.'
+      });
+    }
+
+    res.header('Access-Control-Allow-Origin', origin);
+    res.header('Vary', 'Origin');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, x-auth-token');
+    res.header('Access-Control-Allow-Credentials', 'true');
+    res.header('Access-Control-Max-Age', '86400');
+
+    if (req.method === 'OPTIONS') {
+      return res.status(204).end();
+    }
+
+    next();
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Sessions
+// ---------------------------------------------------------------------------
+
+app.use(session({
+  secret: config.sessionSecret,
+  resave: false,
+  // Only persist sessions that actually hold something. The previous `true`
+  // wrote a session document for every bot and preflight request.
+  saveUninitialized: false,
+  store: MongoStore.create({
+    mongoUrl: config.mongoUri,
+    ttl: 24 * 60 * 60,
+    touchAfter: 3600,
+    collectionName: 'sessions'
+  }),
+  cookie: {
+    httpOnly: true,
+    secure: config.isProduction,
+    // The widget runs inside a third-party page, so the cookie must be
+    // cross-site capable in production (which requires Secure).
+    sameSite: config.isProduction ? 'none' : 'lax',
+    maxAge: 24 * 60 * 60 * 1000
+  }
+}));
+
+// Ensure every chat request has a sessionId
+app.use('/api/session', ensureSessionId);
+app.use('/api/chat', ensureSessionId);
+app.use('/api/gdpr/consent', ensureSessionId);
+
+function ensureSessionId(req, res, next) {
+  if (req.session && !req.session.sessionId) {
+    req.session.sessionId = uuidv4();
+  }
+  next();
+}
+
+// ---------------------------------------------------------------------------
+// Static assets
+// ---------------------------------------------------------------------------
+
 const publicDir = path.join(__dirname, 'public');
 if (!fs.existsSync(publicDir)) {
   fs.mkdirSync(publicDir);
 }
-app.use(express.static(publicDir));
 
-
-// Domain whitelisting middleware
-const allowedDomains = process.env.ALLOWED_DOMAINS
-  ? process.env.ALLOWED_DOMAINS.split(',')
-  : [
-    'http://localhost:3000',
-    'http://localhost:5500', // For local testing
-    'http://127.0.0.1:5500' // For local testing
-    // 'https://your-production-domain.com',
-  ];
-
-// CORS middleware for widget
-app.use((req, res, next) => {
-  const origin = req.get('Origin') || req.get('Referer');
-
-  if (origin) {
-    // Check if the origin is in our allowed domains list
-    const isAllowed = allowedDomains.some(domain => origin.startsWith(domain));
-
-    // Only set the specific origin that matches, never use a wildcard for production
-    if (isAllowed) {
-      // Set CORS headers with the specific origin
-      res.header('Access-Control-Allow-Origin', origin);
-      res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-      res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
-      res.header('Access-Control-Allow-Credentials', 'true');
-
-      // Set strict CORS policies
-      res.header('Access-Control-Max-Age', '86400'); // 24 hours
-      res.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains'); // 1 year
-      res.header('X-Content-Type-Options', 'nosniff');
-      res.header('X-Frame-Options', 'DENY');
-
-      // Handle preflight requests
-      if (req.method === 'OPTIONS') {
-        return res.status(204).end();
-      }
+app.use(express.static(publicDir, {
+  // Long cache for the widget bundle (versioned by deploy), short for HTML so
+  // dashboard updates are picked up without a hard refresh.
+  setHeaders(res, filePath) {
+    if (filePath.endsWith('.html')) {
+      res.setHeader('Cache-Control', 'no-cache');
     } else {
-      // If origin is not allowed, return 403 Forbidden
-      return res.status(403).json({
-        error: 'Access from this domain is not allowed.',
-        message: 'Please contact the administrator to add your domain to the allowed list.'
-      });
+      res.setHeader('Cache-Control', 'public, max-age=3600');
     }
   }
-
-  next();
-});
-
-// Add session middleware globally
-app.use(session({
-  secret: process.env.SESSION_SECRET || 'chatbot-session-secret',
-  resave: false,
-  saveUninitialized: true,
-  cookie: {
-    secure: process.env.NODE_ENV === 'production',
-    maxAge: 24 * 60 * 60 * 1000 // 24 hours
-  }
 }));
-// Ensure every request has a sessionId
-app.use((req, res, next) => {
-  if (!req.session.sessionId) {
-    req.session.sessionId = uuidv4();
-  }
-  next();
+
+// ---------------------------------------------------------------------------
+// Health checks
+// ---------------------------------------------------------------------------
+
+// Liveness: the process is up. Must not touch dependencies.
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok', uptime: process.uptime() });
 });
 
-// Basic chat endpoint
-app.post('/api/chat', (req, res) => {
-  // Placeholder: echo back the message
-  const { message } = req.body;
-  logger.info('Will send back  to the client:'+ message);
-  res.json({ reply: `You said: ${message}` });
+// Readiness: the process can serve traffic (i.e. the database is reachable).
+app.get('/ready', (req, res) => {
+  const dbReady = mongoose.connection.readyState === 1;
+  res.status(dbReady ? 200 : 503).json({
+    status: dbReady ? 'ready' : 'not-ready',
+    database: dbReady ? 'connected' : 'disconnected'
+  });
 });
 
+// ---------------------------------------------------------------------------
+// Routes
+// ---------------------------------------------------------------------------
 
-// Register routes
+// Rate limiters were defined but never applied, leaving login open to
+// unlimited brute force and the chat endpoint open to flooding.
+app.use('/api/auth/login', authLimiter);
+app.use('/api/chat', chatLimiter);
+app.use('/api', apiLimiter);
+
 app.use('/api/session', sessionRoutes);
 app.use('/api/chat', chatRoutes);
 app.use('/api/admin', adminRoutes);
@@ -153,27 +245,52 @@ app.use('/api/companies', companyRoutes);
 app.use('/api/workflows', workflowRoutes);
 app.use('/api/workflow-execution', workflowExecutionRoutes);
 app.use('/api/notifications', notificationRoutes);
+app.use('/api/widget', widgetRoutes);
 
 app.get('/', (req, res) => {
-  res.send('Chatbot server is running.');
+  res.redirect('/admin/');
 });
 
-// Initialize WebSockets
-const io = setupWebSockets(server);
-// Set the io instance in the socketManager
-socketManager.setIo(io);
+// 404 for unmatched API routes (otherwise they fall through to the SPA/static
+// handler and return HTML to a client expecting JSON).
+app.use('/api', (req, res) => {
+  res.status(404).json({ error: 'Not found', path: req.originalUrl });
+});
 
-// Initialize workflow execution services
+// Central error handler. Without this, a thrown error in any handler produced
+// an HTML stack trace, leaking file paths to the client.
+// eslint-disable-next-line no-unused-vars
+app.use((err, req, res, next) => {
+  logger.error('Unhandled request error', {
+    error: err.message,
+    stack: err.stack,
+    path: req.originalUrl,
+    method: req.method
+  });
+
+  if (res.headersSent) {
+    return;
+  }
+
+  res.status(err.status || 500).json({
+    error: config.isProduction ? 'Internal server error' : err.message
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Realtime + background services
+// ---------------------------------------------------------------------------
+
+const io = setupWebSockets(server);
+socketManager.setIo(io);
 workflowExecutionRoutes.initializeServices(socketManager);
 
-// Initialize data retention service
 const dataRetention = new DataRetentionService({
   activeRetention: process.env.ACTIVE_RETENTION_DAYS || 180,
   archivedRetention: process.env.ARCHIVED_RETENTION_DAYS || 365
 });
 dataRetention.start();
 
-// Initialize alerting service
 const alertService = new AlertService({
   enabled: process.env.ALERTS_ENABLED === 'true',
   emailEnabled: process.env.EMAIL_ALERTS_ENABLED === 'true',
@@ -181,23 +298,78 @@ const alertService = new AlertService({
 });
 alertService.start();
 
-// Initialize backup service
 const backupService = new BackupService({
-  mongoUri: process.env.MONGODB_URI,
-  retentionDays: parseInt(process.env.BACKUP_RETENTION_DAYS || '30')
+  mongoUri: config.mongoUri,
+  retentionDays: parseInt(process.env.BACKUP_RETENTION_DAYS || '30', 10)
 });
 backupService.start();
 
-// Initialize widget update service
 const widgetUpdateService = new WidgetUpdateService({
   currentVersion: process.env.WIDGET_VERSION || '1.0.0'
 });
 widgetUpdateService.start();
 
-// Initialize scheduler service for task notifications
 schedulerService.initialize();
 
-// Start the server
+// ---------------------------------------------------------------------------
+// Startup and graceful shutdown
+// ---------------------------------------------------------------------------
+
 server.listen(PORT, () => {
-  logger.info(`Server listening on port ${PORT}`);
+  logger.info(`Server listening on port ${PORT} (${config.env})`);
 });
+
+let shuttingDown = false;
+
+async function shutdown(signal) {
+  if (shuttingDown) {
+    return;
+  }
+  shuttingDown = true;
+  logger.info(`Received ${signal}, shutting down gracefully`);
+
+  // Stop accepting new work, then drain.
+  const forceExit = setTimeout(() => {
+    logger.error('Graceful shutdown timed out, forcing exit');
+    process.exit(1);
+  }, 15000);
+  forceExit.unref();
+
+  try {
+    io.close();
+    await new Promise(resolve => server.close(resolve));
+
+    [dataRetention, alertService, backupService, widgetUpdateService, schedulerService]
+      .forEach(service => {
+        if (service && typeof service.stop === 'function') {
+          try {
+            service.stop();
+          } catch (error) {
+            logger.warn('Error stopping background service', { error: error.message });
+          }
+        }
+      });
+
+    await mongoose.connection.close(false);
+    logger.info('Shutdown complete');
+    clearTimeout(forceExit);
+    process.exit(0);
+  } catch (error) {
+    logger.error('Error during shutdown', { error: error.message });
+    process.exit(1);
+  }
+}
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
+
+process.on('unhandledRejection', reason => {
+  logger.error('Unhandled promise rejection', { reason: reason?.message || reason, stack: reason?.stack });
+});
+
+process.on('uncaughtException', error => {
+  logger.error('Uncaught exception', { error: error.message, stack: error.stack });
+  shutdown('uncaughtException');
+});
+
+module.exports = { app, server };
