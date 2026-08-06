@@ -54,6 +54,16 @@
     // guess the company from the page's origin.
     widgetKey = attr('data-widget-key');
 
+    // A signed identity, for sites where the visitor is logged in. The hash is
+    // computed on the tenant's server; without it the id is ignored, so a
+    // visitor cannot claim to be someone else by editing the page.
+    if (attr('data-user-id')) {
+      overrides.externalId = attr('data-user-id');
+    }
+    if (attr('data-user-hash')) {
+      overrides.userHash = attr('data-user-hash');
+    }
+
     // Default the server URL to wherever this script was loaded from, so a
     // snippet still works if data-server-url is dropped.
     if (attr('data-server-url')) {

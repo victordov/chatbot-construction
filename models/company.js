@@ -36,6 +36,19 @@ const CompanySchema = new mongoose.Schema({
     lowercase: true
   }],
   /**
+   * Secret used to verify identities the tenant vouches for.
+   *
+   * The tenant computes HMAC-SHA256(identitySecret, theirUserId) server-side
+   * and passes it to the widget. Without this, a visitor could claim to be any
+   * user id and read that person's history, so it is what makes showing
+   * account data in chat safe. Never sent to the browser.
+   */
+  identitySecret: {
+    type: String,
+    select: false
+  },
+
+  /**
    * Who this company's assistant is, for tenants who have not built a workflow
    * yet. A workflow's Persona node takes precedence when one exists.
    *
@@ -109,12 +122,22 @@ CompanySchema.pre('save', function(next) {
   if (!this.widgetKey) {
     this.widgetKey = 'wk_' + crypto.randomBytes(16).toString('hex');
   }
+  // Minted on first save so identity verification can be switched on without
+  // a migration, and so it never has to be generated on a hot path.
+  if (!this.identitySecret) {
+    this.identitySecret = crypto.randomBytes(32).toString('hex');
+  }
   next();
 });
 
 CompanySchema.methods.rotateWidgetKey = function() {
   this.widgetKey = 'wk_' + crypto.randomBytes(16).toString('hex');
   return this.widgetKey;
+};
+
+CompanySchema.methods.rotateIdentitySecret = function() {
+  this.identitySecret = crypto.randomBytes(32).toString('hex');
+  return this.identitySecret;
 };
 
 const Company = mongoose.model('Company', CompanySchema);

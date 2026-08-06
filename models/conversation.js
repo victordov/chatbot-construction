@@ -129,6 +129,14 @@ const ConversationSchema = new mongoose.Schema({
   company: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Company'
+  },
+  /**
+   * The person behind this conversation. Lets an operator see everything the
+   * same customer has asked before, across sessions and devices.
+   */
+  contact: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Contact'
   }
 });
 
@@ -140,6 +148,8 @@ ConversationSchema.index({ company: 1, status: 1, lastActivity: -1 });
 // Chat history and analytics: filter by company, sort/range by startedAt.
 ConversationSchema.index({ company: 1, startedAt: -1 });
 ConversationSchema.index({ status: 1, lastActivity: -1 });
+// A contact's history, newest first.
+ConversationSchema.index({ contact: 1, startedAt: -1 });
 
 const Conversation = mongoose.model('Conversation', ConversationSchema);
 

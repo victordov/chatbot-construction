@@ -70,6 +70,7 @@ module.exports = {
         setupAnalytics: 'readonly',
         setupAssistantSection: 'readonly',
         setupOperatorTools: 'readonly',
+        setupContacts: 'readonly',
         setConversationNotes: 'readonly',
         applyChatFilter: 'readonly',
         resizeChartsIn: 'readonly',

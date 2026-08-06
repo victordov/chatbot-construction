@@ -17,6 +17,10 @@
     // Whether the company is open and an operator could pick up. Null means
     // unknown, which is treated as available.
     availability: null,
+    // The tenant's own id for this visitor, plus the HMAC proving the tenant
+    // vouched for it. Unsigned ids are ignored by the server.
+    externalId: null,
+    userHash: null,
     chatbotName: 'Assistant',
     primaryColor: '#2196f3',
     initialMessage: 'Hello! How can I assist you today?',
@@ -420,8 +424,13 @@
       // Connect to server with reconnection options
       socket = io(config.serverUrl, {
         // The key travels in the handshake so the server can resolve the
-        // tenant before the first message is stored.
-        auth: { widgetKey: config.widgetKey },
+        // tenant before the first message is stored, and the signed identity
+        // travels with it so the very first message is attributed correctly.
+        auth: {
+          widgetKey: config.widgetKey,
+          externalId: config.externalId,
+          userHash: config.userHash
+        },
         query: { sessionId, widgetKey: config.widgetKey || '' },
         reconnection: true,
         reconnectionAttempts: Infinity,
@@ -805,6 +814,8 @@
         // document, so it must be able to attribute it to a company.
         widgetKey: config.widgetKey,
         pageUrl: window.location.origin,
+        externalId: config.externalId,
+        userHash: config.userHash,
         name: userName,
         email: userEmail,
         phone: userPhone

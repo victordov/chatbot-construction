@@ -5,6 +5,7 @@ const AIService = require('../services/ai');
 const tenantService = require('../services/tenant');
 const { logger } = require('../services/logging');
 const usageService = require('../services/usage');
+const contactService = require('../services/contacts');
 
 const router = express.Router();
 
@@ -85,6 +86,16 @@ router.post('/message', async (req, res) => {
       });
 
       usageService.record(companyId, { conversations: 1 });
+
+      const contact = await contactService.resolve({
+        companyId,
+        sessionId,
+        externalId: req.body.externalId,
+        userHash: req.body.userHash
+      });
+      if (contact) {
+        await contactService.linkConversation(contact, conversation);
+      }
     }
 
     if (conversation.status === 'ended') {

@@ -6,6 +6,7 @@ const AIService = require('./services/ai');
 const EncryptionService = require('./services/encryption');
 const tenantService = require('./services/tenant');
 const usageService = require('./services/usage');
+const contactService = require('./services/contacts');
 const { operatorRoom, GLOBAL_OPERATOR_ROOM } = require('./socketManager');
 const { logger } = require('./services/logging');
 
@@ -234,6 +235,24 @@ function setupWebSockets(server) {
         clientCompanyId = conversation.company.toString();
       }
 
+      // Attach the person behind the session. Identity claims are only trusted
+      // when the tenant signed them; see services/contacts.js.
+      if (clientCompanyId && !conversation.contact) {
+        const contact = await contactService.resolve({
+          companyId: clientCompanyId,
+          sessionId,
+          externalId: hints.externalId || socket.handshake.auth?.externalId,
+          userHash: hints.userHash || socket.handshake.auth?.userHash,
+          email: hints.email,
+          name: hints.name,
+          phone: hints.phone
+        });
+
+        if (contact) {
+          await contactService.linkConversation(contact, conversation);
+        }
+      }
+
       return conversation;
     };
 
@@ -401,6 +420,22 @@ function setupWebSockets(server) {
         conversation.metadata.set('name', name || '');
         conversation.metadata.set('email', email || '');
         conversation.metadata.set('phone', phone || '');
+
+        // Now that they have told us who they are, re-resolve: an email may
+        // merge this session with a person we already know.
+        const contact = await contactService.resolve({
+          companyId: clientCompanyId,
+          sessionId,
+          externalId: data.externalId || socket.handshake.auth?.externalId,
+          userHash: data.userHash || socket.handshake.auth?.userHash,
+          email,
+          name,
+          phone
+        });
+
+        if (contact) {
+          await contactService.linkConversation(contact, conversation);
+        }
 
         // Update last activity
         conversation.lastActivity = new Date();

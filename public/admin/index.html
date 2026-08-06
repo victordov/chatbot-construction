@@ -33,6 +33,12 @@
                             </a>
                         </li>
                         <li class="nav-item">
+                            <a class="nav-link" href="#contacts-section" data-section="contacts">
+                                <span data-feather="user"></span>
+                                People
+                            </a>
+                        </li>
+                        <li class="nav-item">
                             <a class="nav-link" href="#tasks-section" data-section="tasks">
                                 <span data-feather="check-square"></span>
                                 Tasks
@@ -504,6 +510,100 @@
                                         </table>
                                     </div>
                                 </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- People Section: the customer, rather than the conversation. -->
+                <section id="contacts-section" class="content-section">
+                    <div id="contacts-list-view">
+                        <div class="card">
+                            <div class="card-header">
+                                <div class="row g-2 align-items-center">
+                                    <div class="col-md-5">
+                                        <h5 class="mb-0">People</h5>
+                                        <small class="text-muted" id="contacts-summary"></small>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <input type="text" class="form-control form-control-sm"
+                                               id="contact-search" placeholder="Search name, email or phone…">
+                                    </div>
+                                    <div class="col-md-3">
+                                        <select class="form-select form-select-sm" id="contact-filter">
+                                            <option value="">Everyone</option>
+                                            <option value="verified">Verified identity only</option>
+                                        </select>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="card-body">
+                                <div class="table-responsive">
+                                    <table class="table table-hover align-middle mb-0">
+                                        <thead>
+                                            <tr>
+                                                <th>Person</th>
+                                                <th>Identity</th>
+                                                <th class="text-end">Conversations</th>
+                                                <th>Last seen</th>
+                                                <th></th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="contacts-table"></tbody>
+                                    </table>
+                                </div>
+                                <div class="d-flex justify-content-between align-items-center mt-2">
+                                    <small class="text-muted" id="contacts-range"></small>
+                                    <nav><ul class="pagination pagination-sm mb-0" id="contacts-pagination"></ul></nav>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- One person, and everything they have asked before. -->
+                    <div id="contact-detail-view" style="display: none;">
+                        <div class="card mb-3">
+                            <div class="card-header d-flex justify-content-between align-items-center">
+                                <h5 class="mb-0" id="contact-detail-name">Person</h5>
+                                <button class="btn btn-sm btn-secondary" id="back-to-contacts-btn">Back to people</button>
+                            </div>
+                            <div class="card-body">
+                                <div id="contact-identity-banner" class="mb-3"></div>
+                                <div class="row g-3">
+                                    <div class="col-md-4">
+                                        <label class="form-label small">Name</label>
+                                        <input class="form-control form-control-sm" id="contact-edit-name">
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label class="form-label small">Email</label>
+                                        <input class="form-control form-control-sm" id="contact-edit-email">
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label class="form-label small">Phone</label>
+                                        <input class="form-control form-control-sm" id="contact-edit-phone">
+                                    </div>
+                                    <div class="col-12">
+                                        <label class="form-label small">Tags</label>
+                                        <input class="form-control form-control-sm" id="contact-edit-tags"
+                                               placeholder="vip, churn-risk">
+                                        <div class="form-text">Comma separated.</div>
+                                    </div>
+                                    <div class="col-12">
+                                        <button class="btn btn-sm btn-primary" id="save-contact-btn">Save</button>
+                                    </div>
+                                </div>
+
+                                <div id="contact-attributes" class="mt-3"></div>
+                            </div>
+                        </div>
+
+                        <div class="card">
+                            <div class="card-header">
+                                <h5 class="mb-0">Conversation history</h5>
+                                <small class="text-muted">Across every session and device.</small>
+                            </div>
+                            <div class="card-body">
+                                <div id="contact-conversations"></div>
                             </div>
                         </div>
                     </div>
@@ -1014,6 +1114,49 @@
                                 <button class="btn btn-primary" id="add-domain-btn">Add domain</button>
                             </div>
                             <ul class="list-group" id="domain-list"></ul>
+                        </div>
+                    </div>
+
+                    <div class="card mb-4">
+                        <div class="card-header">
+                            <h5 class="mb-0">Identity verification</h5>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted">
+                                If your visitors are logged in, sign their user id on your server and
+                                pass it to the widget. Without a signature anyone could claim to be
+                                anyone, so unsigned ids are ignored and the visitor stays anonymous.
+                            </p>
+
+                            <div class="mb-3">
+                                <label class="form-label">Secret</label>
+                                <div class="input-group input-group-sm" style="max-width: 40rem;">
+                                    <input type="password" class="form-control font-monospace" id="identity-secret" readonly>
+                                    <button class="btn btn-outline-secondary" id="reveal-secret-btn">Show</button>
+                                    <button class="btn btn-outline-secondary" id="copy-secret-btn">Copy</button>
+                                    <button class="btn btn-outline-danger" id="rotate-secret-btn">Rotate</button>
+                                </div>
+                                <div class="form-text text-danger">
+                                    Server-side only. Never put this in front-end code — anyone with it
+                                    can impersonate any of your users.
+                                </div>
+                            </div>
+
+                            <div class="mb-2">
+                                <label class="form-label">Compute the hash on your server</label>
+                                <div class="btn-group btn-group-sm mb-2" role="group" id="identity-lang-tabs">
+                                    <button type="button" class="btn btn-outline-secondary active" data-lang="node">Node</button>
+                                    <button type="button" class="btn btn-outline-secondary" data-lang="python">Python</button>
+                                    <button type="button" class="btn btn-outline-secondary" data-lang="ruby">Ruby</button>
+                                    <button type="button" class="btn btn-outline-secondary" data-lang="php">PHP</button>
+                                </div>
+                                <pre class="embed-snippet" id="identity-example">…</pre>
+                            </div>
+
+                            <div>
+                                <label class="form-label">Then pass it to the widget</label>
+                                <pre class="embed-snippet" id="identity-snippet">…</pre>
+                            </div>
                         </div>
                     </div>
 
@@ -1863,5 +2006,6 @@
     <script src="/js/admin_parts/admin-analytics.js"></script>
     <script src="/js/admin_parts/admin-assistant.js"></script>
     <script src="/js/admin_parts/admin-operator-tools.js"></script>
+    <script src="/js/admin_parts/admin-contacts.js"></script>
 </body>
 </html>

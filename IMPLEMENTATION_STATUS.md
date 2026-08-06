@@ -58,6 +58,12 @@ abandonment, a weekday/hour staffing heatmap, per-operator workload with
 median and mean response time, recurring topics, and task throughput.
 Advanced metrics are gated on the plan's analytics tier.
 
+**People.** A Contact owns conversations across sessions and devices, so an
+operator can see what the same customer asked last week. Identity comes in
+three strengths - anonymous, self-reported (they typed an email) and verified
+(the tenant signed their user id with an HMAC). Only the last is safe to
+discuss account data against, and the dashboard shows which is which.
+
 **Operator tools.** Saved replies inserted from the composer with `/`, internal
 notes that never reach the visitor or the model, conversation transfer with a
 handover note, and a queue filtered by All / Mine / Waiting so several chats
@@ -99,7 +105,7 @@ content-hashed widget assets cached for a year with the loader on `no-cache`.
 
 ## Test suite
 
-`npm test` — 208 tests across 19 suites. An in-memory MongoDB starts
+`npm test` — 234 tests across 20 suites. An in-memory MongoDB starts
 automatically (`tests/globalSetup.js`), so no local `mongod` is needed.
 `tests/setup.js` blanks `OPENAI_API_KEY` so the suite never makes a real model
 call; the embedding and intent tests therefore assert on ranking and plumbing
