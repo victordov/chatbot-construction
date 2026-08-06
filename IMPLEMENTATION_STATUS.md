@@ -138,6 +138,21 @@ the queue, and the visitor is told so rather than left watching an empty window.
 Conversations carry free-form tags, suggested from the ones already in use, and
 the queue can be filtered by them.
 
+**Outbound webhooks.** The platform can now tell a tenant's systems what
+happened here, which is what stops it being a silo: a conversation ended, a
+customer rated it, a lead qualified itself, a person was verified. Deliveries
+are signed HMAC-SHA256 over the timestamp *and* the body, so a receiver that
+rejects old timestamps is protected against replay, and the dashboard shows the
+verification recipe at the one moment somebody is holding the secret. Failures
+are retried with a growing delay up to roughly two hours; retries are rows with
+a time on them rather than timers in memory, so a deploy does not lose them.
+A 4xx is not retried because retrying will not fix it; a 429 is. An endpoint
+that fails twenty times in a row is switched off with a reason rather than
+retried forever. Every attempt is logged with what was sent and what came back,
+which is the difference between a webhook system somebody can integrate against
+and one that generates support tickets. The URL is one a tenant typed, so it
+goes through the same address-checked transport as workflow actions.
+
 **Audit log.** Who signed in, who failed to, who changed a role, deleted a
 conversation, published a workflow, rotated the identity secret, changed a
 plan, or exported and erased somebody's data. Append-only — there is no route
@@ -185,9 +200,10 @@ content-hashed widget assets cached for a year with the loader on `no-cache`.
   not reach a "refund" intent.
 - **Topic analysis is term frequency**, not clustering. It answers "what are
   people asking about" but will not group synonyms.
-- **CRM/ticketing integrations** (Salesforce, Zendesk, Shopify) from `todo.md`
-  are not built, and there is no public API or webhook system for customers.
-  A workflow's Call an API node covers many of the same cases in the meantime.
+- **There is no public read API.** Outbound webhooks push events as they
+  happen, and workflow action nodes call out, but a tenant cannot yet pull
+  their conversations or contacts programmatically — for a backfill, or into a
+  warehouse. That needs API keys with their own scoping and rate limits.
 - **A workflow cannot call another workflow**, and there is no loop construct.
   Both are deliberate for now: cycles are rejected at design time because the
   executor walks the graph, and a conversation that loops is almost always a
@@ -195,7 +211,7 @@ content-hashed widget assets cached for a year with the loader on `no-cache`.
 
 ## Test suite
 
-`npm test` — 503 tests across 27 suites. An in-memory MongoDB starts
+`npm test` — 544 tests across 28 suites. An in-memory MongoDB starts
 automatically (`tests/globalSetup.js`), so no local `mongod` is needed.
 `tests/setup.js` blanks `OPENAI_API_KEY` so the suite never makes a real model
 call; the embedding and intent tests therefore assert on ranking and plumbing

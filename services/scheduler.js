@@ -4,6 +4,7 @@
 
 const cron = require('node-cron');
 const NotificationService = require('./notification');
+const webhookService = require('./webhooks');
 const { logger } = require('./logging');
 const socketManager = require('../socketManager');
 
@@ -53,6 +54,14 @@ class SchedulerService {
     if (this.initialized) {
       return;
     }
+
+    // Webhook retries. Pending deliveries are rows with a time on them rather
+    // than timers in memory, so a deploy does not lose them — and a deploy is
+    // exactly when endpoints are most likely to have been failing.
+    this.jobs.push(cron.schedule('* * * * *', () => {
+      webhookService.processPending().catch(error =>
+        logger.error('Webhook sweep failed', { error: error.message }));
+    }));
 
     // Daily sweep at midnight catches tasks that became overdue overnight.
     this.jobs.push(cron.schedule('0 0 * * *', () => this.runDeadlineCheck('daily deadline check')));

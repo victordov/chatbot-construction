@@ -12,6 +12,7 @@ const socketManager = require('../socketManager');
 const csatService = require('../services/csat');
 const assignmentService = require('../services/assignment');
 const audit = require('../services/audit');
+const webhookService = require('../services/webhooks');
 const {
   containsRegex,
   companyFilter,
@@ -316,6 +317,12 @@ router.put('/chat/:sessionId/tags', async (req, res) => {
       sessionId: conversation.sessionId,
       tags: conversation.tags,
       by: req.user.displayName || req.user.username
+    });
+
+    webhookService.dispatch(conversation.company, 'conversation.tagged', {
+      sessionId: conversation.sessionId,
+      tags: conversation.tags,
+      taggedBy: req.user.displayName || req.user.username
     });
 
     res.json({ tags: conversation.tags });
@@ -643,6 +650,16 @@ router.post('/chat/:sessionId/end', async (req, res) => {
     // The socket path told the visitor their chat had ended; this one did not,
     // so a chat closed from the dashboard left the widget looking live and the
     // customer waiting for a reply that was never coming.
+    webhookService.dispatch(conversation.company, 'conversation.ended', {
+      sessionId: conversation.sessionId,
+      endedBy: 'operator',
+      operatorName: req.user.displayName || req.user.username,
+      messages: conversation.messages.length,
+      startedAt: conversation.startedAt,
+      endedAt: conversation.endedAt,
+      tags: conversation.tags || []
+    });
+
     socketManager.emitToSession(conversation.sessionId, 'chat-ended', {
       message: 'This conversation has been ended by the operator.',
       requestRating: askForRating,

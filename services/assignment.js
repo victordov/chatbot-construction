@@ -224,6 +224,13 @@ async function assign(conversation, operator, method = 'auto') {
     method
   });
 
+  require('./webhooks').dispatch(conversation.company, 'operator.assigned', {
+    sessionId: conversation.sessionId,
+    operatorId: String(operator.id),
+    operatorName: operator.displayName,
+    method
+  });
+
   return { assigned: true, operator };
 }
 

@@ -385,6 +385,15 @@ async function runTask(step, context) {
       dueDate: new Date(Date.now() + (Number(data.dueInDays) || 3) * 86400000)
     });
 
+    require('./webhooks').dispatch(context.companyId, 'task.created', {
+      taskId: String(task._id),
+      title: task.title,
+      priority: task.priority,
+      dueDate: task.dueDate,
+      sessionId: context.sessionId,
+      raisedBy: 'workflow'
+    });
+
     return { variables: { task_id: String(task._id) } };
   } catch (error) {
     logger.warn('Workflow task node failed', { error: error.message });

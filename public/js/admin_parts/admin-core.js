@@ -308,6 +308,9 @@ function initializeDashboard(token, user) {
   if (typeof setupAudit === 'function') {
     setupAudit();
   }
+  if (typeof setupWebhooks === 'function') {
+    setupWebhooks();
+  }
   setupExport();
 
   // Check URL parameters for chat selection

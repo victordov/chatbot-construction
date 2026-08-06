@@ -12,6 +12,7 @@ const emailChannel = require('./services/email-channel');
 const csatService = require('./services/csat');
 const assignmentService = require('./services/assignment');
 const replyService = require('./services/reply');
+const webhookService = require('./services/webhooks');
 const { operatorRoom, GLOBAL_OPERATOR_ROOM } = require('./socketManager');
 const { logger } = require('./services/logging');
 
@@ -1307,6 +1308,16 @@ function setupWebSockets(server) {
           if (askForRating) {
             await csatService.markRequested(sessionId);
           }
+
+          webhookService.dispatch(conversation.company, 'conversation.ended', {
+            sessionId,
+            endedBy: 'operator',
+            operatorName: operatorDisplayName,
+            messages: conversation.messages.length,
+            startedAt: conversation.startedAt,
+            endedAt: conversation.endedAt,
+            tags: conversation.tags || []
+          });
 
           // Notify user that chat has ended
           io.to(sessionId).emit('chat-ended', {

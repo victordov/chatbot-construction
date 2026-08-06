@@ -290,6 +290,7 @@ app.use('/api/google', googleRoutes);
 app.use('/api/tasks', taskRoutes);
 app.use('/api/companies', companyRoutes);
 app.use('/api/workflows', workflowRoutes);
+app.use('/api/webhooks', require('./routes/webhooks'));
 app.use('/api/workflow-execution', workflowExecutionRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/widget', widgetRoutes);

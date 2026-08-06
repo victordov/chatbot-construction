@@ -134,6 +134,18 @@ async function record(sessionId, score, comment) {
     handledBy: conversation.rating.handledBy
   });
 
+  // Not awaited: a customer pressing a rating button must not wait on a
+  // tenant's endpoint, and a failed delivery is the webhook system's problem
+  // to retry rather than this one's to report.
+  require('./webhooks').dispatch(conversation.company, 'conversation.rated', {
+    sessionId,
+    score: numeric,
+    comment: conversation.rating.comment,
+    handledBy: conversation.rating.handledBy,
+    operatorName: conversation.rating.operatorName,
+    ratedAt: conversation.rating.ratedAt
+  });
+
   // The company comes back so the caller can address the right operator room:
   // a rating broadcast to every tenant's operators would be a leak, and one
   // broadcast to no room at all would never arrive.

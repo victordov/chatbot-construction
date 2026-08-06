@@ -87,6 +87,12 @@
                             </a>
                         </li>
                         <li class="nav-item">
+                            <a class="nav-link" href="#webhooks-section" data-section="webhooks" data-roles="superadmin,company_admin">
+                                <span data-feather="send"></span>
+                                Webhooks
+                            </a>
+                        </li>
+                        <li class="nav-item">
                             <a class="nav-link" href="#audit-section" data-section="audit" data-roles="superadmin,company_admin">
                                 <span data-feather="shield"></span>
                                 Audit Log
@@ -1376,6 +1382,96 @@
                 </section>
 
                 <!-- Settings Section -->
+                <section id="webhooks-section" class="content-section">
+                    <div class="mb-3">
+                        <h5 class="mb-1">Tell your systems what happens here</h5>
+                        <p class="text-muted small mb-0">
+                            We POST a signed JSON body to your URL when an event you
+                            choose happens. Failed deliveries are retried with a
+                            growing delay, and every attempt is logged below.
+                        </p>
+                    </div>
+
+                    <div id="webhook-secret-panel"></div>
+
+                    <div class="row g-3">
+                        <div class="col-xl-5">
+                            <div class="card">
+                                <div class="card-header"><h6 class="mb-0">Add an endpoint</h6></div>
+                                <div class="card-body">
+                                    <div class="mb-3">
+                                        <label class="form-label" for="webhook-url">URL</label>
+                                        <input class="form-control form-control-sm" id="webhook-url"
+                                               placeholder="https://api.yourcompany.com/hooks/chat">
+                                        <div class="form-text">
+                                            Must be https and reachable from the internet.
+                                        </div>
+                                    </div>
+                                    <div class="mb-3">
+                                        <label class="form-label" for="webhook-description">What is it for?</label>
+                                        <input class="form-control form-control-sm" id="webhook-description"
+                                               placeholder="Sync conversations into the CRM">
+                                    </div>
+                                    <div class="mb-3">
+                                        <label class="form-label">Events</label>
+                                        <!-- Chosen explicitly rather than "all": a new
+                                             event type arriving at somebody's production
+                                             endpoint the day we ship it is a surprise we
+                                             would be handing to them. -->
+                                        <div id="webhook-events" class="border rounded p-2"
+                                             style="max-height: 15rem; overflow-y: auto;"></div>
+                                    </div>
+                                    <button class="btn btn-primary btn-sm w-100" id="webhook-create-btn">
+                                        Add endpoint
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="col-xl-7">
+                            <h6>Your endpoints</h6>
+                            <div id="webhooks-list"></div>
+                        </div>
+                    </div>
+
+                    <div class="card mt-4">
+                        <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+                            <div>
+                                <h6 class="mb-0">Deliveries</h6>
+                                <span class="small text-muted" id="webhook-retention-note"></span>
+                            </div>
+                            <div class="d-flex gap-2">
+                                <select class="form-select form-select-sm" id="webhook-delivery-filter"
+                                        style="min-width: 9rem;" aria-label="Filter by status">
+                                    <option value="">All</option>
+                                    <option value="delivered">Delivered</option>
+                                    <option value="pending">Retrying</option>
+                                    <option value="failed">Failed</option>
+                                </select>
+                                <button class="btn btn-sm btn-outline-secondary" id="webhook-refresh-deliveries">
+                                    Refresh
+                                </button>
+                            </div>
+                        </div>
+                        <div class="table-responsive">
+                            <table class="table table-sm mb-0 align-middle">
+                                <thead>
+                                    <tr>
+                                        <th style="width: 12rem;">When</th>
+                                        <th style="width: 14rem;">Event</th>
+                                        <th style="width: 7rem;">Status</th>
+                                        <th style="width: 5rem;">Code</th>
+                                        <th>What came back</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="webhook-deliveries">
+                                    <tr><td colspan="5" class="text-center text-muted py-4">Loading…</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </section>
+
                 <section id="audit-section" class="content-section">
                     <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
                         <div>
@@ -2245,6 +2341,7 @@
     <script src="/js/admin_parts/admin-billing.js"></script>
     <script src="/js/admin_parts/admin-routing.js"></script>
     <script src="/js/admin_parts/admin-audit.js"></script>
+    <script src="/js/admin_parts/admin-webhooks.js"></script>
     <script src="/js/admin_parts/admin-analytics.js"></script>
     <script src="/js/admin_parts/admin-assistant.js"></script>
     <script src="/js/admin_parts/admin-operator-tools.js"></script>

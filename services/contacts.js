@@ -113,6 +113,11 @@ async function resolve(input = {}) {
       contact = new Contact({ company: companyId, sessionIds: sessionId ? [sessionId] : [] });
     }
 
+    // Captured before the save, because `isNew` and the identity level are both
+    // about to change and the webhook is about the transition, not the result.
+    const isNewContact = contact.isNew;
+    const wasVerified = contact.identityLevel === 'verified';
+
     // A verified identity can be attached to a contact we first met
     // anonymously - that is the normal path when someone browses, then logs in.
     if (verified) {
@@ -162,6 +167,29 @@ async function resolve(input = {}) {
 
     contact.lastSeenAt = new Date();
     await contact.save();
+
+    const webhooks = require('./webhooks');
+
+    if (isNewContact) {
+      webhooks.dispatch(companyId, 'contact.created', {
+        contactId: String(contact._id),
+        name: contact.name,
+        email: contact.email,
+        identityLevel: contact.identityLevel,
+        sessionId
+      });
+    }
+
+    // Only on the transition. Firing on every message from a verified person
+    // would turn one sign-in into a delivery per turn.
+    if (!wasVerified && contact.identityLevel === 'verified') {
+      webhooks.dispatch(companyId, 'contact.identified', {
+        contactId: String(contact._id),
+        externalId: contact.externalId,
+        name: contact.name,
+        email: contact.email
+      });
+    }
 
     return contact;
   } catch (error) {
