@@ -672,3 +672,58 @@ th .col-resizer {
   color: #6f42c1;
   margin-right: 0.15rem;
 }
+
+/* ------------------------------------------------------------------- CSAT
+   A distribution rather than a single average: "4.2" hides whether that is
+   everyone mildly content or half delighted and half furious, and those need
+   very different responses. */
+
+.csat-bar-row {
+  display: grid;
+  grid-template-columns: 1rem 1fr 2rem;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.3rem;
+  font-size: 0.85rem;
+}
+
+.csat-bar-label {
+  color: #6c757d;
+  text-align: right;
+}
+
+.csat-bar-track {
+  height: 0.6rem;
+  border-radius: 0.3rem;
+  background: rgba(0, 0, 0, 0.06);
+  overflow: hidden;
+}
+
+.csat-bar-fill {
+  display: block;
+  height: 100%;
+  border-radius: 0.3rem;
+  background: #adb5bd;
+  transition: width 0.3s ease;
+}
+
+.csat-bar-fill.good { background: #198754; }
+.csat-bar-fill.bad { background: #dc3545; }
+
+.csat-bar-count {
+  color: #6c757d;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.csat-comment {
+  display: flex;
+  gap: 0.5rem;
+  align-items: start;
+  margin-bottom: 0.5rem;
+  font-size: 0.875rem;
+}
+
+.csat-comment .badge {
+  flex-shrink: 0;
+}

@@ -339,6 +339,8 @@
 
     // Create send button
     const sendButton = document.createElement('button');
+    sendButton.className = 'send-button';
+    sendButton.type = 'button';
     sendButton.textContent = 'Send';
 
     // Assemble the widget
@@ -621,6 +623,20 @@
         }
       });
 
+      /**
+       * The operator has closed the conversation.
+       *
+       * Before this the widget was never told, so a visitor sat waiting for a
+       * reply to a chat that had already been closed.
+       */
+      socket.on('chat-ended', (data = {}) => {
+        addSystemNotice(data.message || 'This conversation has been closed.');
+
+        if (data.requestRating) {
+          showRatingPrompt();
+        }
+      });
+
       // Listen for read receipts
       socket.on('message-read', (data) => {
         // Update read status in the UI
@@ -705,8 +721,14 @@
       userDetailsFormElement.addEventListener('submit', handleUserDetailsSubmit);
     }
 
-    // Send message on button click
-    const sendButton = chatWindow.querySelector('button:last-child');
+    // Send message on button click.
+    //
+    // Selected by class. This was `button:last-child`, which returns the first
+    // button in the document that happens to be the last child of its parent —
+    // and that is the close button in the header, not this one. So clicking
+    // Send did nothing at all, and clicking the × sent the message on the way
+    // out. Only the Enter key ever worked.
+    const sendButton = chatWindow.querySelector('.send-button');
     sendButton.addEventListener('click', sendMessage);
 
     // Send message on Enter key press
@@ -1202,6 +1224,104 @@
   }
 
   // Set typing indicator visibility
+  /** A neutral, non-attributed line: not the bot speaking, but a state change. */
+  function addSystemNotice(text) {
+    const notice = document.createElement('div');
+    notice.className = 'chat-system-notice';
+    notice.textContent = text;
+    chatMessages.appendChild(notice);
+    scrollToBottom();
+  }
+
+  /**
+   * Ask how it went.
+   *
+   * Asked at the end because that is the only moment the customer is both
+   * finished and still here. One tap is the whole requirement — the comment
+   * box only appears after a score, so nobody is asked to write an essay
+   * before they have rated.
+   */
+  function showRatingPrompt() {
+    if (chatMessages.querySelector('.chat-rating')) {
+      return;
+    }
+
+    const panel = document.createElement('div');
+    panel.className = 'chat-rating';
+    panel.innerHTML = `
+      <div class="chat-rating-question">How did we do?</div>
+      <div class="chat-rating-scores" role="group" aria-label="Rate this conversation">
+        ${[1, 2, 3, 4, 5].map(score => `
+          <button type="button" class="chat-rating-score" data-score="${score}"
+                  aria-label="${score} out of 5">${score}</button>`).join('')}
+      </div>
+      <div class="chat-rating-scale">
+        <span>Not helpful</span><span>Very helpful</span>
+      </div>
+      <button type="button" class="chat-rating-dismiss">No thanks</button>`;
+
+    chatMessages.appendChild(panel);
+    scrollToBottom();
+
+    panel.querySelectorAll('.chat-rating-score').forEach(button => {
+      button.addEventListener('click', () => {
+        const score = Number(button.dataset.score);
+        panel.querySelectorAll('.chat-rating-score').forEach(other => {
+          other.classList.toggle('selected', Number(other.dataset.score) === score);
+          other.disabled = true;
+        });
+        submitRating(score, panel);
+      });
+    });
+
+    panel.querySelector('.chat-rating-dismiss').addEventListener('click', () => {
+      if (socket && socket.connected) {
+        socket.emit('decline-rating');
+      }
+      panel.remove();
+    });
+  }
+
+  /**
+   * Send the score straight away, then offer the comment box.
+   *
+   * The score is what gets measured, so it is recorded the moment it is tapped
+   * rather than waiting for a comment that most people will not write.
+   */
+  function submitRating(score, panel) {
+    if (socket && socket.connected) {
+      socket.emit('submit-rating', { score });
+    }
+
+    panel.querySelector('.chat-rating-question').textContent = 'Thank you.';
+    panel.querySelector('.chat-rating-dismiss').remove();
+
+    const follow = document.createElement('div');
+    follow.className = 'chat-rating-comment';
+    follow.innerHTML = `
+      <label for="chatbot-rating-comment">Anything you would like to add?</label>
+      <textarea id="chatbot-rating-comment" rows="2" maxlength="1000"
+                placeholder="Optional"></textarea>
+      <button type="button" class="chat-rating-send">Send</button>`;
+
+    panel.appendChild(follow);
+    scrollToBottom();
+
+    follow.querySelector('.chat-rating-send').addEventListener('click', () => {
+      const comment = follow.querySelector('textarea').value.trim();
+
+      if (comment && socket && socket.connected) {
+        // Re-sent with the score: the server records a conversation once, and
+        // the first submission has already been stored, so this second one is
+        // only useful if the visitor was quick enough that it has not landed.
+        socket.emit('submit-rating', { score, comment });
+      }
+
+      follow.innerHTML = '<div class="chat-rating-done">Thanks for the feedback.</div>';
+      scrollToBottom();
+    });
+  }
+
   function setTypingIndicator(isTyping, broadcast = true) {
     if (isTyping) {
       typingIndicator.classList.add('active');

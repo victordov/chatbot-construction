@@ -145,6 +145,33 @@ const ConversationSchema = new mongoose.Schema({
     operatorName: { type: String },
     at: { type: Date }
   },
+  /**
+   * What the customer thought of it.
+   *
+   * The operator is copied in at rating time rather than looked up later,
+   * because ending a chat clears `operatorId` and `operatorName` — reading them
+   * afterwards would attribute every rating to nobody.
+   *
+   * `handledBy` is who actually answered: 'bot' when nobody took it over, which
+   * is the comparison that matters. A deflection rate means little without
+   * knowing whether the deflected customers were satisfied.
+   */
+  rating: {
+    score: { type: Number, min: 1, max: 5 },
+    comment: { type: String, trim: true, maxlength: 1000 },
+    ratedAt: { type: Date },
+    operatorId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    operatorName: { type: String },
+    handledBy: { type: String, enum: ['bot', 'operator'] }
+  },
+  /**
+   * Whether the visitor has been asked yet. Kept separately from `rating.score`
+   * so a decline is remembered: without it every reconnect would ask again,
+   * which is the fastest way to make people close the widget.
+   */
+  ratingRequestedAt: {
+    type: Date
+  },
   startedAt: {
     type: Date,
     default: Date.now
@@ -184,6 +211,11 @@ ConversationSchema.index({ contact: 1, startedAt: -1 });
 // have seen on the thread.
 ConversationSchema.index({ 'email.messageIds': 1 });
 ConversationSchema.index({ company: 1, channel: 1, status: 1 });
+// CSAT reporting: rated conversations for a company over a period.
+ConversationSchema.index(
+  { company: 1, 'rating.ratedAt': -1 },
+  { partialFilterExpression: { 'rating.score': { $exists: true } } }
+);
 
 const Conversation = mongoose.model('Conversation', ConversationSchema);
 

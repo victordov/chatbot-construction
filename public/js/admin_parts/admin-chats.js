@@ -694,6 +694,9 @@ function loadChatMessages(sessionId) {
       // Display user contact information if available
       displayUserContactInfo(data);
 
+      // What the customer thought of it, if they said.
+      displayRating(data.rating);
+
       // Internal notes arrive with the conversation.
       if (typeof setConversationNotes === 'function') {
         setConversationNotes(data.notes || []);
@@ -725,6 +728,40 @@ function loadChatMessages(sessionId) {
     .catch(error => {
       logger.error('Error loading chat messages:', error);
     });
+}
+
+/**
+ * The customer's rating, shown against the conversation.
+ *
+ * An operator finding out how a chat landed from a monthly report is too late
+ * to do anything about it. Here it sits with the transcript that earned it.
+ */
+function displayRating(rating) {
+  const existing = document.getElementById('conversation-rating');
+  if (existing) {
+    existing.remove();
+  }
+
+  if (!rating || !rating.score) {
+    return;
+  }
+
+  const tone = rating.score >= 4 ? 'success' : rating.score <= 2 ? 'danger' : 'secondary';
+
+  const panel = document.createElement('div');
+  panel.id = 'conversation-rating';
+  panel.className = `alert alert-${tone} py-2 px-3 mb-2 d-flex gap-2 align-items-start`;
+  panel.innerHTML = `
+    <span class="badge bg-${tone}">${rating.score}/5</span>
+    <div class="small">
+      <div>Rated by the customer${rating.operatorName ? ` · ${escapeHtml(rating.operatorName)}` : ''}</div>
+      ${rating.comment ? `<div class="mt-1">${escapeHtml(rating.comment)}</div>` : ''}
+    </div>`;
+
+  const contactInfo = document.getElementById('user-contact-info');
+  if (contactInfo && contactInfo.parentElement) {
+    contactInfo.parentElement.insertBefore(panel, contactInfo);
+  }
 }
 
 // Display user contact information

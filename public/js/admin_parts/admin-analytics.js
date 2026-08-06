@@ -58,9 +58,146 @@
       abandonEl.className = `stat-value ${data.abandonment.rate > 5 ? 'text-danger' : ''}`;
     }
 
+    renderSatisfaction(data.satisfaction);
+
     setStat('stat-tasks', `${data.tasks.completionRate}%`,
       `${data.tasks.completed} of ${data.tasks.created} closed` +
       (data.tasks.overdue ? ` · ${data.tasks.overdue} overdue` : ''));
+  }
+
+  /**
+   * Satisfaction.
+   *
+   * The headline number is the share of ratings that were 4 or 5, which is what
+   * CSAT conventionally means — not the mean, which people routinely confuse it
+   * with. The count is always shown beside it: 100% from two ratings and 100%
+   * from two hundred should not look the same.
+   */
+  function renderSatisfaction(csat, options = {}) {
+    const panel = document.getElementById('csat-panel');
+
+    if (!csat || !csat.rated) {
+      // "No ratings yet" and "0% satisfied" mean very different things, so the
+      // empty state says so rather than showing a zero.
+      setStat('stat-csat', '—', csat && csat.asked
+        ? `asked ${csat.asked}, none answered yet`
+        : 'no ratings yet');
+
+      if (panel) {
+        panel.innerHTML = `
+          <p class="text-muted mb-0">
+            No ratings yet. Visitors are asked once a conversation ends, if they
+            sent more than one message.
+          </p>`;
+      }
+      return;
+    }
+
+    setStat('stat-csat', `${csat.csat}%`,
+      `${csat.rated} rating${csat.rated === 1 ? '' : 's'}` +
+      (csat.responseRate !== null ? ` · ${csat.responseRate}% answered` : '') +
+      ` · avg ${csat.average}`);
+
+    const csatEl = document.getElementById('stat-csat');
+    if (csatEl) {
+      // Below 70% satisfied is a problem worth flagging — but only once there
+      // are enough ratings for the number to mean anything. A single 3 is not
+      // a satisfaction crisis, and colouring it red teaches people to ignore
+      // the colour.
+      const meaningful = csat.rated >= 10;
+      csatEl.className = `stat-value ${meaningful && csat.csat < 70 ? 'text-danger' : ''}`;
+    }
+
+    const detailEl = document.getElementById('stat-csat-detail');
+    if (detailEl && csat.rated < 10) {
+      detailEl.textContent += ' · too few to read much into';
+    }
+
+    if (!panel) {
+      return;
+    }
+
+    if (options.summaryOnly) {
+      // On a plan without the advanced report we still have the distribution
+      // and the headline; what is missing is the per-operator split and the
+      // comments, and the panel says so rather than pretending there is
+      // nothing to see.
+      panel.innerHTML = `
+        ${renderDistribution(csat.distribution)}
+        <p class="small text-muted mt-3 mb-0">
+          Who was rated, and what people wrote, are part of the advanced report
+          on the Professional plan.
+        </p>`;
+      return;
+    }
+
+    const most = Math.max(...csat.distribution, 1);
+
+    const bars = renderDistribution(csat.distribution);
+    void most;
+
+    const handler = csat.byHandler || {};
+    const side = (label, stats) => `
+      <div class="col-6">
+        <div class="stat-label">${label}</div>
+        <div class="fs-5">${stats && stats.rated ? `${stats.csat}%` : '—'}</div>
+        <div class="small text-muted">${stats && stats.rated
+    ? `${stats.rated} rating${stats.rated === 1 ? '' : 's'}`
+    : 'not rated yet'}</div>
+      </div>`;
+
+    const comments = (csat.comments || []).slice(0, 5);
+
+    panel.innerHTML = `
+      ${bars}
+      <div class="row g-2 mt-3 pt-3 border-top">
+        ${side('Handled by the bot', handler.bot)}
+        ${side('Handled by a person', handler.operator)}
+      </div>
+      ${(csat.byOperator || []).length ? `
+        <div class="mt-3 pt-3 border-top">
+          <div class="stat-label mb-2">By operator</div>
+          <table class="table table-sm mb-0">
+            <tbody>
+              ${csat.byOperator.slice(0, 8).map(row => `
+                <tr>
+                  <td>${escapeHtml(row.operator)}</td>
+                  <td class="text-end">${row.csat}%</td>
+                  <td class="text-end text-muted small">${row.rated}</td>
+                </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>` : ''}
+      ${comments.length ? `
+        <div class="mt-3 pt-3 border-top">
+          <div class="stat-label mb-2">What people said</div>
+          ${comments.map(row => `
+            <div class="csat-comment">
+              <span class="badge bg-${row.rating.score >= 4 ? 'success' : row.rating.score <= 2 ? 'danger' : 'secondary'}">${row.rating.score}</span>
+              <span>${escapeHtml(row.rating.comment)}</span>
+            </div>`).join('')}
+        </div>` : ''}`;
+  }
+
+  /**
+   * The spread of scores.
+   *
+   * Shown rather than only an average, because "4.2" hides whether that is
+   * everyone mildly content or half delighted and half furious — and those call
+   * for very different responses.
+   */
+  function renderDistribution(distribution) {
+    const most = Math.max(...distribution, 1);
+
+    return distribution.map((count, index) => `
+      <div class="csat-bar-row">
+        <span class="csat-bar-label">${index + 1}</span>
+        <span class="csat-bar-track">
+          <span class="csat-bar-fill ${index + 1 >= 4 ? 'good' : index + 1 <= 2 ? 'bad' : ''}"
+                style="width:${Math.round((count / most) * 100)}%"></span>
+        </span>
+        <span class="csat-bar-count">${count}</span>
+      </div>`).reverse().join('');
   }
 
   /**
@@ -174,8 +311,19 @@
       });
 
       if (response.status === 402) {
-        // Not an error: the tenant's plan simply does not include this.
+        // Not an error: the tenant's plan simply does not include this. The
+        // satisfaction figures are not part of that gate — they come from the
+        // basic endpoint, so they are rendered here regardless.
         showLocked(true);
+        // Read from the basic payload the dashboard already loaded. `let` at
+        // script scope is not a property of `window`, so this is the binding
+        // itself rather than a lookup that would silently be undefined.
+        renderSatisfaction(
+          typeof lastAnalyticsData !== 'undefined' && lastAnalyticsData
+            ? lastAnalyticsData.satisfaction
+            : null,
+          { summaryOnly: true }
+        );
         return;
       }
 

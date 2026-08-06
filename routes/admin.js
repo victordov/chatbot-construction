@@ -9,6 +9,7 @@ const analyticsService = require('../services/analytics');
 const usageService = require('../services/usage');
 const { logger } = require('../services/logging');
 const socketManager = require('../socketManager');
+const csatService = require('../services/csat');
 const {
   containsRegex,
   companyFilter,
@@ -436,12 +437,30 @@ router.post('/chat/:sessionId/end', async (req, res) => {
       return;
     }
 
+    // Decided before the operator fields are cleared, and before the save, so
+    // the check sees the conversation as the visitor experienced it.
+    const askForRating = csatService.shouldRequestRating(conversation);
+
     conversation.status = 'ended';
     conversation.endedAt = new Date();
     conversation.hasOperator = false;
     conversation.operatorId = null;
     conversation.operatorName = null;
+
+    if (askForRating) {
+      conversation.ratingRequestedAt = new Date();
+    }
+
     await conversation.save();
+
+    // The socket path told the visitor their chat had ended; this one did not,
+    // so a chat closed from the dashboard left the widget looking live and the
+    // customer waiting for a reply that was never coming.
+    socketManager.emitToSession(conversation.sessionId, 'chat-ended', {
+      message: 'This conversation has been ended by the operator.',
+      requestRating: askForRating,
+      timestamp: new Date()
+    });
 
     res.json({ success: true, message: 'Chat ended successfully' });
   } catch (error) {
@@ -464,6 +483,11 @@ router.get('/analytics', async (req, res) => {
 
     const last12Months = new Date();
     last12Months.setMonth(last12Months.getMonth() - 11);
+
+    // Satisfaction over the last 30 days: long enough to accumulate ratings on
+    // a quiet account, short enough to reflect the service as it is now.
+    const last30Days = new Date();
+    last30Days.setDate(last30Days.getDate() - 30);
 
     const now = new Date();
     const todayStart = new Date(now);
@@ -681,6 +705,13 @@ router.get('/analytics', async (req, res) => {
       avgResponseTime,
       responseTimeOverTime,
       conversationMetrics,
+      // Satisfaction is returned on every plan. It is the customer's own
+      // verdict on the tenant's own service - gating it behind an upgrade
+      // would hide from a trial the one number that tells them whether any of
+      // this is working. The breakdowns (per operator, bot vs human, the
+      // comments) stay in the advanced report.
+      satisfaction: await csatService.summary(matchFilter, last30Days)
+        .catch(() => null),
       company: companyInfo
     });
   } catch (error) {

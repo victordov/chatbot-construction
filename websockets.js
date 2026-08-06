@@ -8,6 +8,7 @@ const tenantService = require('./services/tenant');
 const usageService = require('./services/usage');
 const contactService = require('./services/contacts');
 const emailChannel = require('./services/email-channel');
+const csatService = require('./services/csat');
 const { operatorRoom, GLOBAL_OPERATOR_ROOM } = require('./socketManager');
 const { logger } = require('./services/logging');
 
@@ -1247,9 +1248,19 @@ function setupWebSockets(server) {
         );
 
         if (conversation) {
+          // Ask for a rating on the way out. This is the only moment the
+          // customer is both still present and finished — asking earlier
+          // interrupts, and asking later means emailing them.
+          const askForRating = csatService.shouldRequestRating(conversation);
+
+          if (askForRating) {
+            await csatService.markRequested(sessionId);
+          }
+
           // Notify user that chat has ended
           io.to(sessionId).emit('chat-ended', {
             message: 'This conversation has been ended by the operator.',
+            requestRating: askForRating,
             timestamp: new Date()
           });
 
@@ -1270,7 +1281,59 @@ function setupWebSockets(server) {
       } catch (error) {
         logger.error('Error ending chat:', { error });
       }
-    });    // Handle heartbeat to keep connection alive
+    });    /**
+     * A visitor rating the conversation.
+     *
+     * The session is taken from the socket, never from the payload: a session
+     * id in the body would let anyone who guessed or obtained one rate somebody
+     * else's conversation, and a wave of 1s against a competitor's operators is
+     * exactly the sort of thing that would happen.
+     */
+    socket.on('submit-rating', async (data = {}) => {
+      if (isOperator || !clientSessionId) {
+        return;
+      }
+
+      try {
+        const result = await csatService.record(clientSessionId, data.score, data.comment);
+
+        socket.emit('rating-recorded', {
+          success: result.ok,
+          error: result.ok ? undefined : result.error
+        });
+
+        if (result.ok && !result.duplicate) {
+          // Also fires when a comment lands after the score, so an operator
+          // sees the words as well as the number.
+          // Shown against the conversation in the dashboard, so an operator
+          // sees the score land rather than discovering it in a report.
+          allOperators(result.company, 'conversation-rated', {
+            sessionId: clientSessionId,
+            score: result.rating.score,
+            comment: result.rating.comment,
+            timestamp: new Date()
+          });
+        }
+      } catch (error) {
+        logger.error('Error recording rating:', { error: error.message });
+        socket.emit('rating-recorded', { success: false, error: 'Could not save your rating' });
+      }
+    });
+
+    /**
+     * A visitor declining to rate.
+     *
+     * Recorded so we do not ask the same person again on the next reconnect,
+     * and so the response rate reflects who was asked rather than who answered.
+     */
+    socket.on('decline-rating', async () => {
+      if (isOperator || !clientSessionId) {
+        return;
+      }
+      await csatService.markRequested(clientSessionId).catch(() => {});
+    });
+
+    // Handle heartbeat to keep connection alive
     socket.on('heartbeat', (data) => {
       // Respond with an acknowledgment
       socket.emit('heartbeat-ack', {

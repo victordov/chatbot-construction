@@ -17,6 +17,7 @@
 const Conversation = require('../models/conversation');
 const Task = require('../models/task');
 const { companyMatch } = require('../utils/query');
+const csat = require('./csat');
 const { logger } = require('./logging');
 
 /**
@@ -324,7 +325,8 @@ async function advanced(user, days = 30) {
   // all the others.
   const [
     deflectionResult, abandonmentResult, peakResult,
-    operatorResult, topicResult, taskResult
+    operatorResult, topicResult, taskResult,
+    csatResult, csatHandlerResult, csatOperatorResult, csatCommentResult
   ] = await Promise.all([
     deflection(match, since).catch(fail('deflection', { eligible: 0, deflected: 0, escalated: 0, rate: 0 })),
     abandonment(match, since).catch(fail('abandonment', { total: 0, unanswered: 0, rate: 0 })),
@@ -333,7 +335,16 @@ async function advanced(user, days = 30) {
     topics(match, since).catch(fail('topics', [])),
     taskMetrics(match, since).catch(fail('taskMetrics', {
       created: 0, completed: 0, overdue: 0, completionRate: 0, avgCompletionHours: 0
-    }))
+    })),
+    csat.summary(match, since).catch(fail('csat', {
+      rated: 0, asked: 0, average: null, csat: null, responseRate: null, distribution: [0, 0, 0, 0, 0]
+    })),
+    csat.byHandler(match, since).catch(fail('csatByHandler', {
+      bot: { rated: 0, average: null, csat: null },
+      operator: { rated: 0, average: null, csat: null }
+    })),
+    csat.byOperator(match, since).catch(fail('csatByOperator', [])),
+    csat.comments(match, since).catch(fail('csatComments', []))
   ]);
 
   return {
@@ -343,7 +354,17 @@ async function advanced(user, days = 30) {
     peakHours: peakResult,
     operators: operatorResult,
     topics: topicResult,
-    tasks: taskResult
+    tasks: taskResult,
+    // Deflection and satisfaction are returned together deliberately. A high
+    // deflection rate is only good news if the deflected customers were happy,
+    // and reading one without the other is how a tenant ends up optimising for
+    // a bot that is merely hard to escape.
+    satisfaction: {
+      ...csatResult,
+      byHandler: csatHandlerResult,
+      byOperator: csatOperatorResult,
+      comments: csatCommentResult
+    }
   };
 }
 
@@ -361,5 +382,6 @@ module.exports = {
   peakHours,
   operatorPerformance,
   topics,
-  taskMetrics
+  taskMetrics,
+  satisfaction: csat.summary
 };

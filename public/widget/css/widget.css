@@ -300,3 +300,133 @@
     height: 25px;
   }
 }
+
+/* ------------------------------------------------------------------ rating
+   Shown inline at the end of a conversation rather than as an overlay: the
+   customer has just finished reading the transcript, and a modal over it reads
+   as an interruption rather than a question. */
+
+.chat-system-notice {
+  align-self: center;
+  max-width: 90%;
+  margin: 8px 0;
+  padding: 4px 10px;
+  font-size: 12px;
+  color: #6c757d;
+  text-align: center;
+}
+
+.chat-rating {
+  align-self: stretch;
+  margin: 8px 4px;
+  padding: 12px;
+  border: 1px solid #e3e6ea;
+  border-radius: 10px;
+  background: #f8f9fa;
+  text-align: center;
+}
+
+.chat-rating-question {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 8px;
+  color: #212529;
+}
+
+.chat-rating-scores {
+  display: flex;
+  gap: 6px;
+  justify-content: center;
+}
+
+.chat-rating-score {
+  flex: 1;
+  /* Comfortably tappable on a phone, which is where most of these arrive. */
+  min-height: 40px;
+  border: 1px solid #ced4da;
+  border-radius: 8px;
+  background: #fff;
+  font-size: 15px;
+  color: #495057;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, transform 0.1s;
+}
+
+.chat-rating-score:hover:not(:disabled) {
+  border-color: #0d6efd;
+  background: #e7f1ff;
+  transform: translateY(-1px);
+}
+
+.chat-rating-score.selected {
+  border-color: #0d6efd;
+  background: #0d6efd;
+  color: #fff;
+}
+
+.chat-rating-score:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.chat-rating-score.selected:disabled {
+  /* The chosen one stays legible; only the others fade. */
+  opacity: 1;
+}
+
+.chat-rating-scale {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 4px;
+  font-size: 11px;
+  color: #868e96;
+}
+
+.chat-rating-dismiss {
+  margin-top: 8px;
+  border: none;
+  background: none;
+  font-size: 12px;
+  color: #868e96;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.chat-rating-comment {
+  margin-top: 10px;
+  text-align: left;
+}
+
+.chat-rating-comment label {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 12px;
+  color: #495057;
+}
+
+.chat-rating-comment textarea {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid #ced4da;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 13px;
+  resize: vertical;
+}
+
+.chat-rating-send {
+  margin-top: 6px;
+  padding: 5px 14px;
+  border: none;
+  border-radius: 6px;
+  background: #0d6efd;
+  color: #fff;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.chat-rating-done {
+  font-size: 13px;
+  color: #198754;
+  text-align: center;
+}

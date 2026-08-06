@@ -366,6 +366,22 @@
                         <span class="text-muted small" id="analytics-range-label"></span>
                     </div>
 
+                    <!-- Satisfaction is outside the gated row on purpose: it is
+                         the customer's own verdict on the tenant's own service,
+                         and hiding it behind an upgrade would leave a trial with
+                         no way to tell whether any of this is working. -->
+                    <div class="row g-3 mb-4">
+                        <div class="col-sm-6 col-xl-3">
+                            <div class="card h-100 stat-card">
+                                <div class="card-body">
+                                    <div class="stat-label">Satisfaction</div>
+                                    <div class="stat-value" id="stat-csat">—</div>
+                                    <div class="stat-detail" id="stat-csat-detail"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- Headline numbers. Deflection first: it is the metric
                          that says whether the bot is earning its keep. -->
                     <div class="row g-3 mb-4" id="analytics-headline">
@@ -423,6 +439,17 @@
                             <div class="card h-100">
                                 <div class="card-header"><h5 class="mb-0">Average response time</h5></div>
                                 <div class="card-body"><canvas id="response-time-chart"></canvas></div>
+                            </div>
+                        </div>
+
+                        <div class="col-xl-5">
+                            <div class="card h-100">
+                                <div class="card-header">
+                                    <h5 class="mb-0">Satisfaction</h5>
+                                </div>
+                                <div class="card-body" id="csat-panel">
+                                    <p class="text-muted mb-0">No ratings yet.</p>
+                                </div>
                             </div>
                         </div>
 

@@ -226,6 +226,29 @@ function setupEventHandlers(socket) {
     removeChatFromList(data.sessionId);
   });
 
+  /**
+   * A customer has just rated a conversation.
+   *
+   * Shown live rather than only in a report: a 1 arriving while the operator is
+   * still at their desk is something they can act on.
+   */
+  socket.on('conversation-rated', function(data) {
+    if (window.currentConversation && window.currentConversation.sessionId === data.sessionId) {
+      window.currentConversation.rating = Object.assign(
+        {}, window.currentConversation.rating, data
+      );
+      if (typeof displayRating === 'function') {
+        displayRating(window.currentConversation.rating);
+      }
+    }
+
+    if (typeof showToast === 'function' && data.score <= 2) {
+      // Only the bad ones interrupt. A stream of "someone gave you a 5" toasts
+      // trains people to dismiss the notification that mattered.
+      showToast(`A customer rated a conversation ${data.score}/5`, 'warning');
+    }
+  });
+
   // Listen for operator join/leave events
   socket.on('operator-joined', function(data) {
     updateChatOperatorStatus(data.sessionId, true, data.operatorName);

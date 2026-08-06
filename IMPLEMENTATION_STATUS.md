@@ -86,6 +86,17 @@ address, including on each redirect - private, loopback and cloud-metadata
 ranges are refused. A "Try it" button in the editor runs the call once and
 shows both what came back and what the field mappings picked out of it.
 
+**Satisfaction.** A visitor is asked to rate the conversation once it ends, if
+they sent more than one message; declining is remembered so nobody is asked
+twice. The score is recorded on the first tap and a comment box only then
+appears, so a rating is never lost to someone who did not want to write an
+essay. Credit is read from the transcript rather than from the conversation's
+operator fields, which ending a chat clears. Reported as the share satisfied
+with its sample size and response rate beside it — and deliberately next to
+deflection, because a deflection rate on its own rewards a bot that is merely
+hard to escape. The headline is available on every plan; the per-operator split
+and the comments are part of the advanced report.
+
 **Operator tools.** Saved replies inserted from the composer with `/`, internal
 notes that never reach the visitor or the model, conversation transfer with a
 handover note, and a queue filtered by All / Mine / Waiting so several chats
@@ -127,7 +138,7 @@ content-hashed widget assets cached for a year with the loader on `no-cache`.
 
 ## Test suite
 
-`npm test` — 333 tests across 22 suites. An in-memory MongoDB starts
+`npm test` — 365 tests across 23 suites. An in-memory MongoDB starts
 automatically (`tests/globalSetup.js`), so no local `mongod` is needed.
 `tests/setup.js` blanks `OPENAI_API_KEY` so the suite never makes a real model
 call; the embedding and intent tests therefore assert on ranking and plumbing
