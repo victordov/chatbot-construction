@@ -47,19 +47,13 @@ class OperatorAssistService extends EventEmitter {
       // Update presence tracking
       this.updateOperatorPresence(tenantId, operatorId, true);
 
-      // Join WebSocket room for real-time communication
-      if (this.socketManager) {
-        this.socketManager.joinRoom(operatorId, `conversation_${conversationId}`);
-        this.socketManager.joinRoom(operatorId, `tenant_${tenantId}_operators`);
-        
-        // Notify other operators
-        this.socketManager.broadcastToRoom(`tenant_${tenantId}_operators`, 'operator:joined', {
-          operatorId,
-          conversationId,
-          sessionId,
-          timestamp: new Date().toISOString()
-        });
-      }
+      // Notify other operators of this tenant.
+      this.notifyOperators(tenantId, 'operator:joined', {
+        operatorId,
+        conversationId,
+        sessionId,
+        timestamp: new Date().toISOString()
+      });
 
       logger.info(`Operator ${operatorId} joined conversation ${conversationId}`);
       
@@ -98,18 +92,12 @@ class OperatorAssistService extends EventEmitter {
       // Update presence
       this.updateOperatorPresence(tenantId, operatorId, false);
 
-      // Leave WebSocket rooms
-      if (this.socketManager) {
-        this.socketManager.leaveRoom(operatorId, `conversation_${conversationId}`);
-        
-        // Notify other operators
-        this.socketManager.broadcastToRoom(`tenant_${tenantId}_operators`, 'operator:left', {
-          operatorId,
-          conversationId,
-          sessionId,
-          timestamp: new Date().toISOString()
-        });
-      }
+      this.notifyOperators(tenantId, 'operator:left', {
+        operatorId,
+        conversationId,
+        sessionId,
+        timestamp: new Date().toISOString()
+      });
 
       logger.info(`Operator ${operatorId} left conversation ${conversationId}`);
       
@@ -124,6 +112,163 @@ class OperatorAssistService extends EventEmitter {
     } catch (error) {
       logger.error('Error in operator leave conversation:', error);
       throw error;
+    }
+  }
+
+  /**
+   * Emit to a tenant's operators if the injected socket manager supports it.
+   */
+  notifyOperators(tenantId, event, payload) {
+    if (this.socketManager && typeof this.socketManager.emitToOperators === 'function') {
+      this.socketManager.emitToOperators(tenantId, event, payload);
+    }
+  }
+
+  /**
+   * Emit to a single conversation room if supported.
+   */
+  notifySession(conversationId, event, payload) {
+    if (this.socketManager && typeof this.socketManager.emitToSession === 'function') {
+      this.socketManager.emitToSession(conversationId, event, payload);
+    }
+  }
+
+  /**
+   * Synchronous convenience wrapper over joinConversation, keyed by
+   * conversation rather than by generated session id. This is what the chat UI
+   * calls when an operator opens a conversation.
+   */
+  joinSession(conversationId, operatorId, operatorName, tenantId = null) {
+    const sessionId = this.generateSessionId();
+
+    this.operatorSessions.set(sessionId, {
+      operatorId,
+      operatorName,
+      conversationId,
+      tenantId,
+      sessionId,
+      joinedAt: new Date(),
+      isActive: true,
+      responsesSuggested: 0
+    });
+
+    this.assistedConversations.set(conversationId, {
+      operatorId,
+      operatorName,
+      sessionId,
+      startedAt: new Date(),
+      mode: 'assist',
+      isActive: true
+    });
+
+    if (tenantId) {
+      this.updateOperatorPresence(tenantId, operatorId, true);
+      this.notifyOperators(tenantId, 'operator:joined', {
+        operatorId,
+        operatorName,
+        conversationId,
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    logger.info(`Operator ${operatorName || operatorId} joined conversation ${conversationId}`);
+
+    return { success: true, sessionId, mode: 'assist' };
+  }
+
+  /**
+   * Remove one operator from a conversation.
+   */
+  leaveSession(conversationId, operatorId) {
+    let removed = false;
+
+    for (const [sessionId, info] of this.operatorSessions) {
+      if (info.conversationId === conversationId &&
+          String(info.operatorId) === String(operatorId)) {
+        this.operatorSessions.delete(sessionId);
+        removed = true;
+
+        if (info.tenantId) {
+          this.updateOperatorPresence(info.tenantId, operatorId, false);
+          this.notifyOperators(info.tenantId, 'operator:left', {
+            operatorId,
+            conversationId,
+            timestamp: new Date().toISOString()
+          });
+        }
+      }
+    }
+
+    // Only drop the assisted flag once the last operator has gone, so a
+    // conversation with two operators does not fall back to the bot when one
+    // of them closes their tab.
+    if (this.getActiveOperators(conversationId).length === 0) {
+      this.assistedConversations.delete(conversationId);
+      this.emit('operator:left', { conversationId, operatorId });
+    }
+
+    return { success: removed };
+  }
+
+  /**
+   * Operators currently attached to a conversation.
+   */
+  getActiveOperators(conversationId) {
+    return Array.from(this.operatorSessions.values())
+      .filter(info => info.conversationId === conversationId && info.isActive)
+      .map(info => ({
+        operatorId: info.operatorId,
+        operatorName: info.operatorName,
+        sessionId: info.sessionId,
+        joinedAt: info.joinedAt
+      }));
+  }
+
+  /**
+   * Offer an operator a few ready-to-send replies for the current conversation.
+   *
+   * Falls back to generic prompts when no model is configured so the operator
+   * UI always has something to show rather than an empty panel.
+   */
+  async generateSuggestedReplies(chatHistory = [], options = {}) {
+    const fallbackReplies = [
+      'Thanks for reaching out - let me look into that for you.',
+      'I understand, and I\'m sorry for the trouble. Could you share a bit more detail?',
+      'Let me check on this and get back to you shortly.'
+    ];
+
+    if (!process.env.OPENAI_API_KEY) {
+      return fallbackReplies;
+    }
+
+    try {
+      const { OpenAI } = require('openai');
+      const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+      const completion = await openai.chat.completions.create({
+        model: options.model || process.env.OPENAI_MODEL || 'gpt-4o-mini',
+        messages: [
+          {
+            role: 'system',
+            content: 'You are helping a human support operator. Given the conversation so far, suggest three short, distinct replies the operator could send next. Return one reply per line with no numbering or quotes.'
+          },
+          ...chatHistory.slice(-10),
+          { role: 'user', content: 'Suggest three replies.' }
+        ],
+        temperature: 0.7,
+        max_tokens: 300
+      });
+
+      const suggestions = (completion.choices[0].message.content || '')
+        .split('\n')
+        .map(line => line.replace(/^\s*[-*\d.)]+\s*/, '').trim())
+        .filter(Boolean)
+        .slice(0, 3);
+
+      return suggestions.length > 0 ? suggestions : fallbackReplies;
+    } catch (error) {
+      logger.error('Error generating suggested replies', { error: error.message });
+      return fallbackReplies;
     }
   }
 
@@ -169,15 +314,12 @@ class OperatorAssistService extends EventEmitter {
         operatorInfo.responsesSuggested++;
       }
 
-      // Send suggestion to operator via WebSocket
-      if (this.socketManager) {
-        this.socketManager.sendToRoom(`conversation_${conversationId}`, 'operator:suggestion', {
-          suggestion: suggestion.response,
-          confidence: suggestion.metadata?.confidence || 0.5,
-          userMessage,
-          timestamp: new Date().toISOString()
-        });
-      }
+      this.notifySession(conversationId, 'operator:suggestion', {
+        suggestion: suggestion.response,
+        confidence: suggestion.metadata?.confidence || 0.5,
+        userMessage,
+        timestamp: new Date().toISOString()
+      });
 
       logger.info(`Generated suggestion for conversation ${conversationId}`);
       

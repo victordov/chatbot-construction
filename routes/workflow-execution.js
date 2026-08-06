@@ -5,24 +5,19 @@
 
 const express = require('express');
 const router = express.Router();
-const WorkflowRuntimeService = require('../services/workflow-runtime');
-const OperatorAssistService = require('../services/operator-assist');
 const { auth: authenticate, admin, superadmin, operator } = require('../middleware/auth');
 const { logger } = require('../services/logging');
 
-// Initialize services (these would typically be injected or singleton)
-let runtimeService;
-let operatorAssistService;
+// Shared singletons: routes/workflow.js publishes into the same instances, so
+// a hot-swap is visible to the requests being served here.
+const runtimeRegistry = require('../services/runtime-registry');
 
-// Initialize services with socket manager
 const initializeServices = (socketManager) => {
-  if (!runtimeService) {
-    runtimeService = new WorkflowRuntimeService(socketManager);
-  }
-  if (!operatorAssistService) {
-    operatorAssistService = new OperatorAssistService(socketManager);
-  }
+  runtimeRegistry.initialize(socketManager);
 };
+
+const runtimeServiceRef = () => runtimeRegistry.getRuntimeService();
+const operatorAssistServiceRef = () => runtimeRegistry.getOperatorAssistService();
 
 /**
  * Execute workflow for a user message
@@ -42,16 +37,16 @@ router.post('/execute', authenticate, async (req, res) => {
 
     // Check if conversation has operator assistance
     const conversationId = context.conversationId || `conv_${Date.now()}`;
-    const isAssisted = operatorAssistService?.isConversationAssisted(conversationId);
+    const isAssisted = operatorAssistServiceRef().isConversationAssisted(conversationId);
 
     if (isAssisted) {
       // Generate suggested response for operator instead of auto-responding
-      const assistInfo = operatorAssistService.getAssistanceInfo(conversationId);
+      const assistInfo = operatorAssistServiceRef().getAssistanceInfo(conversationId);
       
       // Get workflow for suggestion generation
-      const workflowStatus = runtimeService?.getWorkflowStatus(tenantId);
+      const workflowStatus = runtimeServiceRef().getWorkflowStatus(tenantId);
       if (workflowStatus?.status === 'active') {
-        await operatorAssistService.generateSuggestedResponse(
+        await operatorAssistServiceRef().generateSuggestedResponse(
           conversationId,
           message,
           chatHistory,
@@ -72,14 +67,14 @@ router.post('/execute', authenticate, async (req, res) => {
     }
 
     // Normal workflow execution
-    if (!runtimeService) {
+    if (!runtimeServiceRef()) {
       return res.status(503).json({
         success: false,
         error: 'Workflow runtime service not available'
       });
     }
 
-    const result = await runtimeService.executeWorkflow(
+    const result = await runtimeServiceRef().executeWorkflow(
       tenantId,
       message,
       chatHistory,
@@ -94,10 +89,20 @@ router.post('/execute', authenticate, async (req, res) => {
     });
 
   } catch (error) {
+    // A tenant that has not published a workflow yet is a configuration state,
+    // not a server fault - returning 500 made it look like an outage.
+    if (error.code === 'NO_ACTIVE_WORKFLOW') {
+      return res.status(409).json({
+        success: false,
+        code: 'NO_ACTIVE_WORKFLOW',
+        error: 'No published workflow for this company. Publish one in the workflow editor.'
+      });
+    }
+
     logger.error('Error executing workflow:', error);
     res.status(500).json({
       success: false,
-      error: error.message
+      error: 'Failed to execute workflow'
     });
   }
 });
@@ -110,14 +115,14 @@ router.get('/status', authenticate, admin, (req, res) => {
   try {
     const tenantId = req.user.company?.id || req.user.id;
     
-    if (!runtimeService) {
+    if (!runtimeServiceRef()) {
       return res.status(503).json({
         success: false,
         error: 'Workflow runtime service not available'
       });
     }
 
-    const status = runtimeService.getWorkflowStatus(tenantId);
+    const status = runtimeServiceRef().getWorkflowStatus(tenantId);
     
     res.json({
       success: true,
@@ -138,14 +143,14 @@ router.get('/status', authenticate, admin, (req, res) => {
  */
 router.get('/all-active', authenticate, superadmin, (req, res) => {
   try {
-    if (!runtimeService) {
+    if (!runtimeServiceRef()) {
       return res.status(503).json({
         success: false,
         error: 'Workflow runtime service not available'
       });
     }
 
-    const workflows = runtimeService.getAllActiveWorkflows();
+    const workflows = runtimeServiceRef().getAllActiveWorkflows();
     
     res.json({
       success: true,
@@ -188,14 +193,15 @@ router.post('/reload', authenticate, admin, async (req, res) => {
     }
 
     // Check permissions
-    if (req.user.role !== 'superadmin' && workflow.company?.toString() !== tenantId) {
+    if (req.user.role !== 'superadmin' &&
+        workflow.company?.toString() !== tenantId?.toString()) {
       return res.status(403).json({
         success: false,
         error: 'Access denied'
       });
     }
 
-    if (!runtimeService) {
+    if (!runtimeServiceRef()) {
       return res.status(503).json({
         success: false,
         error: 'Workflow runtime service not available'
@@ -203,7 +209,7 @@ router.post('/reload', authenticate, admin, async (req, res) => {
     }
 
     // Load the workflow
-    await runtimeService.loadWorkflow(tenantId, workflow);
+    await runtimeServiceRef().loadWorkflow(tenantId, workflow);
     
     res.json({
       success: true,
@@ -225,14 +231,14 @@ router.post('/reload', authenticate, admin, async (req, res) => {
  */
 router.get('/health', (req, res) => {
   try {
-    if (!runtimeService) {
+    if (!runtimeServiceRef()) {
       return res.status(503).json({
         healthy: false,
         error: 'Runtime service not initialized'
       });
     }
 
-    const health = runtimeService.getHealthStatus();
+    const health = runtimeServiceRef().getHealthStatus();
     
     res.json({
       healthy: true,
@@ -266,14 +272,14 @@ router.post('/operator/join', authenticate, operator, async (req, res) => {
       });
     }
 
-    if (!operatorAssistService) {
+    if (!operatorAssistServiceRef()) {
       return res.status(503).json({
         success: false,
         error: 'Operator assist service not available'
       });
     }
 
-    const result = await operatorAssistService.joinConversation(
+    const result = await operatorAssistServiceRef().joinConversation(
       operatorId,
       conversationId,
       tenantId
@@ -305,14 +311,14 @@ router.post('/operator/leave', authenticate, operator, async (req, res) => {
       });
     }
 
-    if (!operatorAssistService) {
+    if (!operatorAssistServiceRef()) {
       return res.status(503).json({
         success: false,
         error: 'Operator assist service not available'
       });
     }
 
-    const result = await operatorAssistService.leaveConversation(sessionId);
+    const result = await operatorAssistServiceRef().leaveConversation(sessionId);
     
     res.json(result);
 
@@ -340,14 +346,14 @@ router.post('/operator/respond', authenticate, operator, async (req, res) => {
       });
     }
 
-    if (!operatorAssistService) {
+    if (!operatorAssistServiceRef()) {
       return res.status(503).json({
         success: false,
         error: 'Operator assist service not available'
       });
     }
 
-    const result = await operatorAssistService.sendOperatorResponse(
+    const result = await operatorAssistServiceRef().sendOperatorResponse(
       sessionId,
       message,
       conversationId
@@ -372,14 +378,14 @@ router.get('/operator/stats', authenticate, admin, (req, res) => {
   try {
     const tenantId = req.user.company?.id || req.user.id;
 
-    if (!operatorAssistService) {
+    if (!operatorAssistServiceRef()) {
       return res.status(503).json({
         success: false,
         error: 'Operator assist service not available'
       });
     }
 
-    const stats = operatorAssistService.getOperatorStats(tenantId);
+    const stats = operatorAssistServiceRef().getOperatorStats(tenantId);
     
     res.json({
       success: true,

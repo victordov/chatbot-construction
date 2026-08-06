@@ -7,6 +7,7 @@ const { GoogleSpreadsheet } = require('google-spreadsheet');
 const axios = require('axios');
 const fs = require('fs').promises;
 const path = require('path');
+const { logger } = require('./logging');
 
 class KnowledgeConnectorService {
   constructor() {
@@ -128,7 +129,7 @@ class KnowledgeConnectorService {
 
       return documents;
     } catch (error) {
-      console.error('Error loading PDF/URL:', error);
+      logger.error('Error loading PDF/URL', { error: error.message });
       throw new Error(`Failed to load PDF/URL: ${error.message}`);
     }
   }
@@ -286,7 +287,7 @@ class KnowledgeConnectorService {
         collectionName
       };
     } catch (error) {
-      console.error('Error processing knowledge source:', error);
+      logger.error('Error processing knowledge source', { error: error.message });
       throw error;
     }
   }
@@ -299,9 +300,12 @@ class KnowledgeConnectorService {
       const knowledgeResults = [];
 
       for (const node of knowledgeNodes) {
-        const { sourceType, config } = node.data;
+        // Accept both the raw editor node ({ data: { sourceType, config } })
+        // and the compiled source ({ type, config }) the compiler produces.
+        const sourceType = node.sourceType || node.type || node.data?.sourceType || node.data?.type;
+        const config = node.config || node.data?.config || {};
 
-        if (sourceType === 'vector_store') {
+        if (sourceType === 'vector_store' || sourceType === 'vector-store') {
           // Search vector store
           const results = await this.searchVectorStore(
             query, 
@@ -322,9 +326,100 @@ class KnowledgeConnectorService {
 
       return knowledgeResults;
     } catch (error) {
-      console.error('Error getting knowledge:', error);
+      logger.error('Error getting knowledge', { error: error.message });
       return [];
     }
+  }
+
+  /**
+   * Query a single knowledge source directly.
+   *
+   * This is the entry point the workflow editor's "test source" action and the
+   * integration tests use: given a source config, fetch matching content
+   * without needing the source to have been ingested into the vector store
+   * first.
+   *
+   * @param {object} config  `{ type, ... }` describing the source
+   * @param {string} query   the user's question
+   * @param {string} tenantId
+   * @returns {Promise<{source: string, results: Array}>}
+   */
+  async queryKnowledgeSource(config = {}, query = '', tenantId) {
+    const type = config.type || config.sourceType;
+
+    switch (type) {
+      case 'google-sheets':
+      case 'google_sheets': {
+        if (!config.spreadsheetId && !config.sheetId) {
+          throw new Error('Google Sheets service not configured: spreadsheetId is required');
+        }
+        if (!process.env.GOOGLE_CLIENT_EMAIL && !config.credentialsPath) {
+          throw new Error('Google Sheets service not configured: no service account credentials');
+        }
+        const documents = await this.loadGoogleSheets(
+          { ...config, sheetId: config.sheetId || config.spreadsheetId },
+          tenantId
+        );
+        return { source: 'google-sheets', results: this.rankByRelevance(documents, query) };
+      }
+
+      case 'pdf-url':
+      case 'pdf':
+      case 'url': {
+        if (!config.url) {
+          throw new Error('Failed to fetch content from URL: no url provided');
+        }
+        try {
+          const documents = await this.loadPdfUrl(config, tenantId);
+          return { source: type, results: this.rankByRelevance(documents, query) };
+        } catch (error) {
+          // Surface a consistent message; callers (the editor's "test source"
+          // button) show this string directly to the user.
+          throw new Error(`Failed to fetch content from URL "${config.url}": ${error.message}`);
+        }
+      }
+
+      case 'vector-store':
+      case 'vector_store': {
+        if (!process.env.QDRANT_URL && !this.vectorStore) {
+          throw new Error('Vector store not configured: set QDRANT_URL');
+        }
+        const results = await this.searchVectorStore(
+          query,
+          tenantId,
+          config.collection || config.collectionName || `tenant_${tenantId}_knowledge`
+        );
+        return { source: 'vector-store', results: results.results || [] };
+      }
+
+      default:
+        throw new Error(`Unsupported knowledge source type: ${type}`);
+    }
+  }
+
+  /**
+   * Cheap lexical ranking for sources queried directly (no embeddings).
+   * Keeps the most term-overlapping chunks so the prompt stays small.
+   */
+  rankByRelevance(documents = [], query = '', limit = 5) {
+    const terms = String(query)
+      .toLowerCase()
+      .split(/\W+/)
+      .filter(term => term.length > 2);
+
+    if (terms.length === 0) {
+      return documents.slice(0, limit);
+    }
+
+    return documents
+      .map(doc => {
+        const content = String(doc.content || doc.pageContent || '').toLowerCase();
+        const score = terms.reduce((sum, term) => sum + (content.includes(term) ? 1 : 0), 0);
+        return { ...doc, score };
+      })
+      .filter(doc => doc.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit);
   }
 }
 

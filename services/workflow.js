@@ -277,111 +277,131 @@ class WorkflowService {
   }
   
   /**
-   * Validate workflow structure
+   * Validate workflow structure.
+   *
+   * Delegates the graph-level rules (persona present, orphans, cycles, dangling
+   * edges) to the compiler so there is one definition of a valid workflow, then
+   * layers on the editor-specific checks (positions, per-node config).
+   *
+   * The previous implementation duplicated the graph rules and got both wrong:
+   * it read `node.type` (always the React Flow renderer type, `customNode`)
+   * instead of `node.data.type`, so the persona check rejected every workflow;
+   * and its position check `!node.position.x !== undefined` is a boolean
+   * compared to undefined, which is always true, so it threw for every node.
+   * Between them, no workflow could ever be created.
    */
   validateWorkflow(workflowData) {
     const { nodes = [], edges = [] } = workflowData;
-    
+
     if (nodes.length === 0) {
       return; // Empty workflow is valid for drafts
     }
-    
-    // Check for required node types
-    const nodeTypes = nodes.map(node => node.type);
-    
-    // Must have at least one persona node for complete workflows
-    if (!nodeTypes.includes('persona')) {
-      throw new Error('Workflow must contain at least one persona node');
+
+    const result = this.compiler.validateWorkflow(nodes, edges);
+    if (!result.valid) {
+      throw new Error(result.errors[0]);
     }
-    
-    // Validate node structure
+
     nodes.forEach((node, index) => {
-      if (!node.id || !node.type || !node.position) {
+      if (!node.id || !node.data) {
         throw new Error(`Invalid node structure at index ${index}`);
       }
-      
-      if (!node.position.x !== undefined || node.position.y === undefined) {
-        throw new Error(`Invalid node position at index ${index}`);
+
+      // Position is optional for programmatically created workflows, but when
+      // present both coordinates must be numbers or the editor cannot render it.
+      if (node.position !== undefined) {
+        const { x, y } = node.position || {};
+        if (typeof x !== 'number' || typeof y !== 'number') {
+          throw new Error(`Invalid node position at index ${index}`);
+        }
       }
-      
-      // Validate node-specific data
+
       this.validateNodeData(node);
     });
-    
-    // Validate edges
-    const nodeIds = new Set(nodes.map(n => n.id));
-    edges.forEach((edge, index) => {
-      if (!edge.id || !edge.source || !edge.target) {
-        throw new Error(`Invalid edge structure at index ${index}`);
-      }
-      
-      if (!nodeIds.has(edge.source) || !nodeIds.has(edge.target)) {
-        throw new Error(`Edge references non-existent node at index ${index}`);
-      }
-    });
-    
-    // Check for cycles (simple detection)
-    this.detectCycles(nodes, edges);
   }
-  
+
   /**
    * Validate node-specific data
    */
   validateNodeData(node) {
-    switch (node.type) {
+    const type = (node.data && node.data.type) || node.type;
+    const data = node.data || {};
+    const config = data.config || {};
+
+    switch (type) {
       case 'persona':
-        if (!node.data || !node.data.prompt || node.data.prompt.trim().length === 0) {
+        if (!data.prompt || data.prompt.trim().length === 0) {
           throw new Error(`Persona node ${node.id} must have a prompt`);
         }
         break;
-        
+
       case 'knowledge':
-        if (!node.data || !node.data.sourceType) {
+      case 'knowledge-source': {
+        if (!data.sourceType) {
           throw new Error(`Knowledge node ${node.id} must have a source type`);
         }
-        
-        // Validate source-specific configuration
-        switch (node.data.sourceType) {
+
+        switch (data.sourceType) {
           case 'google_sheets':
-            if (!node.data.config || !node.data.config.sheetId) {
+          case 'google-sheets':
+            if (!config.sheetId && !config.spreadsheetId) {
               throw new Error(`Knowledge node ${node.id} with Google Sheets source must have a sheet ID`);
             }
             break;
           case 'pdf':
           case 'url':
-            if (!node.data.config || (!node.data.config.url && !node.data.config.filePath)) {
+          case 'pdf-url':
+            if (!config.url && !config.filePath) {
               throw new Error(`Knowledge node ${node.id} must have a URL or file path`);
             }
             break;
           case 'vector_store':
-            if (!node.data.config || !node.data.config.collectionName) {
+          case 'vector-store':
+            if (!config.collectionName && !config.collection) {
               throw new Error(`Knowledge node ${node.id} with vector store source must have a collection name`);
             }
             break;
+          default:
+            throw new Error(`Knowledge node ${node.id} has an unsupported source type: ${data.sourceType}`);
         }
         break;
-        
-      case 'moderation':
-        // Moderation nodes are always valid as they use platform defaults
-        break;
-        
+      }
+
       case 'router':
-        if (!node.data || !node.data.conditions || !Array.isArray(node.data.conditions)) {
+        if (!Array.isArray(data.conditions)) {
           throw new Error(`Router node ${node.id} must have conditions array`);
         }
         break;
-        
+
       case 'fallback':
-        if (!node.data || !node.data.message || node.data.message.trim().length === 0) {
+        if (!data.message || data.message.trim().length === 0) {
           throw new Error(`Fallback node ${node.id} must have a message`);
         }
         break;
-        
+
+      case 'llm':
+        if (!data.prompt || data.prompt.trim().length === 0) {
+          throw new Error(`LLM node ${node.id} must have a prompt`);
+        }
+        break;
+
+      case 'response':
+        if (!data.template && !data.message) {
+          throw new Error(`Response node ${node.id} must have a message template`);
+        }
+        break;
+
+      case 'start':
+      case 'moderation':
+      case 'operator-handoff':
+        // No extra configuration required.
+        break;
+
       default:
-        throw new Error(`Unknown node type: ${node.type}`);
+        throw new Error(`Unknown node type: ${type}`);
     }
   }
-  
+
   /**
    * Validate workflow is ready for publishing
    */

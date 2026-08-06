@@ -23,27 +23,25 @@ class WorkflowRuntimeService extends EventEmitter {
     try {
       logger.info(`Loading workflow for tenant ${tenantId}: ${workflow._id}`);
       
-      // Compile the workflow if not already compiled
-      let compiledChain = workflow.compiledChain;
-      if (!compiledChain || !compiledChain.compiled) {
-        const compilationResult = await this.compiler.compileWorkflow(
-          workflow.nodes || [], 
-          workflow.edges || [], 
-          tenantId
-        );
-        compiledChain = {
-          compiled: true,
-          compilationResult,
-          timestamp: new Date()
-        };
-      }
+      // Always compile from the graph. A stored compiledChain can be stale
+      // relative to the nodes/edges the tenant just published.
+      const compilationResult = await this.compiler.compileWorkflow(
+        workflow.nodes || [],
+        workflow.edges || [],
+        tenantId
+      );
 
-      // Store the active workflow
+      // Store the active workflow. `compiledChain` must be the chain config the
+      // executor consumes - previously the whole compilation result was stored
+      // here, so executeWorkflow destructured undefined prompts and threw on
+      // `prompts.moderation`.
       this.activeWorkflows.set(tenantId, {
         id: workflow._id,
         name: workflow.name,
         version: workflow.version,
-        compiledChain: compiledChain.compilationResult,
+        compiledChain: compilationResult.compiledChain,
+        executionPlan: compilationResult.executionPlan,
+        warnings: compilationResult.warnings,
         loadedAt: new Date(),
         executionCount: 0
       });
@@ -57,7 +55,13 @@ class WorkflowRuntimeService extends EventEmitter {
       });
 
       logger.info(`Workflow loaded successfully for tenant ${tenantId}`);
-      return true;
+      return {
+        success: true,
+        tenantId,
+        workflowId: workflow._id,
+        version: workflow.version,
+        warnings: compilationResult.warnings || []
+      };
     } catch (error) {
       logger.error(`Error loading workflow for tenant ${tenantId}:`, error);
       throw error;
@@ -83,7 +87,9 @@ class WorkflowRuntimeService extends EventEmitter {
         id: newWorkflow._id,
         name: newWorkflow.name,
         version: newWorkflow.version,
-        compiledChain: compilationResult,
+        compiledChain: compilationResult.compiledChain,
+        executionPlan: compilationResult.executionPlan,
+        warnings: compilationResult.warnings,
         loadedAt: new Date(),
         executionCount: 0
       };
@@ -93,7 +99,7 @@ class WorkflowRuntimeService extends EventEmitter {
       this.activeWorkflows.set(tenantId, newActiveWorkflow);
 
       // Broadcast hot-swap notification via WebSocket
-      if (this.socketManager) {
+      if (this.socketManager && typeof this.socketManager.broadcastToTenant === 'function') {
         this.socketManager.broadcastToTenant(tenantId, 'workflow:hot-swap', {
           oldVersion: oldWorkflow?.version,
           newVersion: newWorkflow.version,
@@ -123,16 +129,51 @@ class WorkflowRuntimeService extends EventEmitter {
   }
 
   /**
+   * Ensure a tenant's published workflow is resident in memory.
+   *
+   * The runtime map lives in process memory, so after a restart (or on a new
+   * instance behind a load balancer) it is empty and every tenant's bot would
+   * be dead until an admin happened to re-publish. Lazily loading the published
+   * workflow on first use closes that gap.
+   *
+   * @returns {Promise<object|null>} the active workflow entry, or null if the
+   *   tenant has never published one.
+   */
+  async ensureWorkflowLoaded(tenantId) {
+    const existing = this.activeWorkflows.get(tenantId);
+    if (existing) {
+      return existing;
+    }
+
+    try {
+      const Workflow = require('../models/workflow');
+      const published = await Workflow.getActiveWorkflow(tenantId);
+
+      if (!published) {
+        return null;
+      }
+
+      logger.info(`Lazily loading published workflow for tenant ${tenantId}`);
+      await this.loadWorkflow(tenantId, published);
+      return this.activeWorkflows.get(tenantId);
+    } catch (error) {
+      logger.error(`Unable to lazily load workflow for tenant ${tenantId}`, { error: error.message });
+      return null;
+    }
+  }
+
+  /**
    * Execute a workflow for a user message
    */
   async executeWorkflow(tenantId, userMessage, chatHistory = [], context = {}) {
     try {
       const startTime = Date.now();
-      
-      // Get active workflow
-      const activeWorkflow = this.activeWorkflows.get(tenantId);
+
+      const activeWorkflow = await this.ensureWorkflowLoaded(tenantId);
       if (!activeWorkflow) {
-        throw new Error(`No active workflow found for tenant ${tenantId}`);
+        const error = new Error(`No active workflow found for tenant ${tenantId}`);
+        error.code = 'NO_ACTIVE_WORKFLOW';
+        throw error;
       }
 
       // Execute using compiler
@@ -233,7 +274,7 @@ class WorkflowRuntimeService extends EventEmitter {
   getAllActiveWorkflows() {
     const workflows = [];
     
-    for (const [tenantId, workflow] of this.activeWorkflows) {
+    for (const tenantId of this.activeWorkflows.keys()) {
       workflows.push({
         tenantId,
         ...this.getWorkflowStatus(tenantId)
@@ -254,7 +295,7 @@ class WorkflowRuntimeService extends EventEmitter {
       logger.info(`Workflow unloaded for tenant ${tenantId}`);
       
       // Broadcast unload notification
-      if (this.socketManager) {
+      if (this.socketManager && typeof this.socketManager.broadcastToTenant === 'function') {
         this.socketManager.broadcastToTenant(tenantId, 'workflow:unloaded', {
           timestamp: new Date().toISOString()
         });

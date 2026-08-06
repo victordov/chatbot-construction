@@ -14,6 +14,11 @@ process.env.GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || 'test-cli
 process.env.GOOGLE_REDIRECT_URI =
   process.env.GOOGLE_REDIRECT_URI || 'http://localhost:3000/api/google/oauth2callback';
 
+// Never call a real model from the test suite. Loading `.env` (which config
+// and several services do) would otherwise pick up a live key and make tests
+// slow, flaky and billable. Suites that exercise the AI path mock it directly.
+process.env.OPENAI_API_KEY = '';
+
 // Keep background jobs out of the test run.
 process.env.ALERTS_ENABLED = 'false';
 process.env.EMAIL_ALERTS_ENABLED = 'false';

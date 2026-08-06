@@ -8,15 +8,27 @@ const WorkflowService = require('../services/workflow');
 const KnowledgeSource = require('../models/knowledge-source');
 const { auth: authMiddleware } = require('../middleware/auth');
 const { logger } = require('../services/logging');
+const socketManager = require('../socketManager');
+const runtimeRegistry = require('../services/runtime-registry');
 
-// Middleware to check workflow editor permissions
+/** Knowledge source types the compiler knows how to query. */
+const SUPPORTED_KNOWLEDGE_SOURCE_TYPES = ['google_sheets', 'pdf', 'url', 'vector_store'];
+
+/**
+ * Workflow management is an admin capability.
+ *
+ * This previously allowed `superadmin` or a role named `admin` - but the User
+ * schema only defines superadmin/company_admin/operator, so every company
+ * admin got a 403 and the workflow editor was unreachable for the people it
+ * was built for.
+ */
 const checkWorkflowAccess = (req, res, next) => {
-  if (req.user.role === 'superadmin' || req.user.role === 'admin') {
+  if (req.user.role === 'superadmin' || req.user.role === 'company_admin') {
     return next();
   }
-  return res.status(403).json({ 
+  return res.status(403).json({
     success: false,
-    error: 'Insufficient permissions for workflow management' 
+    error: 'Insufficient permissions for workflow management'
   });
 };
 
@@ -40,6 +52,36 @@ router.get('/', authMiddleware, checkWorkflowAccess, async (req, res) => {
     res.status(500).json({ 
       success: false, 
       error: 'Failed to fetch workflows' 
+    });
+  }
+});
+
+// Get knowledge sources for workflow nodes
+router.get('/knowledge-sources', authMiddleware, checkWorkflowAccess, async (req, res) => {
+  try {
+    const { type } = req.query;
+    
+    let knowledgeSources = [];
+
+    if (req.user.company?.id) {
+      knowledgeSources = await KnowledgeSource.getByCompany(req.user.company.id, type);
+    }
+
+    // Add public sources if available
+    const publicSources = await KnowledgeSource.getPublicSources(type);
+
+    res.json({
+      success: true,
+      // Source types the editor can offer in the node palette.
+      sources: SUPPORTED_KNOWLEDGE_SOURCE_TYPES,
+      // Sources this company has already configured.
+      knowledgeSources: [...knowledgeSources, ...publicSources]
+    });
+  } catch (error) {
+    logger.error('Error fetching knowledge sources:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to fetch knowledge sources' 
     });
   }
 });
@@ -137,45 +179,36 @@ router.post('/:id/publish', authMiddleware, checkWorkflowAccess, async (req, res
   try {
     const workflow = await WorkflowService.publishWorkflow(req.params.id, req.user);
     
-    // Trigger hot-swap in runtime service
+    // Hot-swap into the runtime that is actually serving traffic. This used to
+    // construct a fresh WorkflowRuntimeService, so the swap landed in a
+    // throwaway object and live conversations kept the old workflow.
+    const tenantId = workflow.company || req.user.id;
+    let hotSwapCompleted = false;
+
     try {
-      const WorkflowRuntimeService = require('../services/workflow-runtime');
-      const socketManager = require('../socketManager');
-      
-      // Initialize runtime service if not already done
-      const runtimeService = new WorkflowRuntimeService(socketManager);
-      
-      // Perform hot-swap
-      const tenantId = workflow.company || req.user.id;
-      await runtimeService.hotSwapWorkflow(tenantId, workflow);
-      
-      logger.info(`Hot-swap triggered for tenant ${tenantId}, workflow ${workflow._id}`);
+      await runtimeRegistry.getRuntimeService().hotSwapWorkflow(tenantId, workflow);
+      hotSwapCompleted = true;
+      logger.info(`Hot-swap completed for tenant ${tenantId}, workflow ${workflow._id}`);
     } catch (hotSwapError) {
+      // Publishing still succeeded; the new version takes effect on next load.
       logger.error('Error during hot-swap:', hotSwapError);
-      // Don't fail the request if hot-swap fails
     }
-    
-    // Broadcast hot-swap message via WebSocket  
-    try {
-      const socketManager = require('../socketManager');
-      const tenantId = workflow.company || req.user.id;
-      
-      socketManager.broadcastToTenant(tenantId, 'workflow:published', {
-        workflowId: workflow._id,
-        workflowName: workflow.name,
-        version: workflow.version,
-        publishedAt: workflow.publishedAt,
-        hotSwapCompleted: true
-      });
-    } catch (wsError) {
-      logger.error('Error broadcasting workflow publish event:', wsError);
-      // Don't fail the request if WebSocket fails
-    }
-    
-    res.json({ 
-      success: true, 
+
+    socketManager.broadcastToTenant(tenantId, 'workflow:published', {
+      workflowId: workflow._id,
+      workflowName: workflow.name,
+      version: workflow.version,
+      publishedAt: workflow.publishedAt,
+      hotSwapCompleted
+    });
+
+    res.json({
+      success: true,
       workflow,
-      message: 'Workflow published successfully'
+      hotSwapCompleted,
+      message: hotSwapCompleted
+        ? 'Workflow published and is now live'
+        : 'Workflow published; it will take effect on the next runtime load'
     });
   } catch (error) {
     logger.error('Error publishing workflow:', error);
@@ -331,52 +364,39 @@ router.get('/active/current', authMiddleware, async (req, res) => {
 
 // Validate workflow structure
 router.post('/validate', authMiddleware, checkWorkflowAccess, async (req, res) => {
-  try {
-    const { nodes, edges } = req.body;
-    
-    // Use the workflow service validation
-    const workflowService = require('../services/workflow');
-    workflowService.validateWorkflow({ nodes, edges });
-    
-    res.json({ 
-      success: true, 
-      valid: true,
-      message: 'Workflow structure is valid'
-    });
-  } catch (error) {
-    res.status(400).json({ 
-      success: false, 
-      valid: false,
-      error: error.message || 'Workflow validation failed'
-    });
-  }
-});
+  // A structurally invalid graph is a valid answer to "is this valid?", not a
+  // failed request - so this always responds 200 and reports the verdict in the
+  // body. It also returns every error at once, so the editor can highlight all
+  // the problems instead of drip-feeding them one save at a time.
+  const { nodes = [], edges = [] } = req.body;
 
-// Get knowledge sources for workflow nodes
-router.get('/knowledge-sources', authMiddleware, checkWorkflowAccess, async (req, res) => {
-  try {
-    const { type } = req.query;
-    
-    let knowledgeSources = [];
-    
-    if (req.user.company?.id) {
-      knowledgeSources = await KnowledgeSource.getByCompany(req.user.company.id, type);
-    }
-    
-    // Add public sources if available
-    const publicSources = await KnowledgeSource.getPublicSources(type);
-    
-    res.json({ 
-      success: true, 
-      knowledgeSources: [...knowledgeSources, ...publicSources]
-    });
-  } catch (error) {
-    logger.error('Error fetching knowledge sources:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to fetch knowledge sources' 
+  const WorkflowCompilerService = require('../services/workflow-compiler');
+  const compiler = new WorkflowCompilerService();
+  const result = compiler.validateWorkflow(nodes, edges);
+
+  const errors = [...result.errors];
+
+  // Layer on the per-node configuration checks the editor cares about.
+  if (result.valid) {
+    const workflowService = require('../services/workflow');
+    nodes.forEach(node => {
+      try {
+        workflowService.validateNodeData(node);
+      } catch (error) {
+        errors.push(error.message);
+      }
     });
   }
+
+  res.json({
+    success: true,
+    valid: errors.length === 0,
+    errors,
+    warnings: result.warnings || [],
+    message: errors.length === 0
+      ? 'Workflow structure is valid'
+      : `Found ${errors.length} problem${errors.length === 1 ? '' : 's'}`
+  });
 });
 
 // Get workflow execution stats

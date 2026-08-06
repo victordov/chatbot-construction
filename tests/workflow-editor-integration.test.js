@@ -63,23 +63,23 @@ describe('Visual Workflow Editor Integration', () => {
     // Create test company
     testCompany = await Company.create({
       name: 'Test Workflow Company',
-      subdomain: 'test-workflow',
-      settings: {}
+      allowedDomains: ['https://test-workflow.example']
     });
 
-    // Create test user
+    // Create test user. `company_admin` is the role that can manage workflows.
     testUser = await User.create({
+      username: 'workflow-test',
       email: 'workflow-test@example.com',
       password: 'TestPassword123!',
-      role: 'admin',
+      role: 'company_admin',
       company: testCompany._id
     });
 
-    // Login to get auth token
+    // Login to get auth token (the login route authenticates by username)
     const loginResponse = await request(app)
       .post('/api/auth/login')
       .send({
-        email: 'workflow-test@example.com',
+        username: 'workflow-test',
         password: 'TestPassword123!'
       });
 
@@ -91,7 +91,6 @@ describe('Visual Workflow Editor Integration', () => {
     await User.deleteMany({ email: 'workflow-test@example.com' });
     await Company.deleteMany({ name: 'Test Workflow Company' });
     await Workflow.deleteMany({ name: { $regex: /Test Workflow/ } });
-    await mongoose.connection.close();
   });
 
   describe('Workflow CRUD Operations', () => {
@@ -287,7 +286,7 @@ describe('Visual Workflow Editor Integration', () => {
         testWorkflow
       );
 
-      expect(result).toBe(true);
+      expect(result.success).toBe(true);
 
       const status = runtimeService.getWorkflowStatus(testCompany._id.toString());
       expect(status.status).toBe('active');
@@ -406,21 +405,21 @@ describe('Visual Workflow Editor Integration', () => {
       // Create another company and user
       const otherCompany = await Company.create({
         name: 'Other Test Company',
-        subdomain: 'other-test',
-        settings: {}
+        allowedDomains: ['https://other-test.example']
       });
 
       const otherUser = await User.create({
+        username: 'other-user',
         email: 'other-user@example.com',
         password: 'TestPassword123!',
-        role: 'admin',
+        role: 'company_admin',
         company: otherCompany._id
       });
 
       const otherLoginResponse = await request(app)
         .post('/api/auth/login')
         .send({
-          email: 'other-user@example.com',
+          username: 'other-user',
           password: 'TestPassword123!'
         });
 
