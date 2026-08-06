@@ -15,10 +15,20 @@ function setupWebSockets(server) {
   const io = socketIO(server, {
     cors: {
       origin: function (origin, callback) {
-        // No Origin means a non-browser client (or same-origin); tenant domains
-        // are resolved from the database so onboarding a customer does not
-        // require an env change and redeploy.
+        // No Origin means a non-browser client; tenant domains are resolved
+        // from the database so onboarding a customer does not require an env
+        // change and redeploy.
         if (!origin) {
+          return callback(null, true);
+        }
+
+        // The admin dashboard connects from the server's own origin.
+        const selfOrigins = [
+          `http://localhost:${process.env.PORT || 3000}`,
+          `http://127.0.0.1:${process.env.PORT || 3000}`,
+          process.env.PUBLIC_URL
+        ].filter(Boolean);
+        if (selfOrigins.includes(origin)) {
           return callback(null, true);
         }
 

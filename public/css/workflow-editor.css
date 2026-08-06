@@ -1,0 +1,484 @@
+/* Visual Workflow Editor
+   A three-pane layout: palette, canvas, properties. The canvas fills the
+   remaining height exactly so the page itself never scrolls. */
+
+:root {
+  --wf-border: #dee2e6;
+  --wf-surface: #ffffff;
+  --wf-canvas-bg: #f6f7f9;
+  --wf-text-muted: #6c757d;
+  --wf-accent: #0d6efd;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  overflow: hidden;
+}
+
+.wf-app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+/* ------------------------------------------------------------------ toolbar */
+
+.wf-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.5rem 0.75rem;
+  background: var(--wf-surface);
+  border-bottom: 1px solid var(--wf-border);
+  flex-wrap: wrap;
+}
+
+.wf-toolbar-left,
+.wf-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.wf-title-button {
+  font-weight: 600;
+  max-width: 22rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wf-workflow-list {
+  max-height: 60vh;
+  overflow-y: auto;
+  min-width: 18rem;
+}
+
+.wf-status {
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+}
+
+.wf-status-draft     { background: #e9ecef; color: #495057; }
+.wf-status-published { background: #d1e7dd; color: #0f5132; }
+.wf-status-archived  { background: #f8d7da; color: #842029; }
+
+.wf-save-state { font-size: 0.8rem; }
+
+.wf-toolbar .feather,
+.wf-toolbar svg { width: 16px; height: 16px; vertical-align: -3px; }
+
+/* --------------------------------------------------------------------- body */
+
+.wf-body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.wf-sidebar,
+.wf-properties {
+  width: 264px;
+  flex-shrink: 0;
+  background: var(--wf-surface);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.wf-sidebar { border-right: 1px solid var(--wf-border); }
+.wf-properties { border-left: 1px solid var(--wf-border); }
+
+.wf-sidebar-header {
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--wf-border);
+}
+
+.wf-palette,
+.wf-properties-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0.75rem;
+}
+
+/* ------------------------------------------------------------------ palette */
+
+.wf-palette-group + .wf-palette-group { margin-top: 1rem; }
+
+.wf-palette-group-title {
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--wf-text-muted);
+  margin-bottom: 0.4rem;
+}
+
+.wf-palette-item {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  width: 100%;
+  text-align: left;
+  padding: 0.5rem;
+  margin-bottom: 0.35rem;
+  background: #fff;
+  border: 1px solid var(--wf-border);
+  border-radius: 8px;
+  cursor: grab;
+  transition: border-color 0.15s, box-shadow 0.15s, transform 0.15s;
+}
+
+.wf-palette-item:hover {
+  border-color: var(--wf-accent);
+  box-shadow: 0 2px 6px rgba(13, 110, 253, 0.12);
+  transform: translateY(-1px);
+}
+
+.wf-palette-item:active { cursor: grabbing; }
+
+.wf-palette-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border-radius: 6px;
+  color: #fff;
+}
+
+.wf-palette-icon svg { width: 15px; height: 15px; }
+
+.wf-palette-text { display: flex; flex-direction: column; min-width: 0; }
+.wf-palette-label { font-size: 0.82rem; font-weight: 600; }
+
+.wf-palette-desc {
+  font-size: 0.7rem;
+  color: var(--wf-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------------- canvas */
+
+.wf-canvas {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  background-color: var(--wf-canvas-bg);
+  /* Dot grid gives a sense of scale while panning. */
+  background-image: radial-gradient(circle, #d3d6db 1px, transparent 1px);
+  background-size: 16px 16px;
+  cursor: grab;
+}
+
+.wf-canvas:active { cursor: grabbing; }
+
+.wf-surface {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
+  /* The surface is unbounded; nodes are positioned in canvas coordinates. */
+  width: 1px;
+  height: 1px;
+}
+
+.wf-edge-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 8000px;
+  height: 8000px;
+  overflow: visible;
+  pointer-events: none;
+  color: #94a3b8;
+}
+
+.wf-node-layer { position: absolute; top: 0; left: 0; }
+
+/* --------------------------------------------------------------------- node */
+
+.wf-node {
+  position: absolute;
+  width: 190px;
+  min-height: 74px;
+  background: #fff;
+  border: 1px solid var(--wf-border);
+  border-left: 4px solid var(--node-color, #6c757d);
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  cursor: move;
+  user-select: none;
+  transition: box-shadow 0.15s, border-color 0.15s;
+}
+
+.wf-node:hover { box-shadow: 0 3px 10px rgba(0, 0, 0, 0.12); }
+
+.wf-node.selected {
+  border-color: var(--wf-accent);
+  box-shadow: 0 0 0 2px rgba(13, 110, 253, 0.35);
+}
+
+.wf-node.invalid { border-color: #dc3545; box-shadow: 0 0 0 2px rgba(220, 53, 69, 0.3); }
+
+/* Configuration nodes (persona, moderation) apply to the whole workflow rather
+   than sitting in the flow, so they read as cards rather than steps. The
+   dashed treatment goes on the outline, not the border, so the coloured accent
+   edge stays solid. */
+.wf-node.config {
+  background: #fbfcfd;
+  outline: 1px dashed #adb5bd;
+  outline-offset: 2px;
+}
+
+.wf-node-head {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.5rem 0.6rem 0.25rem;
+}
+
+.wf-node-icon {
+  display: inline-flex;
+  color: var(--node-color, #6c757d);
+}
+
+.wf-node-icon svg { width: 15px; height: 15px; }
+
+.wf-node-title {
+  font-size: 0.82rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wf-node-body {
+  padding: 0 0.6rem 0.55rem;
+  font-size: 0.7rem;
+  color: var(--wf-text-muted);
+  line-height: 1.3;
+  /* Two-line clamp keeps every node the same height so the graph stays tidy. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* -------------------------------------------------------------------- ports */
+
+.wf-port {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #fff;
+  border: 2px solid #94a3b8;
+  transform: translate(-50%, -50%);
+  cursor: crosshair;
+  transition: background 0.15s, border-color 0.15s, transform 0.15s;
+}
+
+.wf-port:hover {
+  background: var(--wf-accent);
+  border-color: var(--wf-accent);
+  transform: translate(-50%, -50%) scale(1.35);
+}
+
+.wf-port-in  { left: 0;    top: 50%; }
+.wf-port-out { left: 100%; top: 50%; }
+
+/* -------------------------------------------------------------------- edges */
+
+.wf-edge { pointer-events: stroke; cursor: pointer; }
+
+.wf-edge-hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 14;
+  pointer-events: stroke;
+}
+
+.wf-edge-line {
+  fill: none;
+  stroke: #94a3b8;
+  stroke-width: 2;
+  transition: stroke 0.15s, stroke-width 0.15s;
+}
+
+.wf-edge:hover .wf-edge-line { stroke: #64748b; stroke-width: 2.5; }
+.wf-edge.selected .wf-edge-line { stroke: var(--wf-accent); stroke-width: 3; }
+
+.wf-edge-pending {
+  fill: none;
+  stroke: var(--wf-accent);
+  stroke-width: 2;
+  stroke-dasharray: 5 4;
+}
+
+/* --------------------------------------------------------- canvas overlays */
+
+.wf-canvas-controls {
+  position: absolute;
+  bottom: 1rem;
+  left: 1rem;
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.25rem;
+  background: #fff;
+  border: 1px solid var(--wf-border);
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+.wf-canvas-controls svg { width: 14px; height: 14px; }
+
+.wf-zoom-label {
+  font-size: 0.75rem;
+  color: var(--wf-text-muted);
+  min-width: 3rem;
+  text-align: center;
+}
+
+.wf-empty-hint {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  color: var(--wf-text-muted);
+  pointer-events: none;
+  text-align: center;
+}
+
+.wf-empty-hint svg { width: 40px; height: 40px; opacity: 0.4; }
+
+.wf-problems-panel {
+  position: absolute;
+  bottom: 1rem;
+  right: 1rem;
+  width: min(24rem, calc(100% - 2rem));
+  background: #fff;
+  border: 1px solid var(--wf-border);
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  overflow: hidden;
+}
+
+.wf-problems-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  background: none;
+  border: 0;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.wf-problems-toggle svg { width: 15px; height: 15px; }
+.wf-problems-toggle .badge { margin-left: auto; }
+
+#wf-problems { max-height: 12rem; overflow-y: auto; border-top: 1px solid var(--wf-border); }
+
+.wf-problem {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.45rem 0.75rem;
+  font-size: 0.78rem;
+  border-bottom: 1px solid #f1f3f5;
+}
+
+.wf-problem svg { width: 14px; height: 14px; flex-shrink: 0; margin-top: 2px; }
+.wf-problem.error   { color: #842029; }
+.wf-problem.warning { color: #664d03; }
+
+.wf-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.75);
+  z-index: 10;
+}
+
+/* --------------------------------------------------------------- properties */
+
+.wf-properties-head {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding-bottom: 0.75rem;
+  margin-bottom: 0.75rem;
+  border-bottom: 1px solid var(--wf-border);
+}
+
+.wf-properties-empty {
+  text-align: center;
+  color: var(--wf-text-muted);
+  padding: 2rem 0.5rem;
+}
+
+.wf-properties-empty svg { width: 28px; height: 28px; opacity: 0.4; }
+
+.wf-workflow-settings {
+  border-top: 1px solid var(--wf-border);
+  padding-top: 1rem;
+}
+
+.wf-properties .form-label { font-size: 0.78rem; font-weight: 600; margin-bottom: 0.2rem; }
+.wf-properties .form-text { font-size: 0.7rem; }
+
+.wf-condition {
+  display: grid;
+  grid-template-columns: 6.5rem 1fr auto;
+  gap: 0.3rem;
+  margin-bottom: 0.35rem;
+}
+
+.wf-condition svg { width: 12px; height: 12px; }
+
+.dropdown-item svg { width: 14px; height: 14px; margin-right: 0.4rem; vertical-align: -2px; }
+
+/* ------------------------------------------------------------- small screens
+   Below 1100px the properties panel becomes an overlay so the canvas keeps a
+   usable width; below 820px the palette does the same. */
+
+@media (max-width: 1100px) {
+  .wf-properties {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 1040;
+    transform: translateX(100%);
+    transition: transform 0.2s ease-in-out;
+    box-shadow: -4px 0 16px rgba(0, 0, 0, 0.12);
+  }
+
+  .wf-properties.open { transform: translateX(0); }
+}
+
+@media (max-width: 820px) {
+  .wf-sidebar { width: 200px; }
+  .wf-toolbar-left, .wf-toolbar-right { flex-wrap: wrap; }
+  .wf-title-button { max-width: 12rem; }
+}

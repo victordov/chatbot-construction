@@ -111,8 +111,16 @@ app.use(metricsMiddleware);
 app.use(async (req, res, next) => {
   const origin = req.get('Origin');
 
-  // Same-origin requests (admin dashboard, direct navigation) send no Origin.
+  // Direct navigation sends no Origin at all.
   if (!origin) {
+    return next();
+  }
+
+  // Browsers also send Origin on same-origin POST/PUT/DELETE, so the admin
+  // dashboard's own requests arrive with one. Those are never cross-origin and
+  // must not depend on the server's URL being in an allowlist.
+  const selfOrigin = `${req.protocol}://${req.get('host')}`;
+  if (origin === selfOrigin) {
     return next();
   }
 
@@ -194,14 +202,21 @@ if (!fs.existsSync(publicDir)) {
 }
 
 app.use(express.static(publicDir, {
-  // Long cache for the widget bundle (versioned by deploy), short for HTML so
-  // dashboard updates are picked up without a hard refresh.
+  etag: true,
+  lastModified: true,
   setHeaders(res, filePath) {
-    if (filePath.endsWith('.html')) {
-      res.setHeader('Cache-Control', 'no-cache');
-    } else {
-      res.setHeader('Cache-Control', 'public, max-age=3600');
+    // The widget bundle is versioned by the deploy process, so it can be
+    // cached hard and served from the edge.
+    if (filePath.includes(`${path.sep}widget${path.sep}`)) {
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+      return;
     }
+
+    // Everything else (dashboard HTML/CSS/JS) uses `no-cache`, which still
+    // revalidates cheaply via ETag and returns 304, but guarantees a deploy is
+    // picked up on the next request. A plain max-age would leave users on a
+    // stale dashboard until it expired.
+    res.setHeader('Cache-Control', 'no-cache');
   }
 }));
 

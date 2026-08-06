@@ -23,8 +23,6 @@ const { logger } = require('./logging');
 
 const CONFIGURATION_NODES = new Set(['persona', 'moderation']);
 
-const KNOWLEDGE_NODE_TYPES = new Set(['knowledge', 'knowledge-source']);
-
 /** Node types the executor knows how to run. */
 const FLOW_NODES = new Set([
   'start', 'knowledge', 'knowledge-source', 'llm',
@@ -153,6 +151,24 @@ class WorkflowCompilerService {
         );
       }
     }
+
+    // Only routers branch. Any other node with two outgoing edges is
+    // ambiguous - the executor would silently follow whichever happened to be
+    // first - so reject it at design time instead.
+    const outgoing = new Map();
+    edges.forEach(edge => {
+      outgoing.set(edge.source, (outgoing.get(edge.source) || 0) + 1);
+    });
+
+    nodes.forEach(node => {
+      const type = this.nodeType(node);
+      if (type !== 'router' && (outgoing.get(node.id) || 0) > 1) {
+        errors.push(
+          `"${node.data?.label || node.id}" has ${outgoing.get(node.id)} outgoing connections. ` +
+          'Only Router nodes can branch - use a Router to choose between paths.'
+        );
+      }
+    });
 
     if (this.detectCycles(nodes, edges)) {
       errors.push('Workflow contains a cycle, which would loop forever at runtime');
@@ -313,24 +329,24 @@ class WorkflowCompilerService {
 
     nodes.forEach(node => {
       switch (node.type) {
-        case 'persona':
-          chainConfig.prompts.persona = this.compilePersonaNode(node);
-          break;
-        case 'knowledge':
-        case 'knowledge-source':
-          chainConfig.knowledge.sources.push(this.compileKnowledgeNode(node, tenantId));
-          break;
-        case 'moderation':
-          chainConfig.prompts.moderation = this.compileModerationNode(node);
-          break;
-        case 'router':
-          chainConfig.routing.conditions.push(this.compileRouterNode(node));
-          break;
-        case 'fallback':
-          chainConfig.routing.fallback = this.compileFallbackNode(node);
-          break;
-        default:
-          break;
+      case 'persona':
+        chainConfig.prompts.persona = this.compilePersonaNode(node);
+        break;
+      case 'knowledge':
+      case 'knowledge-source':
+        chainConfig.knowledge.sources.push(this.compileKnowledgeNode(node, tenantId));
+        break;
+      case 'moderation':
+        chainConfig.prompts.moderation = this.compileModerationNode(node);
+        break;
+      case 'router':
+        chainConfig.routing.conditions.push(this.compileRouterNode(node));
+        break;
+      case 'fallback':
+        chainConfig.routing.fallback = this.compileFallbackNode(node);
+        break;
+      default:
+        break;
       }
 
       chainConfig.steps[node.id] = {
@@ -531,51 +547,51 @@ class WorkflowCompilerService {
       let nextId = step.next && step.next[0] ? step.next[0].target : null;
 
       switch (step.type) {
-        case 'start':
-          break;
+      case 'start':
+        break;
 
-        case 'knowledge':
-        case 'knowledge-source':
-          // Already retrieved above; nothing to do while walking.
-          break;
+      case 'knowledge':
+      case 'knowledge-source':
+        // Already retrieved above; nothing to do while walking.
+        break;
 
-        case 'response':
-          response = this.renderTemplate(step.data.template || step.data.message, variables);
-          nextId = null;
-          break;
+      case 'response':
+        response = this.renderTemplate(step.data.template || step.data.message, variables);
+        nextId = null;
+        break;
 
-        case 'llm':
-          response = await this.runLlmNode(step, userMessage, chatHistory, knowledgeContext, variables);
-          nextId = null;
-          break;
+      case 'llm':
+        response = await this.runLlmNode(step, userMessage, chatHistory, knowledgeContext, variables);
+        nextId = null;
+        break;
 
-        case 'router': {
-          const match = this.evaluateRouting(userMessage, {
-            conditions: step.data.conditions || [],
-            fallback: routing.fallback
-          });
-          nextId = this.resolveRouterTarget(step, match);
-          break;
-        }
+      case 'router': {
+        const match = this.evaluateRouting(userMessage, {
+          conditions: step.data.conditions || [],
+          fallback: routing.fallback
+        });
+        nextId = this.resolveRouterTarget(step, match);
+        break;
+      }
 
-        case 'fallback':
-          response = this.renderTemplate(step.data.message, variables) ||
+      case 'fallback':
+        response = this.renderTemplate(step.data.message, variables) ||
             routing.fallback?.message ||
             'I\'m not sure how to help with that.';
-          escalate = step.data.escalation || routing.fallback?.escalation || null;
-          nextId = null;
-          break;
+        escalate = step.data.escalation || routing.fallback?.escalation || null;
+        nextId = null;
+        break;
 
-        case 'operator-handoff':
-          escalate = { enabled: true, type: 'operator' };
-          response = this.renderTemplate(step.data.message, variables) ||
+      case 'operator-handoff':
+        escalate = { enabled: true, type: 'operator' };
+        response = this.renderTemplate(step.data.message, variables) ||
             'Let me connect you with a member of our team.';
-          nextId = null;
-          break;
+        nextId = null;
+        break;
 
-        default:
-          // Unrecognised node: skip to the next one rather than stalling.
-          break;
+      default:
+        // Unrecognised node: skip to the next one rather than stalling.
+        break;
       }
 
       currentId = nextId;
@@ -720,37 +736,37 @@ class WorkflowCompilerService {
       }
 
       switch (type) {
-        case 'contains':
-          if (message.includes(String(value).toLowerCase())) {
-            return { type: 'matched', condition };
-          }
-          break;
-
-        case 'keyword': {
-          const keywords = String(value).split(',').map(k => k.trim().toLowerCase()).filter(Boolean);
-          if (keywords.some(keyword => message.includes(keyword))) {
-            return { type: 'matched', condition };
-          }
-          break;
+      case 'contains':
+        if (message.includes(String(value).toLowerCase())) {
+          return { type: 'matched', condition };
         }
+        break;
 
-        case 'regex':
-          try {
-            if (new RegExp(value, 'i').test(userMessage)) {
-              return { type: 'matched', condition };
-            }
-          } catch {
-            logger.warn(`Router condition has an invalid regex: ${value}`);
+      case 'keyword': {
+        const keywords = String(value).split(',').map(k => k.trim().toLowerCase()).filter(Boolean);
+        if (keywords.some(keyword => message.includes(keyword))) {
+          return { type: 'matched', condition };
+        }
+        break;
+      }
+
+      case 'regex':
+        try {
+          if (new RegExp(value, 'i').test(userMessage)) {
+            return { type: 'matched', condition };
           }
-          break;
+        } catch {
+          logger.warn(`Router condition has an invalid regex: ${value}`);
+        }
+        break;
 
-        case 'intent':
-          // Intent classification is not implemented; treated as no match so a
-          // router with only intent conditions falls through to its default.
-          break;
+      case 'intent':
+        // Intent classification is not implemented; treated as no match so a
+        // router with only intent conditions falls through to its default.
+        break;
 
-        default:
-          break;
+      default:
+        break;
       }
     }
 
