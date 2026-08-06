@@ -1,6 +1,7 @@
 const express = require('express');
 const Company = require('../models/company');
 const User = require('../models/user');
+const tenantService = require('../services/tenant');
 const { auth, superadmin, admin, sameCompany } = require('../middleware/auth');
 const crypto = require('crypto');
 
@@ -31,6 +32,120 @@ router.get('/', superadmin, async (req, res) => {
   } catch (error) {
     console.error('Error fetching companies:', error);
     res.status(500).json({ error: 'Failed to retrieve companies' });
+  }
+});
+
+/**
+ * Widget configuration for the caller's own company.
+ *
+ * Company admins need to install and brand their widget without waiting on a
+ * superadmin, so these routes are scoped to `req.user.company` rather than
+ * taking an id.
+ */
+function requireOwnCompany(req, res, next) {
+  if (req.user.role !== 'superadmin' && req.user.role !== 'company_admin') {
+    return res.status(403).json({ error: 'Admin privileges required' });
+  }
+  if (!req.user.company) {
+    return res.status(400).json({ error: 'Your account is not linked to a company' });
+  }
+  next();
+}
+
+router.get('/me/widget', requireOwnCompany, async (req, res) => {
+  try {
+    const company = await Company.findById(req.user.company.id)
+      .select('name widgetKey allowedDomains widgetSettings');
+
+    if (!company) {
+      return res.status(404).json({ error: 'Company not found' });
+    }
+
+    // Older companies predate widgetKey; mint one on first read.
+    if (!company.widgetKey) {
+      await company.save();
+    }
+
+    res.json({
+      widgetKey: company.widgetKey,
+      allowedDomains: company.allowedDomains || [],
+      widgetSettings: company.widgetSettings || {},
+      companyName: company.name
+    });
+  } catch (error) {
+    console.error('Error fetching widget config:', error);
+    res.status(500).json({ error: 'Failed to load widget configuration' });
+  }
+});
+
+router.put('/me/widget', requireOwnCompany, async (req, res) => {
+  try {
+    const { allowedDomains, widgetSettings } = req.body;
+    const company = await Company.findById(req.user.company.id);
+
+    if (!company) {
+      return res.status(404).json({ error: 'Company not found' });
+    }
+
+    if (Array.isArray(allowedDomains)) {
+      const normalised = [];
+      for (const raw of allowedDomains) {
+        const value = String(raw || '').trim().toLowerCase().replace(/\/+$/, '');
+        if (!value) {
+          continue;
+        }
+        // A malformed origin would silently never match, so reject it loudly.
+        try {
+          const url = new URL(value);
+          normalised.push(`${url.protocol}//${url.host}`);
+        } catch {
+          return res.status(400).json({
+            error: `"${raw}" is not a valid origin. Include the scheme, e.g. https://example.com`
+          });
+        }
+      }
+      company.allowedDomains = [...new Set(normalised)];
+    }
+
+    if (widgetSettings && typeof widgetSettings === 'object') {
+      const allowed = ['chatbotName', 'primaryColor', 'position', 'welcomeMessage', 'logoUrl'];
+      company.widgetSettings = company.widgetSettings || {};
+      allowed.forEach(key => {
+        if (widgetSettings[key] !== undefined) {
+          company.widgetSettings[key] = widgetSettings[key];
+        }
+      });
+    }
+
+    await company.save();
+    tenantService.invalidate();
+
+    res.json({
+      success: true,
+      allowedDomains: company.allowedDomains,
+      widgetSettings: company.widgetSettings
+    });
+  } catch (error) {
+    console.error('Error updating widget config:', error);
+    res.status(500).json({ error: 'Failed to update widget configuration' });
+  }
+});
+
+router.post('/me/widget/rotate-key', requireOwnCompany, async (req, res) => {
+  try {
+    const company = await Company.findById(req.user.company.id);
+    if (!company) {
+      return res.status(404).json({ error: 'Company not found' });
+    }
+
+    company.rotateWidgetKey();
+    await company.save();
+    tenantService.invalidate();
+
+    res.json({ success: true, widgetKey: company.widgetKey });
+  } catch (error) {
+    console.error('Error rotating widget key:', error);
+    res.status(500).json({ error: 'Failed to rotate widget key' });
   }
 });
 

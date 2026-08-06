@@ -45,21 +45,27 @@
                             </a>
                         </li>
                         <li class="nav-item">
-                            <a class="nav-link" href="#operators-section" data-section="operators">
+                            <a class="nav-link" href="#operators-section" data-section="operators" data-roles="superadmin,company_admin">
                                 <span data-feather="users"></span>
                                 Operators
                             </a>
                         </li>
                         <li class="nav-item">
-                            <a class="nav-link" href="#companies-section" data-section="companies">
+                            <a class="nav-link" href="#companies-section" data-section="companies" data-roles="superadmin">
                                 <span data-feather="briefcase"></span>
                                 Companies
                             </a>
                         </li>
                         <li class="nav-item">
-                            <a class="nav-link" href="workflow-editor.html" target="_blank">
+                            <a class="nav-link" href="workflow-editor.html" data-roles="superadmin,company_admin">
                                 <span data-feather="git-branch"></span>
                                 Workflow Editor
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" href="#widget-section" data-section="widget" data-roles="superadmin,company_admin">
+                                <span data-feather="code"></span>
+                                Install Widget
                             </a>
                         </li>
                         <li class="nav-item">
@@ -79,18 +85,42 @@
 
             <!-- Main content -->
             <main class="col-md-9 ms-sm-auto col-lg-10 px-md-4">
-                <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
-                    <h1 class="h2">
-                        <button class="btn btn-dark d-md-none me-2" id="sidebarToggle">
+                <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom gap-2">
+                    <h1 class="h4 mb-0 d-flex align-items-center gap-2">
+                        <button class="btn btn-dark d-md-none" id="sidebarToggle" aria-label="Open navigation">
                             <span data-feather="menu"></span>
                         </button>
-                        Chatbot Admin Dashboard
+                        <span id="page-title">Dashboard</span>
+                        <span class="text-muted small fw-normal" id="company-badge"></span>
                     </h1>
-                    <div class="btn-toolbar mb-2 mb-md-0">
-                        <div class="btn-group me-2">
-                            <button type="button" class="btn btn-sm btn-outline-secondary">Export</button>
-                            <button type="button" class="btn btn-sm btn-outline-secondary">Settings</button>
+
+                    <div class="d-flex align-items-center gap-2">
+                        <!-- Realtime connection state: operators need to know
+                             immediately when they have stopped receiving chats. -->
+                        <span id="connection-status" class="connection-status is-offline" title="Connecting…">Connecting…</span>
+
+                        <div class="dropdown">
+                            <button class="btn btn-sm btn-outline-secondary position-relative" id="notifications-btn"
+                                    data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-label="Notifications">
+                                <span data-feather="bell"></span>
+                                <span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger d-none"
+                                      id="notification-count">0</span>
+                            </button>
+                            <div class="dropdown-menu dropdown-menu-end notification-menu">
+                                <div class="d-flex justify-content-between align-items-center px-3 py-2 border-bottom">
+                                    <strong>Notifications</strong>
+                                    <button class="btn btn-link btn-sm p-0" id="mark-all-read-btn">Mark all read</button>
+                                </div>
+                                <div id="notification-list" class="notification-list">
+                                    <div class="text-muted small text-center py-3">No notifications</div>
+                                </div>
+                            </div>
                         </div>
+
+                        <button type="button" class="btn btn-sm btn-outline-secondary" id="export-btn"
+                                title="Download conversations as CSV">
+                            <span data-feather="download"></span> Export
+                        </button>
                     </div>
                 </div>
 
@@ -135,7 +165,7 @@
                         <div class="col-md-6">
                             <div class="card">
                                 <div class="card-body">
-                                    <h5 class="card-title">Common Topics</h5>
+                                    <h5 class="card-title">Conversations by source</h5>
                                     <canvas id="topics-chart"></canvas>
                                 </div>
                             </div>
@@ -158,14 +188,18 @@
                         </div>
                         <div class="col-md-8">
                             <div class="card">
-                                <div class="card-header">
-                                    <span id="selected-chat-title">Select a conversation</span>
-                                    <div class="float-end">
+                                <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+                                    <span id="selected-chat-title" class="fw-semibold">Select a conversation</span>
+                                    <!-- Ordered by frequency of use: the primary
+                                         action first, secondary actions next,
+                                         destructive actions last and separated. -->
+                                    <div class="chat-actions">
                                         <button class="btn btn-sm btn-primary" id="join-chat-btn" disabled>Join Chat</button>
-                                        <button class="btn btn-sm btn-success" id="create-task-btn" disabled>Create Task</button>
-                                        <button class="btn btn-sm btn-info" id="view-tasks-btn" disabled>View Tasks</button>
-                                        <button class="btn btn-sm btn-warning" id="leave-chat-btn" disabled>Leave Chat</button>
-                                        <button class="btn btn-sm btn-danger" id="end-chat-btn" disabled>End Chat</button>
+                                        <button class="btn btn-sm btn-outline-secondary" id="create-task-btn" disabled>Create Task</button>
+                                        <button class="btn btn-sm btn-outline-secondary" id="view-tasks-btn" disabled>View Tasks</button>
+                                        <span class="action-divider"></span>
+                                        <button class="btn btn-sm btn-outline-warning" id="leave-chat-btn" disabled>Leave</button>
+                                        <button class="btn btn-sm btn-outline-danger" id="end-chat-btn" disabled>End Chat</button>
                                     </div>
                                 </div>
                                 <div class="card-body">
@@ -243,10 +277,19 @@
                                     </thead>
                                     <tbody id="chat-history-table">
                                         <tr>
-                                            <td colspan="6" class="text-center">No chat history available</td>
+                                            <td colspan="6" class="text-center text-muted py-4">No chat history available</td>
                                         </tr>
                                     </tbody>
                                 </table>
+                            </div>
+
+                            <!-- Pagination: the endpoint used to return a hard
+                                 100 rows with no way to reach anything older. -->
+                            <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mt-2">
+                                <small class="text-muted" id="chat-history-summary"></small>
+                                <nav aria-label="Chat history pages">
+                                    <ul class="pagination pagination-sm mb-0" id="chat-history-pagination"></ul>
+                                </nav>
                             </div>
                         </div>
                     </div>
@@ -627,6 +670,92 @@
                     </div>
                 </section>
 
+                <!-- Install Widget Section -->
+                <section id="widget-section" class="content-section">
+                    <div class="card mb-4">
+                        <div class="card-header">
+                            <h5 class="mb-0">Install the chat widget</h5>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted">
+                                Paste this snippet just before <code>&lt;/body&gt;</code> on your website.
+                                The key identifies your company, so conversations show up in this dashboard.
+                            </p>
+
+                            <div class="position-relative mb-3">
+                                <pre class="embed-snippet" id="embed-snippet">Loading…</pre>
+                                <button class="btn btn-sm btn-outline-secondary copy-snippet-btn" id="copy-snippet-btn">
+                                    <span data-feather="copy"></span> Copy
+                                </button>
+                            </div>
+
+                            <div class="row g-3">
+                                <div class="col-md-6">
+                                    <label for="widget-key" class="form-label">Widget key</label>
+                                    <div class="input-group input-group-sm">
+                                        <input type="text" class="form-control font-monospace" id="widget-key" readonly>
+                                        <button class="btn btn-outline-secondary" id="rotate-widget-key-btn"
+                                                title="Generate a new key; the old snippet stops working">
+                                            Rotate
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="card mb-4">
+                        <div class="card-header">
+                            <h5 class="mb-0">Allowed domains</h5>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted">
+                                Only these origins may embed your widget or call the API. Include the scheme,
+                                for example <code>https://www.example.com</code>.
+                            </p>
+                            <div class="input-group input-group-sm mb-3" style="max-width: 32rem;">
+                                <input type="text" class="form-control" id="new-domain-input"
+                                       placeholder="https://www.example.com">
+                                <button class="btn btn-primary" id="add-domain-btn">Add domain</button>
+                            </div>
+                            <ul class="list-group" id="domain-list"></ul>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-header">
+                            <h5 class="mb-0">Appearance</h5>
+                        </div>
+                        <div class="card-body">
+                            <form id="widget-settings-form" class="row g-3">
+                                <div class="col-md-4">
+                                    <label for="widget-name" class="form-label">Assistant name</label>
+                                    <input type="text" class="form-control" id="widget-name" placeholder="Assistant">
+                                </div>
+                                <div class="col-md-4">
+                                    <label for="widget-color" class="form-label">Accent colour</label>
+                                    <input type="color" class="form-control form-control-color" id="widget-color" value="#2196f3">
+                                </div>
+                                <div class="col-md-4">
+                                    <label for="widget-position" class="form-label">Position</label>
+                                    <select class="form-select" id="widget-position">
+                                        <option value="right">Bottom right</option>
+                                        <option value="left">Bottom left</option>
+                                    </select>
+                                </div>
+                                <div class="col-12">
+                                    <label for="widget-welcome" class="form-label">Welcome message</label>
+                                    <input type="text" class="form-control" id="widget-welcome"
+                                           placeholder="Hi! How can we help you today?">
+                                </div>
+                                <div class="col-12">
+                                    <button type="submit" class="btn btn-primary">Save appearance</button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+                </section>
+
                 <!-- Settings Section -->
                 <section id="settings-section" class="content-section">
                     <div class="card">
@@ -662,6 +791,7 @@
                                             <label for="auto-refresh" class="form-label">Auto-refresh interval (seconds)</label>
                                             <input type="number" class="form-control" id="auto-refresh" min="5" value="30">
                                         </div>
+                                        <button type="submit" class="btn btn-primary">Save settings</button>
                                     </form>
                                 </div>
                                 <div class="tab-pane fade" id="knowledge-pane" role="tabpanel">
@@ -1207,11 +1337,14 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js@3.7.0/dist/chart.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/socket.io/client-dist/socket.io.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="/js/admin_parts/admin-utils.js"></script>
     <script src="/js/admin_parts/admin-core.js"></script>
     <script src="/js/admin_parts/admin-events.js"></script>
     <script src="/js/admin_parts/admin-chats.js"></script>
     <script src="/js/admin_parts/admin-tasks.js"></script>
     <script src="/js/admin_parts/admin-operators.js"></script>
     <script src="/js/admin_parts/admin-companies.js"></script>
+    <script src="/js/admin_parts/admin-notifications.js"></script>
+    <script src="/js/admin_parts/admin-widget.js"></script>
 </body>
 </html>

@@ -178,7 +178,9 @@ function saveContactInfo(token) {
 // Request user to provide contact information via widget
 function requestUserInfo() {
   const conversation = window.currentConversation;
-  if (!conversation) return;
+  if (!conversation) {
+    return;
+  }
   const socket = window.adminSocket;
   if (socket) {
     socket.emit('request-user-details', { sessionId: conversation.sessionId });
@@ -456,15 +458,15 @@ function createOperator() {
       'Content-Type': 'application/json',
       'x-auth-token': token
     },
-    body: JSON.stringify({ 
-      username, 
-      displayName, 
-      name, 
-      email, 
+    body: JSON.stringify({
+      username,
+      displayName,
+      name,
+      email,
       role,
       companyId: role !== 'superadmin' ? companyId : null,
-      password, 
-      confirmPassword 
+      password,
+      confirmPassword
     })
   })
     .then(response => response.json())
@@ -491,7 +493,9 @@ function createOperator() {
 // Helper function to show toast notifications
 function showToast(message, type = 'info') {
   const container = document.querySelector('.toast-container');
-  if (!container) return;
+  if (!container) {
+    return;
+  }
 
   const wrapper = document.createElement('div');
   wrapper.className = `toast align-items-center text-bg-${type} border-0`;
@@ -500,7 +504,7 @@ function showToast(message, type = 'info') {
   wrapper.setAttribute('aria-atomic', 'true');
   wrapper.innerHTML = `
     <div class="d-flex">
-      <div class="toast-body">${message}</div>
+      <div class="toast-body">${escapeHtml(message)}</div>
       <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
     </div>`;
   container.appendChild(wrapper);
@@ -511,7 +515,9 @@ function showToast(message, type = 'info') {
 
 // Toggle loading state for buttons
 function setLoading(button, isLoading) {
-  if (!button) return;
+  if (!button) {
+    return;
+  }
   if (isLoading) {
     button.dataset.originalContent = button.innerHTML;
     button.disabled = true;
@@ -632,10 +638,10 @@ function editOperator() {
       'Content-Type': 'application/json',
       'x-auth-token': token
     },
-    body: JSON.stringify({ 
-      username, 
-      displayName, 
-      name, 
+    body: JSON.stringify({
+      username,
+      displayName,
+      name,
       email,
       role,
       companyId: role !== 'superadmin' ? companyId : null
@@ -741,7 +747,9 @@ function checkGoogleStatus() {
         btn.textContent = data.authorized ? 'Reauthorize Google Account' : 'Connect Google Account';
       }
       const span = document.getElementById('google-account');
-      if (span) span.textContent = data.email || '';
+      if (span) {
+        span.textContent = data.email || '';
+      }
       showStep(data.authorized ? 'kb-step-search' : 'kb-step-connect');
     });
 }
@@ -759,9 +767,9 @@ function loadSpreadsheet(event) {
   const excludeInput = document.getElementById('exclude-columns');
   const exclude = excludeInput
     ? excludeInput.value
-        .split(',')
-        .map(s => s.trim())
-        .filter(Boolean)
+      .split(',')
+      .map(s => s.trim())
+      .filter(Boolean)
     : [];
 
   fetch('/api/google/knowledge/import', {
@@ -812,7 +820,9 @@ function openLoadModal(id, name) {
   document.getElementById('spreadsheet-id').value = id;
   if (name) {
     const span = document.getElementById('selected-spreadsheet-name');
-    if (span) span.textContent = name;
+    if (span) {
+      span.textContent = name;
+    }
   }
   fetchSheetNames(id).then(() => {
     showStep('kb-step-sheet');
@@ -868,9 +878,9 @@ function loadFromModal(event) {
   const excludeInput = document.getElementById('exclude-columns');
   const exclude = excludeInput
     ? excludeInput.value
-        .split(',')
-        .map(s => s.trim())
-        .filter(Boolean)
+      .split(',')
+      .map(s => s.trim())
+      .filter(Boolean)
     : [];
   fetch('/api/google/knowledge/import', {
     method: 'POST',
@@ -892,7 +902,9 @@ function loadFromModal(event) {
 
 function refreshKnowledge(query = '', event) {
   const btn = event?.currentTarget;
-  if (btn) setLoading(btn, true);
+  if (btn) {
+    setLoading(btn, true);
+  }
   const token = localStorage.getItem('chatbot-auth-token');
   const url = '/api/google/knowledge' + (query ? `?q=${encodeURIComponent(query)}` : '');
   fetch(url, { headers: { 'x-auth-token': token } })
@@ -926,7 +938,9 @@ function refreshKnowledge(query = '', event) {
     })
     .catch(() => showToast('Failed to load knowledge list', 'danger'))
     .finally(() => {
-      if (btn) setLoading(btn, false);
+      if (btn) {
+        setLoading(btn, false);
+      }
     });
 }
 
@@ -958,7 +972,9 @@ function expandKnowledge(id) {
         cb.addEventListener('change', () => updateColumns(id));
         th.appendChild(cb);
         th.appendChild(document.createTextNode(' ' + col.name));
-        if (col.exclude) th.classList.add('text-muted');
+        if (col.exclude) {
+          th.classList.add('text-muted');
+        }
         headerRow.appendChild(th);
       });
       const thead = document.createElement('thead');
@@ -1033,7 +1049,9 @@ function updateColumns(id) {
 // and adjust z-index on scroll so the active row isn't hidden by others
 function applyStickySpreadsheetRows() {
   const table = document.getElementById('spreadsheet-table');
-  if (!table) return;
+  if (!table) {
+    return;
+  }
 
   const header = table.querySelector('thead tr');
   if (header) {
@@ -1064,7 +1082,9 @@ function applyStickySpreadsheetRows() {
         }
       });
       rows.forEach(tr => (tr.style.zIndex = 1));
-      if (activeRow) activeRow.tr.style.zIndex = 2;
+      if (activeRow) {
+        activeRow.tr.style.zIndex = 2;
+      }
     };
     container.addEventListener('scroll', updateZIndex);
     updateZIndex();
@@ -1074,7 +1094,9 @@ function applyStickySpreadsheetRows() {
 }
 
 function enableSpreadsheetColumnResizing(table) {
-  if (!table) return;
+  if (!table) {
+    return;
+  }
   const headerCells = table.querySelectorAll('thead th');
   headerCells.forEach((th, index) => {
     const handle = document.createElement('div');
@@ -1108,7 +1130,9 @@ function enableSpreadsheetColumnResizing(table) {
 }
 
 function saveKnowledgeConfig(event) {
-  if (!currentDocId) return;
+  if (!currentDocId) {
+    return;
+  }
   const btn = event?.currentTarget;
   setLoading(btn, true);
   const table = document.getElementById('spreadsheet-table');
@@ -1116,7 +1140,9 @@ function saveKnowledgeConfig(event) {
   table.querySelectorAll('thead th').forEach(th => {
     const cb = th.querySelector('input[type="checkbox"]');
     const name = th.textContent.trim();
-    if (cb && !cb.checked) excluded.push(name);
+    if (cb && !cb.checked) {
+      excluded.push(name);
+    }
   });
   const token = localStorage.getItem('chatbot-auth-token');
   fetch(`/api/google/knowledge/${currentDocId}/columns`, {
@@ -1135,7 +1161,9 @@ function showSummary(id) {
     .then(res => res.json())
     .then(data => {
       const ul = document.getElementById('kb-summary-details');
-      if (!ul) return;
+      if (!ul) {
+        return;
+      }
       ul.innerHTML = '';
       const email = document.getElementById('google-account')?.textContent || '';
       const items = [
@@ -1174,7 +1202,9 @@ function deleteKnowledge(id, event) {
 function showStep(id) {
   document.querySelectorAll('.kb-step').forEach(el => el.classList.add('d-none'));
   const step = document.getElementById(id);
-  if (step) step.classList.remove('d-none');
+  if (step) {
+    step.classList.remove('d-none');
+  }
 }
 
 document.addEventListener('DOMContentLoaded', function() {
@@ -1208,18 +1238,26 @@ document.addEventListener('DOMContentLoaded', function() {
   if (defaultCb && sheetSelect) {
     defaultCb.addEventListener('change', function() {
       sheetSelect.disabled = this.checked;
-      if (loadBtn) loadBtn.disabled = !this.checked && !sheetSelect.value;
+      if (loadBtn) {
+        loadBtn.disabled = !this.checked && !sheetSelect.value;
+      }
     });
     sheetSelect.disabled = defaultCb.checked;
-    if (loadBtn) loadBtn.disabled = !defaultCb.checked && !sheetSelect.value;
+    if (loadBtn) {
+      loadBtn.disabled = !defaultCb.checked && !sheetSelect.value;
+    }
     sheetSelect.addEventListener('change', function() {
-      if (loadBtn) loadBtn.disabled = !defaultCb.checked && !this.value;
+      if (loadBtn) {
+        loadBtn.disabled = !defaultCb.checked && !this.value;
+      }
     });
   }
   const idInput = document.getElementById('spreadsheet-id');
   if (idInput) {
     idInput.addEventListener('change', function() {
-      if (this.value) fetchSheetNames(this.value);
+      if (this.value) {
+        fetchSheetNames(this.value);
+      }
     });
   }
   const modalLoadBtn = document.getElementById('modal-load-btn');
@@ -1253,7 +1291,9 @@ document.addEventListener('DOMContentLoaded', function() {
   if (refreshKbBtn) {
     refreshKbBtn.addEventListener('click', event => {
       refreshDocument(currentDocId, event);
-      if (currentDocId) showSummary(currentDocId);
+      if (currentDocId) {
+        showSummary(currentDocId);
+      }
     });
   }
 

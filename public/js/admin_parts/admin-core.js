@@ -199,11 +199,24 @@ function initializeDashboard(token, user) {
   // Store current user
   window.currentUser = user;
 
+  // Hide navigation the user cannot act on. Showing an operator a "Companies"
+  // tab that always 403s is worse than not showing it at all.
+  applyRoleVisibility(user);
+
+  const companyBadge = document.getElementById('company-badge');
+  if (companyBadge && user.company) {
+    companyBadge.textContent = user.company.name;
+  }
+
   // Populate sidebar profile
   const nameEl = document.getElementById('profile-name');
   const emailEl = document.getElementById('profile-email');
-  if (nameEl) nameEl.textContent = user.displayName || user.username;
-  if (emailEl) emailEl.textContent = user.email;
+  if (nameEl) {
+    nameEl.textContent = user.displayName || user.username;
+  }
+  if (emailEl) {
+    emailEl.textContent = user.email;
+  }
 
   const logoutBtn = document.getElementById('logout-btn');
   if (logoutBtn) {
@@ -267,6 +280,15 @@ function initializeDashboard(token, user) {
   // Set up navigation (after data is loaded)
   setupNavigation();
 
+  // Notification bell and widget install panel.
+  if (typeof setupNotifications === 'function') {
+    setupNotifications(socket);
+  }
+  if (typeof setupWidgetSection === 'function') {
+    setupWidgetSection();
+  }
+  setupExport();
+
   // Check URL parameters for chat selection
   const params = getUrlParams();
   if (params.chat) {
@@ -280,6 +302,65 @@ function initializeDashboard(token, user) {
       viewChatHistory(params.session);
     }, 500); // Small delay to ensure data is loaded
   }
+}
+
+/**
+ * Show only the navigation entries this role can use.
+ */
+function applyRoleVisibility(user) {
+  document.querySelectorAll('#sidebar [data-roles]').forEach(link => {
+    const allowed = link.getAttribute('data-roles').split(',').map(r => r.trim());
+    if (!allowed.includes(user.role)) {
+      link.closest('.nav-item')?.remove();
+    }
+  });
+
+  // The superadmin-only "New Company" control is meaningless to anyone else.
+  if (user.role !== 'superadmin') {
+    document.getElementById('superadmin-only-btn')?.remove();
+    document.querySelectorAll('.superadmin-only').forEach(el => el.remove());
+  }
+}
+
+/**
+ * Download the conversation history as CSV. The Export button in the header
+ * previously had no handler at all.
+ */
+function setupExport() {
+  const button = document.getElementById('export-btn');
+  if (!button) {
+    return;
+  }
+
+  button.addEventListener('click', async () => {
+    setLoading(button, true);
+    try {
+      const response = await fetch('/api/admin/export?type=conversations', {
+        headers: { 'x-auth-token': localStorage.getItem('chatbot-auth-token') }
+      });
+
+      if (!response.ok) {
+        throw new Error(`Export failed (${response.status})`);
+      }
+
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `conversations-${new Date().toISOString().slice(0, 10)}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+
+      showToast('Export downloaded', 'success');
+    } catch (error) {
+      logger.error('Export failed:', error);
+      showToast('Could not export conversations', 'danger');
+    } finally {
+      setLoading(button, false);
+    }
+  });
 }
 
 // Helper function to update URL with query parameters
@@ -298,7 +379,7 @@ window.updateUrlWithParams = function(params) {
 
   // Update URL without reloading the page
   window.history.pushState({}, '', url);
-}
+};
 
 // Helper function to get query parameters from URL and fragment
 window.getUrlParams = function() {
@@ -320,7 +401,7 @@ window.getUrlParams = function() {
   }
 
   return params;
-}
+};
 
 // Navigation setup
 function setupNavigation() {
@@ -405,6 +486,11 @@ function setupNavigation() {
       // Show corresponding section
       const sectionId = this.getAttribute('data-section');
       document.getElementById(sectionId + '-section').classList.add('active');
+
+      const pageTitle = document.getElementById('page-title');
+      if (pageTitle) {
+        pageTitle.textContent = this.textContent.trim();
+      }
 
       // If tasks section is clicked, load operators and show task list
       if (sectionId === 'tasks') {

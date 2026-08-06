@@ -1,6 +1,6 @@
 /**
  * Markdown Support for Task Descriptions
- * 
+ *
  * We use the marked.js library to render Markdown in task descriptions.
  * This allows users to format their task descriptions with:
  * - Headers (# Header)
@@ -9,17 +9,16 @@
  * - Lists (- item)
  * - Links ([text](url))
  * - And other Markdown features
- * 
- * Security is ensured by enabling the sanitize option to prevent XSS attacks.
+ *
+ * Output is sanitised by renderMarkdown() in admin-utils.js.
  */
 // Configure marked.js for Markdown rendering
 if (typeof marked !== 'undefined') {
+  // `sanitize` was removed from marked in v5 and this call has been a silent
+  // no-op ever since. Sanitising now happens in renderMarkdown() instead.
   marked.setOptions({
-    gfm: true, // GitHub Flavored Markdown
-    breaks: true, // Convert line breaks to <br>
-    sanitize: true, // Sanitize HTML to prevent XSS attacks
-    smartLists: true, // Use smarter list behavior
-    smartypants: false // Don't use "smart" typographic punctuation
+    gfm: true,
+    breaks: true
   });
 }
 
@@ -468,11 +467,11 @@ function displayTasks(tasks) {
 
     // Add cells to row
     row.innerHTML = `
-      <td>${task.title}</td>
-      <td class="description-cell">${processedDescription}</td>
-      <td>${formattedDate}</td>
+      <td>${escapeHtml(task.title)}</td>
+      <td class="description-cell">${escapeHtml(processedDescription)}</td>
+      <td>${escapeHtml(formattedDate)}</td>
       <td></td>
-      <td>${assigneeDisplay}</td>
+      <td>${escapeHtml(assigneeDisplay)}</td>
       <td></td>
     `;
 
@@ -549,9 +548,8 @@ function displayTaskDetails(task) {
 
   // Render task description with Markdown
   // This converts Markdown syntax to HTML for display
-  // The sanitize option is enabled to prevent XSS attacks
   const descriptionElement = document.getElementById('task-description');
-  descriptionElement.innerHTML = marked.parse(task.description, { sanitize: true });
+  descriptionElement.innerHTML = renderMarkdown(task.description);
 
   // Format due date
   const dueDate = new Date(task.dueDate);
@@ -687,7 +685,7 @@ function loadTaskActivities(taskId) {
 // Display task activities
 function displayTaskActivities(activities) {
   const activityList = document.getElementById('task-activity-list');
-  
+
   // Clear existing activities
   activityList.innerHTML = '';
 
@@ -714,9 +712,9 @@ function displayTaskActivities(activities) {
           <i data-feather="${icon}" class="text-muted" style="width: 16px; height: 16px;"></i>
         </div>
         <div class="flex-grow-1">
-          <div class="fw-bold">${activity.userName}</div>
-          <div class="text-muted small">${activity.description}</div>
-          <div class="text-muted small">${formattedTime}</div>
+          <div class="fw-bold">${escapeHtml(activity.userName)}</div>
+          <div class="text-muted small">${escapeHtml(activity.description)}</div>
+          <div class="text-muted small" title="${escapeHtml(formattedTime)}">${escapeHtml(formatRelativeTime(activity.createdAt))}</div>
         </div>
       </div>
     `;
@@ -827,14 +825,14 @@ function displayFollowUpTasks(tasks) {
     taskItem.innerHTML = `
       <div class="card-body">
         <div class="d-flex justify-content-between align-items-center mb-2">
-          <h6 class="mb-0"><a href="#" class="follow-up-link">${task.title}</a></h6>
+          <h6 class="mb-0"><a href="#" class="follow-up-link">${escapeHtml(task.title)}</a></h6>
           <div>
             ${statusBadge.outerHTML}
           </div>
         </div>
         <div class="d-flex justify-content-between align-items-center">
-          <small class="text-muted">Assigned to: ${task.assigneeName || task.assignee?.username || 'Unassigned'}</small>
-          <small class="${overdueClass}">Due: ${formattedDate}${overdueLabel}</small>
+          <small class="text-muted">Assigned to: ${escapeHtml(task.assigneeName || task.assignee?.username || 'Unassigned')}</small>
+          <small class="${overdueClass}">Due: ${escapeHtml(formattedDate)}${overdueLabel}</small>
         </div>
       </div>
     `;
@@ -870,10 +868,10 @@ function displayComments(comments) {
     commentDiv.innerHTML = `
       <div class="card-body">
         <div class="d-flex justify-content-between align-items-center mb-2">
-          <strong>${comment.authorName}</strong>
-          <small class="text-muted">${formattedDate}</small>
+          <strong>${escapeHtml(comment.authorName)}</strong>
+          <small class="text-muted" title="${escapeHtml(formattedDate)}">${escapeHtml(formatRelativeTime(comment.createdAt))}</small>
         </div>
-        <p class="mb-0">${comment.content}</p>
+        <p class="mb-0">${escapeHtml(comment.content)}</p>
       </div>
     `;
 
@@ -978,7 +976,7 @@ function openTaskModal(conversationId = null, task = null) {
     // Show parent task info if this is a follow-up task
     if (task.parentTaskId) {
       document.getElementById('parent-task-info-modal').style.display = 'block';
-      document.getElementById('parent-task-title-modal').textContent = 
+      document.getElementById('parent-task-title-modal').textContent =
         task.parentTaskId.title || 'Parent Task';
       document.getElementById('parent-task-id').value = task.parentTaskId._id || task.parentTaskId;
     }
@@ -1212,7 +1210,7 @@ function openFollowUpTaskModal(parentTaskId) {
 
       // Set conversation ID if available
       if (parentTask.conversationId) {
-        document.getElementById('conversation-id').value = 
+        document.getElementById('conversation-id').value =
           parentTask.conversationId._id || parentTask.conversationId;
       }
 

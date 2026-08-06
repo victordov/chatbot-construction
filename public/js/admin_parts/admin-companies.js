@@ -26,7 +26,9 @@ function loadAllCompanies() {
     .then(response => response.json())
     .then(data => {
       const tableBody = document.getElementById('companies-table-body');
-      if (!tableBody) return;
+      if (!tableBody) {
+        return;
+      }
 
       tableBody.innerHTML = '';
 
@@ -37,9 +39,9 @@ function loadAllCompanies() {
         const createdDate = new Date(company.createdAt).toLocaleDateString();
 
         row.innerHTML = `
-          <td>${company.name}</td>
-          <td>${company.description || '-'}</td>
-          <td>${company.website || '-'}</td>
+          <td>${escapeHtml(company.name)}</td>
+          <td>${escapeHtml(company.description) || '-'}</td>
+          <td>${escapeHtml(company.website) || '-'}</td>
           <td>
             <span class="badge ${company.isActive ? 'bg-success' : 'bg-danger'}">
               ${company.isActive ? 'Active' : 'Inactive'}
@@ -49,15 +51,15 @@ function loadAllCompanies() {
           <td>
             <div class="btn-group">
               <button class="btn btn-sm btn-primary view-company" 
-                      data-id="${company._id}">
+                      data-id="${escapeHtml(company._id)}">
                 View
               </button>
               <button class="btn btn-sm btn-secondary edit-company" 
-                      data-id="${company._id}">
+                      data-id="${escapeHtml(company._id)}">
                 Edit
               </button>
               <button class="btn btn-sm ${company.isActive ? 'btn-warning' : 'btn-success'} toggle-company-status" 
-                      data-id="${company._id}" 
+                      data-id="${escapeHtml(company._id)}" 
                       data-status="${company.isActive}">
                 ${company.isActive ? 'Deactivate' : 'Activate'}
               </button>
@@ -91,7 +93,7 @@ function loadAllCompanies() {
 function loadCompany(companyId) {
   const token = localStorage.getItem('chatbot-auth-token');
 
-  fetch(`/api/companies/${companyId}`, {
+  fetch(`/api/companies/${escapeHtml(companyId)}`, {
     method: 'GET',
     headers: {
       'Content-Type': 'application/json',
@@ -101,7 +103,9 @@ function loadCompany(companyId) {
     .then(response => response.json())
     .then(data => {
       const tableBody = document.getElementById('companies-table-body');
-      if (!tableBody) return;
+      if (!tableBody) {
+        return;
+      }
 
       tableBody.innerHTML = '';
 
@@ -112,9 +116,9 @@ function loadCompany(companyId) {
       const createdDate = new Date(company.createdAt).toLocaleDateString();
 
       row.innerHTML = `
-        <td>${company.name}</td>
-        <td>${company.description || '-'}</td>
-        <td>${company.website || '-'}</td>
+        <td>${escapeHtml(company.name)}</td>
+        <td>${escapeHtml(company.description) || '-'}</td>
+        <td>${escapeHtml(company.website) || '-'}</td>
         <td>
           <span class="badge ${company.isActive ? 'bg-success' : 'bg-danger'}">
             ${company.isActive ? 'Active' : 'Inactive'}
@@ -124,11 +128,11 @@ function loadCompany(companyId) {
         <td>
           <div class="btn-group">
             <button class="btn btn-sm btn-primary view-company" 
-                    data-id="${company._id}">
+                    data-id="${escapeHtml(company._id)}">
               View
             </button>
             <button class="btn btn-sm btn-secondary edit-company" 
-                    data-id="${company._id}">
+                    data-id="${escapeHtml(company._id)}">
               Edit
             </button>
           </div>
@@ -167,7 +171,7 @@ function viewCompany(event) {
   // Load company details
   const token = localStorage.getItem('chatbot-auth-token');
 
-  fetch(`/api/companies/${companyId}`, {
+  fetch(`/api/companies/${escapeHtml(companyId)}`, {
     method: 'GET',
     headers: {
       'Content-Type': 'application/json',
@@ -203,7 +207,7 @@ function loadCompanyUsers(companyId) {
     createCompanyUserBtn.style.display = currentUser.role === 'superadmin' ? 'block' : 'none';
   }
 
-  fetch(`/api/companies/${companyId}/users`, {
+  fetch(`/api/companies/${escapeHtml(companyId)}/users`, {
     method: 'GET',
     headers: {
       'Content-Type': 'application/json',
@@ -213,7 +217,9 @@ function loadCompanyUsers(companyId) {
     .then(response => response.json())
     .then(data => {
       const tableBody = document.getElementById('company-users-table-body');
-      if (!tableBody) return;
+      if (!tableBody) {
+        return;
+      }
 
       tableBody.innerHTML = '';
 
@@ -237,9 +243,9 @@ function loadCompanyUsers(companyId) {
         const canEdit = currentUser.role === 'superadmin';
 
         row.innerHTML = `
-          <td>${user.username}</td>
-          <td>${user.displayName || '-'}</td>
-          <td>${user.email}</td>
+          <td>${escapeHtml(user.username)}</td>
+          <td>${escapeHtml(user.displayName) || '-'}</td>
+          <td>${escapeHtml(user.email)}</td>
           <td>${user.role === 'company_admin' ? 'Admin' : 'Operator'}</td>
           <td>
             <span class="badge ${user.isActive ? 'bg-success' : 'bg-danger'}">
@@ -252,19 +258,19 @@ function loadCompanyUsers(companyId) {
             ${canEdit ? `
               <div class="btn-group">
                 <button class="btn btn-sm btn-primary edit-company-user" 
-                        data-id="${user._id}" 
-                        data-company-id="${companyId}">
+                        data-id="${escapeHtml(user._id)}" 
+                        data-company-id="${escapeHtml(companyId)}">
                   Edit
                 </button>
                 <button class="btn btn-sm ${user.isActive ? 'btn-warning' : 'btn-success'} toggle-company-user-status" 
-                        data-id="${user._id}" 
-                        data-company-id="${companyId}" 
+                        data-id="${escapeHtml(user._id)}" 
+                        data-company-id="${escapeHtml(companyId)}" 
                         data-status="${user.isActive}">
                   ${user.isActive ? 'Deactivate' : 'Activate'}
                 </button>
                 <button class="btn btn-sm btn-danger reset-company-user-password" 
-                        data-id="${user._id}" 
-                        data-company-id="${companyId}">
+                        data-id="${escapeHtml(user._id)}" 
+                        data-company-id="${escapeHtml(companyId)}">
                   Reset Password
                 </button>
               </div>
@@ -349,7 +355,7 @@ function toggleCompanyStatus(event) {
   const newStatus = !currentStatus;
   const token = localStorage.getItem('chatbot-auth-token');
 
-  fetch(`/api/companies/${companyId}`, {
+  fetch(`/api/companies/${escapeHtml(companyId)}`, {
     method: 'PUT',
     headers: {
       'Content-Type': 'application/json',
@@ -377,7 +383,7 @@ function openEditCompanyModal(event) {
   const companyId = event.currentTarget.dataset.id;
   const token = localStorage.getItem('chatbot-auth-token');
 
-  fetch(`/api/companies/${companyId}`, {
+  fetch(`/api/companies/${escapeHtml(companyId)}`, {
     method: 'GET',
     headers: {
       'Content-Type': 'application/json',
@@ -422,7 +428,7 @@ function editCompany() {
     return;
   }
 
-  fetch(`/api/companies/${companyId}`, {
+  fetch(`/api/companies/${escapeHtml(companyId)}`, {
     method: 'PUT',
     headers: {
       'Content-Type': 'application/json',
@@ -471,7 +477,7 @@ function openEditCompanyUserModal(event) {
   document.getElementById('company-user-company-id').value = companyId;
 
   // Fetch user details
-  fetch(`/api/companies/${companyId}/users/${userId}`, {
+  fetch(`/api/companies/${escapeHtml(companyId)}/users/${userId}`, {
     method: 'GET',
     headers: {
       'Content-Type': 'application/json',
@@ -514,7 +520,7 @@ function toggleCompanyUserStatus(event) {
   const newStatus = !currentStatus;
   const token = localStorage.getItem('chatbot-auth-token');
 
-  fetch(`/api/companies/${companyId}/users/${userId}/status`, {
+  fetch(`/api/companies/${escapeHtml(companyId)}/users/${userId}/status`, {
     method: 'PATCH',
     headers: {
       'Content-Type': 'application/json',
@@ -578,13 +584,13 @@ function resetCompanyUserPassword() {
     }
   }
 
-  fetch(`/api/companies/${companyId}/users/${userId}/reset-password`, {
+  fetch(`/api/companies/${escapeHtml(companyId)}/users/${userId}/reset-password`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'x-auth-token': token
     },
-    body: JSON.stringify({ 
+    body: JSON.stringify({
       password: generateRandom ? null : password,
       generateRandom
     })
@@ -685,9 +691,9 @@ function saveCompanyUser() {
   }
 
   // Send request
-  const url = isCreating 
-    ? `/api/companies/${companyId}/users` 
-    : `/api/companies/${companyId}/users/${userId}`;
+  const url = isCreating
+    ? `/api/companies/${escapeHtml(companyId)}/users`
+    : `/api/companies/${escapeHtml(companyId)}/users/${userId}`;
 
   fetch(url, {
     method: isCreating ? 'POST' : 'PUT',
@@ -721,7 +727,9 @@ function saveCompanyUser() {
 document.addEventListener('DOMContentLoaded', function() {
   // Check if companies section exists
   const companiesSection = document.getElementById('companies-section');
-  if (!companiesSection) return;
+  if (!companiesSection) {
+    return;
+  }
 
   // Set up event listeners
   const createCompanyBtn = document.getElementById('create-company-btn');

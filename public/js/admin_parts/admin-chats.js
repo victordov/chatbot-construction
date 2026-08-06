@@ -33,6 +33,30 @@ function sendOperatorMessage(socket, messageInput) {
 let chatActivityChart;
 let chatVolumeChart;
 let responseTimeChart;
+let topSourcesChart;
+
+/**
+ * Chart.js infers its scale from the data, so an all-zero series produced a
+ * -1.0 to 1.0 axis that looked like a rendering fault rather than "no data
+ * yet". Pinning the axis to zero with a small suggested maximum keeps an empty
+ * chart legible.
+ */
+const CHART_BASE_OPTIONS = {
+  responsive: true,
+  maintainAspectRatio: true,
+  aspectRatio: 2,
+  interaction: { mode: 'index', intersect: false },
+  scales: {
+    y: {
+      beginAtZero: true,
+      suggestedMax: 5,
+      ticks: {
+        // Conversation counts are whole numbers; fractional ticks are noise.
+        precision: 0
+      }
+    }
+  }
+};
 
 function initializeCharts() {
   // Chat Activity Chart
@@ -49,31 +73,27 @@ function initializeCharts() {
         fill: false
       }]
     },
-    options: {
-      responsive: true,
-      maintainAspectRatio: true,
-      aspectRatio: 2,
-      height: 300
-    }
+    options: CHART_BASE_OPTIONS
   });
 
-  // Topics Chart
-  const topicsCtx = document.getElementById('topics-chart').getContext('2d');
-  // eslint-disable-next-line no-unused-vars
-  const topicsChart = new Chart(topicsCtx, {
+  // Traffic sources. This slot used to hold a "Common Topics" doughnut with
+  // four hardcoded categories (Properties/Mortgages/Payments/Other) that
+  // nothing ever populated, so it permanently displayed an empty ring.
+  const sourcesCtx = document.getElementById('topics-chart').getContext('2d');
+  topSourcesChart = new Chart(sourcesCtx, {
     type: 'doughnut',
     data: {
-      labels: ['Properties', 'Mortgages', 'Payments', 'Other'],
+      labels: [],
       datasets: [{
-        data: [0, 0, 0, 0],
-        backgroundColor: ['#007bff', '#28a745', '#ffc107', '#dc3545']
+        data: [],
+        backgroundColor: ['#0d6efd', '#20c997', '#fd7e14', '#6f42c1', '#dc3545', '#6c757d']
       }]
     },
     options: {
       responsive: true,
       maintainAspectRatio: true,
       aspectRatio: 2,
-      height: 300
+      plugins: { legend: { position: 'right' } }
     }
   });
 
@@ -89,12 +109,7 @@ function initializeCharts() {
         backgroundColor: '#007bff'
       }]
     },
-    options: {
-      responsive: true,
-      maintainAspectRatio: true,
-      aspectRatio: 2,
-      height: 300
-    }
+    options: CHART_BASE_OPTIONS
   });
 
   // Response Time Chart
@@ -111,12 +126,7 @@ function initializeCharts() {
         fill: false
       }]
     },
-    options: {
-      responsive: true,
-      maintainAspectRatio: true,
-      aspectRatio: 2,
-      height: 300
-    }
+    options: CHART_BASE_OPTIONS
   });
 
   // Helper will update this chart once data is loaded
@@ -124,7 +134,9 @@ function initializeCharts() {
 
 // Update the Response Time chart using analytics data
 function updateResponseTimeChart(rtData) {
-  if (!responseTimeChart) return;
+  if (!responseTimeChart) {
+    return;
+  }
 
   const labels = [];
   const dataPoints = [];
@@ -148,7 +160,9 @@ function updateResponseTimeChart(rtData) {
 
 // Update the Chat Activity chart using analytics data
 function updateChatActivityChart(volumeData) {
-  if (!chatActivityChart) return;
+  if (!chatActivityChart) {
+    return;
+  }
 
   const labels = [];
   const dataPoints = [];
@@ -177,7 +191,9 @@ function updateChatActivityChart(volumeData) {
 
 // Update the Chat Volume chart using analytics data
 function updateChatVolumeChart(volumeData) {
-  if (!chatVolumeChart) return;
+  if (!chatVolumeChart) {
+    return;
+  }
 
   const labels = [];
   const dataPoints = [];
@@ -196,9 +212,43 @@ function updateChatVolumeChart(volumeData) {
   chatVolumeChart.update();
 }
 
+// Update the traffic-sources doughnut
+function updateTopSourcesChart(sources) {
+  if (!topSourcesChart) {
+    return;
+  }
+
+  const canvas = document.getElementById('topics-chart');
+  const empty = !Array.isArray(sources) || sources.length === 0;
+
+  // An empty doughnut is indistinguishable from a broken one, so say so.
+  let emptyLabel = canvas.parentElement.querySelector('.chart-empty-state');
+  if (empty) {
+    if (!emptyLabel) {
+      emptyLabel = document.createElement('p');
+      emptyLabel.className = 'chart-empty-state text-muted text-center mb-0 py-4';
+      emptyLabel.textContent = 'No conversations yet - install the widget to start collecting data.';
+      canvas.parentElement.appendChild(emptyLabel);
+    }
+    canvas.style.display = 'none';
+    return;
+  }
+
+  if (emptyLabel) {
+    emptyLabel.remove();
+  }
+  canvas.style.display = '';
+
+  topSourcesChart.data.labels = sources.map(s => s.label);
+  topSourcesChart.data.datasets[0].data = sources.map(s => s.count);
+  topSourcesChart.update();
+}
+
 // Update conversation metrics table
 function updateConversationMetrics(metrics) {
-  if (!metrics) return;
+  if (!metrics) {
+    return;
+  }
 
   const total = metrics.totalConversations || {};
   document.getElementById('conv-total-today').textContent = total.today || 0;
@@ -253,6 +303,7 @@ function loadDashboardData(token) {
       if (data.conversationMetrics) {
         updateConversationMetrics(data.conversationMetrics);
       }
+      updateTopSourcesChart(data.topSources);
     })
     .catch(error => {
       logger.error('Error loading dashboard data:', error);
@@ -299,61 +350,153 @@ function loadActiveChats(socket, token) {
 }
 
 // Load chat history
-function loadChatHistory(token, search = '') {
-  // In a real app, this would fetch data from the server
-  const url = search
-    ? `/api/admin/chat-history?search=${encodeURIComponent(search)}`
-    : '/api/admin/chat-history';
+//
+// The endpoint returns a page at a time; previously the dashboard requested an
+// unpaginated list and the server capped it at 100 rows, so anything older was
+// simply unreachable.
+let chatHistoryState = { page: 1, search: '' };
 
-  fetch(url, {
-    headers: {
-      'x-auth-token': token
-    }
+function loadChatHistory(token, search = chatHistoryState.search, page = 1) {
+  chatHistoryState = { page, search };
+
+  const params = new URLSearchParams({ page: String(page), limit: '25' });
+  if (search) {
+    params.set('search', search);
+  }
+
+  const historyTable = document.getElementById('chat-history-table');
+  historyTable.innerHTML = `
+    <tr><td colspan="6" class="text-center text-muted py-4">
+      <span class="spinner-border spinner-border-sm me-2"></span>Loading…
+    </td></tr>`;
+
+  fetch(`/api/admin/chat-history?${params.toString()}`, {
+    headers: { 'x-auth-token': token }
   })
-    .then(response => response.json())
-    .then(data => {
-      const historyTable = document.getElementById('chat-history-table');
-
-      // Clear the "no history" message if there are records
-      if (data.history && data.history.length > 0) {
-        historyTable.innerHTML = '';
-
-        // Add each record to the table
-        data.history.forEach(record => {
-          const row = document.createElement('tr');
-
-          row.innerHTML = `
-            <td>${record.sessionId.substring(0, 8)}...</td>
-            <td>${new Date(record.startedAt).toLocaleString()}</td>
-            <td>${calculateDuration(record.startedAt, record.endedAt)}</td>
-            <td>${record.messages ? record.messages.length : (record['messages.length'] || 0)}</td>
-            <td><span class="badge bg-${record.status === 'ended' ? 'secondary' : 'success'}">${record.status}</span></td>
-            <td>
-              <button class="btn btn-sm btn-primary view-chat-btn" data-session-id="${record.sessionId}">View</button>
-              <button class="btn btn-sm btn-danger delete-chat-btn" data-session-id="${record.sessionId}">Delete</button>
-            </td>
-          `;
-
-          historyTable.appendChild(row);
-        });
-
-        // Add event listeners to the buttons
-        document.querySelectorAll('.view-chat-btn').forEach(btn => {
-          btn.addEventListener('click', function() {
-            viewChatHistory(this.getAttribute('data-session-id'));
-          });
-        });
-
-        document.querySelectorAll('.delete-chat-btn').forEach(btn => {
-          btn.addEventListener('click', function() {
-            deleteChatHistory(this.getAttribute('data-session-id'));
-          });
-        });
+    .then(response => {
+      if (!response.ok) {
+        throw new Error(`Request failed (${response.status})`);
       }
+      return response.json();
+    })
+    .then(data => {
+      const records = data.history || [];
+      historyTable.innerHTML = '';
+
+      if (records.length === 0) {
+        historyTable.innerHTML = `
+          <tr><td colspan="6" class="text-center text-muted py-4">
+            ${search ? `No conversations match “${escapeHtml(search)}”` : 'No chat history yet'}
+          </td></tr>`;
+        renderChatHistoryPagination(data.pagination);
+        return;
+      }
+
+      // Build the rows off-document so the browser lays out once rather than
+      // once per row.
+      const fragment = document.createDocumentFragment();
+
+      records.forEach(record => {
+        const row = document.createElement('tr');
+        const messageCount = record.messages
+          ? record.messages.length
+          : (record['messages.length'] || 0);
+
+        row.innerHTML = `
+          <td>
+            <span class="font-monospace small">${escapeHtml(record.sessionId.substring(0, 8))}…</span>
+            ${record.userName ? `<div class="small text-muted">${escapeHtml(record.userName)}</div>` : ''}
+          </td>
+          <td>
+            ${escapeHtml(new Date(record.startedAt).toLocaleDateString())}
+            <div class="small text-muted">${escapeHtml(formatRelativeTime(record.startedAt))}</div>
+          </td>
+          <td>${escapeHtml(calculateDuration(record.startedAt, record.endedAt))}</td>
+          <td>${messageCount}</td>
+          <td><span class="badge bg-${record.status === 'ended' ? 'secondary' : 'success'}">${escapeHtml(record.status)}</span></td>
+          <td class="text-nowrap">
+            <button class="btn btn-sm btn-outline-primary view-chat-btn" data-session-id="${escapeHtml(record.sessionId)}">View</button>
+            <button class="btn btn-sm btn-outline-danger delete-chat-btn" data-session-id="${escapeHtml(record.sessionId)}">Delete</button>
+          </td>`;
+
+        fragment.appendChild(row);
+      });
+
+      historyTable.appendChild(fragment);
+
+      // One delegated listener rather than two per row.
+      historyTable.onclick = event => {
+        const view = event.target.closest('.view-chat-btn');
+        const remove = event.target.closest('.delete-chat-btn');
+        if (view) {
+          viewChatHistory(view.getAttribute('data-session-id'));
+        } else if (remove) {
+          deleteChatHistory(remove.getAttribute('data-session-id'));
+        }
+      };
+
+      renderChatHistoryPagination(data.pagination);
     })
     .catch(error => {
       logger.error('Error loading chat history:', error);
+      historyTable.innerHTML = `
+        <tr><td colspan="6" class="text-center text-danger py-4">
+          Could not load chat history. <button class="btn btn-sm btn-link" onclick="loadChatHistory(localStorage.getItem('chatbot-auth-token'))">Retry</button>
+        </td></tr>`;
     });
+}
+
+function renderChatHistoryPagination(pagination) {
+  const nav = document.getElementById('chat-history-pagination');
+  const summary = document.getElementById('chat-history-summary');
+  if (!nav || !summary || !pagination) {
+    return;
+  }
+
+  const { page, limit, total, totalPages } = pagination;
+  const first = total === 0 ? 0 : (page - 1) * limit + 1;
+  const last = Math.min(page * limit, total);
+  summary.textContent = total === 0
+    ? 'No conversations'
+    : `Showing ${first}–${last} of ${total}`;
+
+  if (totalPages <= 1) {
+    nav.innerHTML = '';
+    return;
+  }
+
+  // Window the page numbers so a tenant with 400 pages does not get 400 links.
+  const windowSize = 5;
+  const start = Math.max(1, Math.min(page - Math.floor(windowSize / 2), totalPages - windowSize + 1));
+  const end = Math.min(totalPages, start + windowSize - 1);
+
+  const item = (label, targetPage, { disabled = false, active = false } = {}) => `
+    <li class="page-item ${disabled ? 'disabled' : ''} ${active ? 'active' : ''}">
+      <button class="page-link" data-page="${targetPage}" ${disabled ? 'tabindex="-1"' : ''}>${label}</button>
+    </li>`;
+
+  const pages = [];
+  for (let p = start; p <= end; p += 1) {
+    pages.push(item(String(p), p, { active: p === page }));
+  }
+
+  nav.innerHTML = [
+    item('&laquo;', page - 1, { disabled: page === 1 }),
+    ...pages,
+    item('&raquo;', page + 1, { disabled: page === totalPages })
+  ].join('');
+
+  nav.onclick = event => {
+    const button = event.target.closest('[data-page]');
+    if (!button || button.closest('.disabled')) {
+      return;
+    }
+    loadChatHistory(
+      localStorage.getItem('chatbot-auth-token'),
+      chatHistoryState.search,
+      parseInt(button.dataset.page, 10)
+    );
+  };
 }
 
 // Add chat to list
@@ -382,18 +525,25 @@ function addChatToList(chat) {
     (chat.metadata &&
       (chat.metadata.name || (chat.metadata.get && chat.metadata.get('name'))));
 
+  const messageCount = chat.messages ? chat.messages.length : (chat['messages.length'] || 0);
+
+  // The visitor's name, domain and operator name all originate from untrusted
+  // input, so every interpolation is escaped.
   chatItem.innerHTML = `
-    <div class="d-flex w-100 justify-content-between">
-      <h6 class="mb-1">
+    <div class="d-flex w-100 justify-content-between align-items-start">
+      <h6 class="mb-1 text-truncate">
         <span class="status-indicator ${statusClass}"></span>
-        Session ${chat.sessionId.substring(0, 8)}...
+        ${userName ? escapeHtml(userName) : `Session ${escapeHtml(chat.sessionId.substring(0, 8))}…`}
       </h6>
-      <small>${startTime}</small>
+      <small class="text-muted text-nowrap ms-2" title="${escapeHtml(new Date(chat.startedAt || Date.now()).toLocaleString())}">${escapeHtml(startTime)}</small>
     </div>
-    <p class="mb-1">Messages: ${chat.messages ? chat.messages.length : (chat['messages.length'] || 0)}</p>
-    <small>From: ${chat.domain || 'Unknown'}</small>
-    <div class="user-name small text-muted">${userName ? `User: ${userName}` : ''}</div>
-    <div class="operator-name small text-muted mt-1">${hasOperator && chat.operatorName ? `Operator: ${chat.operatorName}` : ''}</div>
+    <div class="small text-muted d-flex gap-2 flex-wrap">
+      <span>${messageCount} message${messageCount === 1 ? '' : 's'}</span>
+      <span>·</span>
+      <span class="text-truncate">${escapeHtml(chat.domain || 'Unknown source')}</span>
+    </div>
+    <div class="user-name small text-muted"></div>
+    <div class="operator-name small text-muted mt-1">${hasOperator && chat.operatorName ? `Operator: ${escapeHtml(chat.operatorName)}` : ''}</div>
   `;
 
   chatList.appendChild(chatItem);
@@ -822,27 +972,19 @@ function startHeartbeat(socket) {
 
 // Update connection status in UI
 function updateConnectionStatus(isConnected, errorMessage = null) {
+  // This used to look for `.navbar-nav`, which this dashboard does not have,
+  // so the indicator was never rendered and operators had no way to tell that
+  // their realtime connection had dropped.
   const statusElement = document.getElementById('connection-status');
   if (!statusElement) {
-    // Create status element if it doesn't exist
-    const navbarNav = document.querySelector('.navbar-nav');
-    if (navbarNav) {
-      const statusItem = document.createElement('li');
-      statusItem.className = 'nav-item ms-3';
-      statusItem.innerHTML = `<span id="connection-status" class="badge ${isConnected ? 'bg-success' : 'bg-danger'}">${isConnected ? 'Connected' : 'Disconnected'}</span>`;
-      navbarNav.appendChild(statusItem);
-    }
-  } else {
-    // Update existing status element
-    statusElement.className = `badge ${isConnected ? 'bg-success' : 'bg-danger'}`;
-    statusElement.textContent = isConnected ? 'Connected' : 'Disconnected';
-
-    if (!isConnected && errorMessage) {
-      statusElement.title = errorMessage;
-    } else {
-      statusElement.title = '';
-    }
+    return;
   }
+
+  statusElement.className = `connection-status ${isConnected ? 'is-online' : 'is-offline'}`;
+  statusElement.textContent = isConnected ? 'Live' : 'Reconnecting…';
+  statusElement.title = !isConnected && errorMessage
+    ? errorMessage
+    : (isConnected ? 'Realtime connection active' : 'Trying to reconnect');
 }
 
 // Calculate duration between two timestamps
@@ -891,7 +1033,9 @@ function updateChatOperatorStatus(sessionId, hasOperator, operatorName = '') {
 // Update chat user name display
 function updateChatUserName(sessionId, userName) {
   const chatItem = document.querySelector(`#active-chat-list a[data-session-id="${sessionId}"]`);
-  if (!chatItem) return;
+  if (!chatItem) {
+    return;
+  }
   const userEl = chatItem.querySelector('.user-name');
   if (userEl) {
     userEl.textContent = userName ? `User: ${userName}` : '';

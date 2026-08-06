@@ -349,6 +349,14 @@ router.get('/analytics', async (req, res) => {
             },
             { $sort: { '_id.year': 1, '_id.month': 1 } }
           ],
+          // Real traffic breakdown for the dashboard's second chart, which
+          // previously showed four hardcoded categories that never populated.
+          topSources: [
+            { $match: { startedAt: { $gte: last12Months } } },
+            { $group: { _id: { $ifNull: ['$domain', 'Unknown'] }, count: { $sum: 1 } } },
+            { $sort: { count: -1 } },
+            { $limit: 6 }
+          ],
           today: metricsFacet(todayStart, now),
           week: metricsFacet(weekStart, now),
           month: metricsFacet(monthStart, now),
@@ -467,6 +475,17 @@ router.get('/analytics', async (req, res) => {
       activeChats: count(facets.activeChats),
       chatVolumePerDay: facets.chatVolumePerDay,
       chatVolumeOverTime: facets.chatVolumeOverTime,
+      topSources: (facets.topSources || []).map(s => ({
+        // Show just the host; a full referer URL is unreadable in a legend.
+        label: (() => {
+          try {
+            return new URL(s._id).host;
+          } catch {
+            return s._id || 'Unknown';
+          }
+        })(),
+        count: s.count
+      })),
       avgResponseTime,
       responseTimeOverTime,
       conversationMetrics,

@@ -179,17 +179,21 @@ function setupEventHandlers(socket) {
   const chatHistorySearch = document.getElementById('chat-history-search');
   const chatHistorySearchBtn = document.getElementById('chat-history-search-btn');
 
-  // Search button click event
-  chatHistorySearchBtn.addEventListener('click', function() {
-    const searchTerm = chatHistorySearch.value.trim();
-    loadChatHistory(localStorage.getItem('chatbot-auth-token'), searchTerm);
-  });
+  const runHistorySearch = () => {
+    // Always restart at page 1: staying on page 7 of the previous result set
+    // usually lands on an empty page.
+    loadChatHistory(localStorage.getItem('chatbot-auth-token'), chatHistorySearch.value.trim(), 1);
+  };
 
-  // Search input enter key event
+  chatHistorySearchBtn.addEventListener('click', runHistorySearch);
+
+  // Search as you type, debounced so each keystroke is not a database query.
+  chatHistorySearch.addEventListener('input', debounce(runHistorySearch, 350));
+
   chatHistorySearch.addEventListener('keypress', function(e) {
     if (e.key === 'Enter') {
-      const searchTerm = chatHistorySearch.value.trim();
-      loadChatHistory(localStorage.getItem('chatbot-auth-token'), searchTerm);
+      e.preventDefault();
+      runHistorySearch();
     }
   });
 
