@@ -17,6 +17,7 @@ const contactService = require('../services/contacts');
 const { auth, operator, admin } = require('../middleware/auth');
 const { companyFilter, containsRegex, parsePagination, canAccessCompany } = require('../utils/query');
 const { logger } = require('../services/logging');
+const audit = require('../services/audit');
 
 router.use(auth, operator);
 
@@ -267,6 +268,16 @@ router.post('/identity/secret/rotate', admin, async (req, res) => {
     logger.info('Identity secret rotated', {
       companyId: company._id.toString(),
       by: req.user.username
+    });
+
+    // The value is never recorded, only that it changed: rotating invalidates
+    // every signature the tenant's backend is currently producing, so somebody
+    // needs to be able to find out when that happened and who did it.
+    audit.record({
+      req,
+      action: 'identity_secret.rotated',
+      company: company._id,
+      target: { type: 'company', id: String(company._id), label: company.name }
     });
 
     res.json({ secret: company.identitySecret });

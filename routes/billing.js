@@ -15,6 +15,7 @@ const Company = require('../models/company');
 const Subscription = require('../models/subscription');
 const Usage = require('../models/usage');
 const usageService = require('../services/usage');
+const audit = require('../services/audit');
 const { listPlans, PLANS } = require('../config/plans');
 const { auth, admin, superadmin } = require('../middleware/auth');
 const { logger } = require('../services/logging');
@@ -155,6 +156,21 @@ router.patch('/companies/:companyId/subscription', auth, superadmin, async (req,
       planId: subscription.planId,
       status: subscription.status,
       by: req.user.username
+    });
+
+    // A plan change alters what a tenant is charged and what they can reach,
+    // and only a superadmin can make one — which is exactly why it is recorded
+    // against the tenant rather than only in the platform's own logs.
+    audit.record({
+      req,
+      action: 'plan.changed',
+      company: companyId,
+      target: { type: 'company', id: String(companyId), label: company.name },
+      details: {
+        planId: subscription.planId,
+        status: subscription.status,
+        overageAllowed: subscription.overageAllowed
+      }
     });
 
     res.json({

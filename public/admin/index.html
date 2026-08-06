@@ -87,6 +87,12 @@
                             </a>
                         </li>
                         <li class="nav-item">
+                            <a class="nav-link" href="#audit-section" data-section="audit" data-roles="superadmin,company_admin">
+                                <span data-feather="shield"></span>
+                                Audit Log
+                            </a>
+                        </li>
+                        <li class="nav-item">
                             <a class="nav-link" href="#settings-section" data-section="settings">
                                 <span data-feather="settings"></span>
                                 Settings
@@ -1370,6 +1376,67 @@
                 </section>
 
                 <!-- Settings Section -->
+                <section id="audit-section" class="content-section">
+                    <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
+                        <div>
+                            <h5 class="mb-1">Who did what</h5>
+                            <!-- Says both true things. Claiming entries are never
+                                 deleted would be a lie: they expire on a retention
+                                 window, which is a policy decision the operator of
+                                 the platform sets. -->
+                            <p class="text-muted small mb-0" id="audit-retention-note">
+                                Append-only — nothing here can be edited, by anyone.
+                                Entries are kept for <span id="audit-retention-days">400</span> days.
+                            </p>
+                        </div>
+                        <div class="d-flex gap-2 flex-wrap">
+                            <select class="form-select form-select-sm" id="audit-action-filter"
+                                    style="min-width: 12rem;" aria-label="Filter by action">
+                                <option value="">All actions</option>
+                            </select>
+                            <select class="form-select form-select-sm" id="audit-outcome-filter"
+                                    style="min-width: 9rem;" aria-label="Filter by outcome">
+                                <option value="">Any outcome</option>
+                                <option value="success">Succeeded</option>
+                                <option value="failure">Failed</option>
+                                <option value="denied">Denied</option>
+                            </select>
+                            <select class="form-select form-select-sm" id="audit-range-filter"
+                                    style="min-width: 9rem;" aria-label="Time range">
+                                <option value="7">Last 7 days</option>
+                                <option value="30" selected>Last 30 days</option>
+                                <option value="90">Last 90 days</option>
+                                <option value="">Everything</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <div class="table-responsive">
+                            <table class="table table-sm mb-0 align-middle">
+                                <thead>
+                                    <tr>
+                                        <th style="width: 12rem;">When</th>
+                                        <th style="width: 12rem;">Who</th>
+                                        <th style="width: 14rem;">What</th>
+                                        <th>Details</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="audit-table">
+                                    <tr><td colspan="4" class="text-center text-muted py-4">Loading…</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        <div class="card-footer d-flex justify-content-between align-items-center">
+                            <span class="small text-muted" id="audit-range-label"></span>
+                            <div class="btn-group btn-group-sm">
+                                <button class="btn btn-outline-secondary" id="audit-prev">Newer</button>
+                                <button class="btn btn-outline-secondary" id="audit-next">Older</button>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
                 <section id="settings-section" class="content-section">
                     <div class="card">
                         <div class="card-header">
@@ -2177,6 +2244,7 @@
     <script src="/js/admin_parts/admin-widget.js"></script>
     <script src="/js/admin_parts/admin-billing.js"></script>
     <script src="/js/admin_parts/admin-routing.js"></script>
+    <script src="/js/admin_parts/admin-audit.js"></script>
     <script src="/js/admin_parts/admin-analytics.js"></script>
     <script src="/js/admin_parts/admin-assistant.js"></script>
     <script src="/js/admin_parts/admin-operator-tools.js"></script>

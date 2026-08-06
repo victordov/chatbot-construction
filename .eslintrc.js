@@ -79,6 +79,7 @@ module.exports = {
         renderConversationTags: 'readonly',
         setupRouting: 'readonly',
         applyTagFilter: 'readonly',
+        setupAudit: 'readonly',
         lastAnalyticsData: 'readonly',
         setConversationNotes: 'readonly',
         applyChatFilter: 'readonly',

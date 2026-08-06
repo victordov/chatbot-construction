@@ -107,6 +107,17 @@ the queue, and the visitor is told so rather than left watching an empty window.
 Conversations carry free-form tags, suggested from the ones already in use, and
 the queue can be filtered by them.
 
+**Audit log.** Who signed in, who failed to, who changed a role, deleted a
+conversation, published a workflow, rotated the identity secret, changed a
+plan, or exported and erased somebody's data. Append-only — there is no route
+anywhere that edits or deletes an entry, because a record that can be rewritten
+is not evidence. Credentials never reach it: field names that look like secrets
+are redacted before writing, so the log does not become the most sensitive
+collection in the database. A company admin sees their own company's history;
+platform-level events belong to whoever operates the platform. Entries expire
+on a configurable retention window (`AUDIT_RETENTION_DAYS`, 400 by default),
+which the page states rather than implying they are kept forever.
+
 **Operator tools.** Saved replies inserted from the composer with `/`, internal
 notes that never reach the visitor or the model, conversation transfer with a
 handover note, and a queue filtered by All / Mine / Waiting so several chats
@@ -148,7 +159,7 @@ content-hashed widget assets cached for a year with the loader on `no-cache`.
 
 ## Test suite
 
-`npm test` — 402 tests across 25 suites. An in-memory MongoDB starts
+`npm test` — 430 tests across 26 suites. An in-memory MongoDB starts
 automatically (`tests/globalSetup.js`), so no local `mongod` is needed.
 `tests/setup.js` blanks `OPENAI_API_KEY` so the suite never makes a real model
 call; the embedding and intent tests therefore assert on ranking and plumbing

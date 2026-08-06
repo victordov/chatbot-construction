@@ -11,6 +11,7 @@ const { logger } = require('../services/logging');
 const socketManager = require('../socketManager');
 const csatService = require('../services/csat');
 const assignmentService = require('../services/assignment');
+const audit = require('../services/audit');
 const {
   containsRegex,
   companyFilter,
@@ -254,6 +255,46 @@ router.post('/chat/:sessionId/contact-info', async (req, res) => {
  * or "billing already refunded this" so the next person picking the chat up
  * is not starting cold.
  */
+/**
+ * The audit log.
+ *
+ * Read-only by design: there is no route that edits or deletes an entry, here
+ * or anywhere else. A record that can be rewritten is not evidence.
+ *
+ * A company admin sees their own company's history. Platform-level entries -
+ * a superadmin changing somebody's plan, a failed sign-in against a username
+ * that does not exist - carry no company and are visible only to superadmins.
+ */
+router.get('/audit', admin, async (req, res) => {
+  try {
+    const result = await audit.search(req.user, {
+      action: req.query.action,
+      actorId: req.query.actorId,
+      outcome: req.query.outcome,
+      since: req.query.since,
+      until: req.query.until,
+      limit: req.query.limit,
+      skip: req.query.skip
+    });
+
+    // The retention window is reported so the page can state it rather than
+    // implying entries are kept forever.
+    res.json({ ...result, retentionDays: require('../models/audit-log').RETENTION_DAYS });
+  } catch (error) {
+    logger.error('Error reading the audit log', { error });
+    res.status(500).json({ error: 'Failed to load the audit log' });
+  }
+});
+
+router.get('/audit/actions', admin, async (req, res) => {
+  try {
+    res.json({ actions: (await audit.actions(req.user)).sort() });
+  } catch (error) {
+    logger.error('Error listing audit actions', { error });
+    res.status(500).json({ error: 'Failed to load the actions' });
+  }
+});
+
 /**
  * Tags on a conversation.
  *
@@ -556,6 +597,16 @@ router.delete('/chat/:sessionId', async (req, res) => {
     logger.info('Conversation deleted', {
       sessionId: conversation.sessionId,
       by: req.user.username
+    });
+
+    // Irreversible, and the transcript is gone with it, so this is exactly the
+    // kind of thing someone asks about three months later.
+    audit.record({
+      req,
+      action: 'conversation.deleted',
+      company: conversation.company,
+      target: { type: 'conversation', id: conversation.sessionId, label: conversation.sessionId },
+      details: { messages: conversation.messages.length, startedAt: conversation.startedAt }
     });
 
     res.json({ success: true, message: 'Chat deleted successfully' });
@@ -1116,6 +1167,13 @@ router.patch('/operators/:id', async (req, res) => {
     target.isActive = Boolean(isActive);
     await target.save();
 
+    audit.record({
+      req,
+      action: target.isActive ? 'operator.activated' : 'operator.deactivated',
+      company: target.company,
+      target: { type: 'user', id: String(target._id), label: target.displayName || target.username }
+    });
+
     res.json({
       success: true,
       message: `Operator ${target.isActive ? 'activated' : 'deactivated'} successfully`,
@@ -1188,6 +1246,8 @@ router.put('/operators/:id', async (req, res) => {
       return res.status(400).json({ error: 'Company is required for company admin and operator roles' });
     }
 
+    const previousRole = target.role;
+
     target.username = username;
     target.name = name;
     target.displayName = displayName;
@@ -1203,7 +1263,19 @@ router.put('/operators/:id', async (req, res) => {
       target.company = company._id;
     }
 
+    const roleChanged = previousRole !== target.role;
+
     await target.save();
+
+    audit.record({
+      req,
+      action: roleChanged ? 'operator.role_changed' : 'operator.updated',
+      company: target.company,
+      target: { type: 'user', id: String(target._id), label: target.displayName || target.username },
+      // A privilege change is the entry people come looking for, so the before
+      // and after are both recorded rather than only the result.
+      details: roleChanged ? { from: previousRole, to: target.role } : { email: target.email }
+    });
 
     res.json({
       success: true,

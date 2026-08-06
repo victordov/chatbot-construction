@@ -7,6 +7,7 @@ const router = express.Router();
 const WorkflowService = require('../services/workflow');
 const { redactWorkflow } = require('../services/workflow');
 const workflowActions = require('../services/workflow-actions');
+const audit = require('../services/audit');
 const KnowledgeSource = require('../models/knowledge-source');
 const { auth: authMiddleware } = require('../middleware/auth');
 const { logger } = require('../services/logging');
@@ -213,6 +214,15 @@ router.post('/:id/publish', authMiddleware, checkWorkflowAccess, async (req, res
       hotSwapCompleted
     });
 
+    // Publishing changes what every visitor to this tenant is answered by.
+    audit.record({
+      req,
+      action: 'workflow.published',
+      company: workflow.company,
+      target: { type: 'workflow', id: String(workflow._id), label: workflow.name },
+      details: { version: workflow.version, hotSwapCompleted }
+    });
+
     res.json({
       success: true,
       workflow: redactWorkflow(workflow),
@@ -308,6 +318,14 @@ router.post('/:id/rollback/:version', authMiddleware, checkWorkflowAccess, async
       req.user
     );
 
+    audit.record({
+      req,
+      action: 'workflow.rolled_back',
+      company: workflow.company,
+      target: { type: 'workflow', id: String(workflow._id), label: workflow.name },
+      details: { to: version, now: workflow.version }
+    });
+
     res.json({
       success: true,
       workflow: redactWorkflow(workflow),
@@ -327,6 +345,12 @@ router.post('/:id/rollback/:version', authMiddleware, checkWorkflowAccess, async
 router.delete('/:id', authMiddleware, checkWorkflowAccess, async (req, res) => {
   try {
     const result = await WorkflowService.deleteWorkflow(req.params.id, req.user);
+
+    audit.record({
+      req,
+      action: 'workflow.deleted',
+      target: { type: 'workflow', id: req.params.id, label: result.name || req.params.id }
+    });
 
     res.json({
       success: true,

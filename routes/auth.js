@@ -3,6 +3,7 @@ const jwt = require('jsonwebtoken');
 const User = require('../models/user');
 const Company = require('../models/company');
 const { auth, superadmin, admin } = require('../middleware/auth');
+const audit = require('../services/audit');
 
 const router = express.Router();
 
@@ -14,17 +15,45 @@ router.post('/login', async (req, res) => {
     // Check if user exists
     const user = await User.findOne({ username }).populate('company');
     if (!user) {
+      // Recorded without a company, because there is no account to attribute
+      // it to. Only a superadmin sees these, which is right: a run of attempts
+      // against usernames that do not exist is the platform's problem.
+      audit.record({
+        req,
+        action: 'auth.login',
+        outcome: 'failure',
+        company: null,
+        details: { username: String(username || '').slice(0, 100), reason: 'no such account' }
+      });
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
     // Check if password is correct
     const isMatch = await user.comparePassword(password);
     if (!isMatch) {
+      // The single most useful entry in an audit log: repeated failures
+      // against a real account, from an address that is not theirs.
+      audit.record({
+        req,
+        action: 'auth.login',
+        outcome: 'failure',
+        company: user.company ? user.company._id : null,
+        actor: { id: user._id, username: user.username, displayName: user.displayName, role: user.role },
+        details: { reason: 'wrong password' }
+      });
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
     // Check if user is active
     if (!user.isActive) {
+      audit.record({
+        req,
+        action: 'auth.login',
+        outcome: 'denied',
+        company: user.company ? user.company._id : null,
+        actor: { id: user._id, username: user.username, displayName: user.displayName, role: user.role },
+        details: { reason: 'account disabled' }
+      });
       return res.status(403).json({ error: 'Account is disabled' });
     }
 
@@ -43,6 +72,13 @@ router.post('/login', async (req, res) => {
     // Update last login
     user.lastLogin = Date.now();
     await user.save();
+
+    audit.record({
+      req,
+      action: 'auth.login',
+      company: user.company ? user.company._id : null,
+      actor: { id: user._id, username: user.username, displayName: user.displayName, role: user.role }
+    });
 
     res.json({
       token,
@@ -119,6 +155,15 @@ router.post('/register', auth, admin, async (req, res) => {
 
     await user.save();
 
+    audit.record({
+      req,
+      action: 'user.created',
+      company: companyId || null,
+      target: { type: 'user', id: String(user._id), label: user.displayName || user.username },
+      // The role is the part worth being able to look up later.
+      details: { role: user.role, email: user.email }
+    });
+
     res.status(201).json({
       message: 'User registered successfully',
       user: {
@@ -160,6 +205,17 @@ router.post('/create-superadmin', async (req, res) => {
     });
 
     await superadmin.save();
+
+    // The one account that can reach every tenant. Its creation is the single
+    // most important line this log will ever hold.
+    audit.record({
+      action: 'superadmin.created',
+      company: null,
+      ip: req.ip,
+      userAgent: req.get('user-agent'),
+      actor: { id: superadmin._id, username: superadmin.username, displayName: superadmin.displayName, role: 'superadmin' },
+      target: { type: 'user', id: String(superadmin._id), label: superadmin.displayName || superadmin.username }
+    });
 
     res.status(201).json({
       message: 'Superadmin created successfully',

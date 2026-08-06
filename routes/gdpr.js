@@ -3,6 +3,7 @@ const Conversation = require('../models/conversation');
 const { auth, admin } = require('../middleware/auth');
 const { logger } = require('../services/logging');
 const { companyFilter } = require('../utils/query');
+const audit = require('../services/audit');
 
 const router = express.Router();
 
@@ -20,6 +21,16 @@ function subjectQuery(req) {
 router.get('/user-data/:userId', auth, admin, async (req, res) => {
   try {
     const conversations = await Conversation.find(subjectQuery(req)).lean();
+
+    // Reading somebody's whole conversation history is worth recording even
+    // though it changes nothing: this is the request a data protection officer
+    // is asked to account for.
+    audit.record({
+      req,
+      action: 'gdpr.data_read',
+      target: { type: 'subject', id: req.params.userId, label: req.params.userId },
+      details: { conversations: conversations.length }
+    });
 
     res.json({ conversations });
   } catch (error) {
@@ -39,6 +50,16 @@ router.delete('/user-data/:userId', auth, admin, async (req, res) => {
       by: req.user.username
     });
 
+    // The erasure destroys the evidence of itself, so the audit entry is the
+    // only remaining record that it was carried out — which is precisely what
+    // a regulator asks for.
+    audit.record({
+      req,
+      action: 'gdpr.erased',
+      target: { type: 'subject', id: req.params.userId, label: req.params.userId },
+      details: { conversationsDeleted: result.deletedCount }
+    });
+
     res.json({
       success: true,
       message: `Deleted ${result.deletedCount} conversations`,
@@ -55,6 +76,13 @@ router.get('/export/:userId', auth, admin, async (req, res) => {
   try {
     const { userId } = req.params;
     const conversations = await Conversation.find(subjectQuery(req)).lean();
+
+    audit.record({
+      req,
+      action: 'gdpr.exported',
+      target: { type: 'subject', id: userId, label: userId },
+      details: { conversations: conversations.length }
+    });
 
     const exportData = {
       userId,
