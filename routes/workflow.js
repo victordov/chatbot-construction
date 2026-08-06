@@ -7,6 +7,7 @@ const router = express.Router();
 const WorkflowService = require('../services/workflow');
 const { redactWorkflow } = require('../services/workflow');
 const workflowActions = require('../services/workflow-actions');
+const workflowTemplates = require('../config/workflow-templates');
 const audit = require('../services/audit');
 const KnowledgeSource = require('../models/knowledge-source');
 const { auth: authMiddleware } = require('../middleware/auth');
@@ -58,6 +59,27 @@ router.get('/', authMiddleware, checkWorkflowAccess, async (req, res) => {
       error: 'Failed to fetch workflows'
     });
   }
+});
+
+/**
+ * The workflows a tenant can start from.
+ *
+ * A blank canvas is the worst thing to hand somebody who has just been told
+ * they can automate their support; these are the flows they were going to build
+ * anyway, already wired.
+ */
+router.get('/templates', authMiddleware, checkWorkflowAccess, (req, res) => {
+  res.json({ success: true, templates: workflowTemplates.summaries() });
+});
+
+router.get('/templates/:id', authMiddleware, checkWorkflowAccess, (req, res) => {
+  const template = workflowTemplates.byId(req.params.id);
+
+  if (!template) {
+    return res.status(404).json({ success: false, error: 'Template not found' });
+  }
+
+  res.json({ success: true, template });
 });
 
 // Get knowledge sources for workflow nodes

@@ -111,6 +111,90 @@
           placeholder: 'Sorry, I did not catch that. Could you rephrase?' }
       ]
     },
+    ask: {
+      label: 'Ask a Question', icon: 'help-circle', color: '#0dcaf0',
+      description: 'Ask, then use the answer',
+      inputs: 1, outputs: 2,
+      fields: [
+        { key: 'question', label: 'Question', type: 'textarea', rows: 2, required: true,
+          placeholder: 'What is your order number?' },
+        { key: 'variable', label: 'Save the answer as', type: 'text', required: true,
+          placeholder: 'order_id',
+          help: 'Use it later as {{order_id}}.' },
+        { key: 'validate', label: 'Expected answer', type: 'select',
+          options: ['any', 'email', 'phone', 'number', 'reference'] },
+        { key: 'maxAttempts', label: 'Give up after', type: 'select',
+          options: ['2', '3', '4', '5'],
+          help: 'Then the Could not answer output is taken.' }
+      ]
+    },
+    buttons: {
+      label: 'Offer Choices', icon: 'list', color: '#6f42c1',
+      description: 'Ask with buttons instead of free text',
+      inputs: 1, outputs: 2,
+      fields: [
+        { key: 'question', label: 'Question', type: 'textarea', rows: 2, required: true,
+          placeholder: 'What can I help you with?' },
+        { key: 'variable', label: 'Save the choice as', type: 'text', placeholder: 'choice' },
+        { key: 'choices', label: 'Choices', type: 'choices' }
+      ]
+    },
+    condition: {
+      label: 'Check a Value', icon: 'filter', color: '#fd7e14',
+      description: 'Branch on what you found out',
+      inputs: 1, outputs: 2,
+      fields: [
+        { key: 'left', label: 'Value', type: 'text', required: true,
+          placeholder: '{{order_status}}',
+          help: 'Usually something an earlier step collected.' },
+        { key: 'operator', label: 'Is', type: 'select',
+          options: ['equals', 'not_equals', 'contains', 'starts_with',
+            'greater_than', 'less_than', 'is_empty', 'is_not_empty', 'matches'] },
+        { key: 'right', label: 'Compared with', type: 'text', placeholder: 'shipped',
+          showWhen: d => !['is_empty', 'is_not_empty'].includes(d.operator) }
+      ]
+    },
+    set: {
+      label: 'Set a Value', icon: 'edit-3', color: '#20c997',
+      description: 'Build or rename a value',
+      inputs: 1, outputs: 1,
+      fields: [
+        { key: 'assignments', label: 'Values', type: 'assignments' }
+      ]
+    },
+    'business-hours': {
+      label: 'Open or Closed', icon: 'clock', color: '#795548',
+      description: 'Branch on whether anyone is there',
+      inputs: 1, outputs: 2,
+      fields: [
+        { key: 'requireOperator', label: 'Count as open when', type: 'select',
+          options: ['an operator is online', 'inside opening hours'],
+          help: 'Inside opening hours with nobody connected is still nobody to talk to.' }
+      ]
+    },
+    tag: {
+      label: 'Add a Tag', icon: 'tag', color: '#0d6efd',
+      description: 'Label the conversation',
+      inputs: 1, outputs: 1,
+      fields: [
+        { key: 'tags', label: 'Tags', type: 'taglist',
+          help: 'Applied to the conversation so the queue can be filtered by them.' }
+      ]
+    },
+    task: {
+      label: 'Create a Task', icon: 'check-square', color: '#198754',
+      description: 'Raise work for the team',
+      inputs: 1, outputs: 1,
+      fields: [
+        { key: 'title', label: 'Title', type: 'text', required: true,
+          placeholder: 'Refund request for {{order_id}}' },
+        { key: 'description', label: 'Description', type: 'textarea', rows: 3,
+          help: 'Everything the flow collected is appended automatically.' },
+        { key: 'priority', label: 'Priority', type: 'select',
+          options: ['low', 'medium', 'high', 'urgent'] },
+        { key: 'dueInDays', label: 'Due in (days)', type: 'text', placeholder: '3' }
+      ]
+    },
     action: {
       label: 'Call an API', icon: 'zap', color: '#e83e8c',
       description: 'Look something up in your own system',
@@ -155,6 +239,19 @@
       label: 'Call an API', method: 'GET', url: '', outputs: [],
       auth: { type: 'none' }, timeoutMs: 8000
     },
+    ask: {
+      label: 'Ask a Question', question: 'What is your order number?',
+      variable: 'order_id', validate: 'reference', maxAttempts: '3'
+    },
+    buttons: {
+      label: 'Offer Choices', question: 'What can I help you with?',
+      variable: 'choice', choices: []
+    },
+    condition: { label: 'Check a Value', left: '', operator: 'equals', right: '' },
+    set: { label: 'Set a Value', assignments: [] },
+    'business-hours': { label: 'Open or Closed', requireOperator: 'an operator is online' },
+    tag: { label: 'Add a Tag', tags: [] },
+    task: { label: 'Create a Task', title: '', description: '', priority: 'medium', dueInDays: '3' },
     'operator-handoff': { label: 'Human Handoff', message: 'Let me connect you with a colleague.' }
   };
 
@@ -201,6 +298,39 @@
       return [
         { handle: 'success', label: 'Worked' },
         { handle: 'error', label: 'Failed' }
+      ];
+    }
+
+    if (node.type === 'ask') {
+      return [
+        { handle: 'next', label: 'Answered' },
+        { handle: 'invalid', label: 'Could not answer' }
+      ];
+    }
+
+    if (node.type === 'buttons') {
+      return [
+        ...(node.data.choices || []).map((choice, i) => ({
+          handle: choice.id || `choice_${i}`,
+          label: choice.label || `Choice ${i + 1}`
+        })),
+        // For somebody who types something else entirely. Without it a flow
+        // has no answer for "none of the above".
+        { handle: 'other', label: 'Something else' }
+      ];
+    }
+
+    if (node.type === 'condition') {
+      return [
+        { handle: 'true', label: 'Yes' },
+        { handle: 'false', label: 'No' }
+      ];
+    }
+
+    if (node.type === 'business-hours') {
+      return [
+        { handle: 'open', label: 'Open' },
+        { handle: 'closed', label: 'Closed' }
       ];
     }
 
@@ -317,7 +447,9 @@
         problems: byId('wf-problems'),
         problemCount: byId('wf-problem-count'),
         zoomLabel: byId('wf-zoom-label'),
-        emptyHint: byId('wf-empty-hint')
+        emptyHint: byId('wf-empty-hint'),
+        templatePicker: byId('wf-template-picker'),
+        templateList: byId('wf-template-list')
       };
     }
 
@@ -514,7 +646,9 @@
       const groups = {
         'Entry & identity': ['start', 'persona'],
         'Answering': ['knowledge', 'llm', 'response'],
-        'Control flow': ['router', 'action', 'fallback', 'operator-handoff'],
+        'Asking': ['ask', 'buttons'],
+        'Control flow': ['router', 'condition', 'business-hours', 'fallback', 'operator-handoff'],
+        'Doing': ['action', 'set', 'tag', 'task'],
         'Safety': ['moderation']
       };
 
@@ -934,6 +1068,15 @@
       case 'router': return `${(d.conditions || []).length} condition(s)`;
       case 'moderation': return `Strictness: ${d.strictness || 'medium'}`;
       case 'action': return d.url ? `${d.method || 'GET'} ${shortUrl(d.url)}` : 'No URL set';
+      case 'ask': return d.question ? `${d.question} → {{${d.variable || 'answer'}}}` : 'No question set';
+      case 'buttons': return `${(d.choices || []).length} choice(s)`;
+      case 'condition': return d.left
+        ? `${d.left} ${(d.operator || 'equals').replace(/_/g, ' ')} ${d.right || ''}`.trim()
+        : 'Nothing to check';
+      case 'set': return `${(d.assignments || []).length} value(s)`;
+      case 'business-hours': return 'Branch on availability';
+      case 'tag': return (d.tags || []).length ? d.tags.join(', ') : 'No tags set';
+      case 'task': return d.title || 'No title set';
       case 'start': return 'Conversation entry point';
       default: return '';
       }
@@ -1108,6 +1251,15 @@
       case 'outputs':
         return this.renderOutputs(node);
 
+      case 'choices':
+        return this.renderChoices(node);
+
+      case 'assignments':
+        return this.renderAssignments(node);
+
+      case 'taglist':
+        return this.renderTagList(node, field);
+
       default:
         control = `<input class="form-control form-control-sm" id="${id}" data-field="${field.key}"
             value="${escapeHtml(value)}" placeholder="${escapeHtml(field.placeholder || '')}">`;
@@ -1242,6 +1394,80 @@
         </div>`;
     }
 
+    /**
+     * The buttons a visitor will see.
+     *
+     * Each one gets its own output on the node, so the branch a choice leads to
+     * is drawn rather than configured — which is the entire reason to build a
+     * flow visually instead of writing it.
+     */
+    renderChoices(node) {
+      const choices = node.data.choices || [];
+
+      return `
+        <div class="mb-3">
+          <label class="form-label">Choices</label>
+          <div class="form-text mb-2">
+            Each choice gets its own output. Anything else the visitor types
+            goes to "Something else".
+          </div>
+          ${choices.map((choice, i) => `
+            <div class="wf-condition" data-choice-index="${i}">
+              <input class="form-control form-control-sm" data-choice-field="label"
+                     value="${escapeHtml(choice.label || '')}" placeholder="Track my order">
+              <input class="form-control form-control-sm" data-choice-field="value"
+                     value="${escapeHtml(choice.value || '')}" placeholder="value (optional)">
+              <button class="btn btn-sm btn-outline-danger" data-remove-choice="${i}" title="Remove">
+                <i data-feather="x"></i>
+              </button>
+            </div>`).join('')}
+          <button class="btn btn-sm btn-outline-secondary w-100 mt-2" id="wf-add-choice">
+            <i data-feather="plus"></i> Add choice
+          </button>
+        </div>`;
+    }
+
+    /** Values to compute or rename before the next step. */
+    renderAssignments(node) {
+      const assignments = node.data.assignments || [];
+
+      return `
+        <div class="mb-3">
+          <label class="form-label">Values</label>
+          <div class="form-text mb-2">
+            The name on the left, what it should be on the right. Placeholders
+            such as <code>{{order_id}}</code> are filled in.
+          </div>
+          ${assignments.map((assignment, i) => `
+            <div class="wf-condition" data-assignment-index="${i}">
+              <input class="form-control form-control-sm" data-assignment-field="variable"
+                     value="${escapeHtml(assignment.variable || '')}" placeholder="greeting">
+              <input class="form-control form-control-sm" data-assignment-field="value"
+                     value="${escapeHtml(assignment.value || '')}" placeholder="Hello {{name}}">
+              <button class="btn btn-sm btn-outline-danger" data-remove-assignment="${i}" title="Remove">
+                <i data-feather="x"></i>
+              </button>
+            </div>`).join('')}
+          <button class="btn btn-sm btn-outline-secondary w-100 mt-2" id="wf-add-assignment">
+            <i data-feather="plus"></i> Add value
+          </button>
+        </div>`;
+    }
+
+    /** A comma-separated list, which is how people already write tags. */
+    renderTagList(node, field) {
+      const value = (node.data[field.key] || []).join(', ');
+
+      return `
+        <div class="mb-3">
+          <label class="form-label" for="wf-field-taglist">${escapeHtml(field.label)}</label>
+          <input class="form-control form-control-sm" id="wf-field-taglist"
+                 data-taglist="${escapeHtml(field.key)}"
+                 value="${escapeHtml(value)}" placeholder="refund, urgent">
+          ${field.help ? `<div class="form-text">${escapeHtml(field.help)}</div>` : ''}
+        </div>`;
+    }
+
     renderConditions(node) {
       const conditions = node.data.conditions || [];
       return `
@@ -1283,14 +1509,16 @@
           this.markDirty();
 
           // Only the fields that change the node's appearance need a repaint.
-          if (['label', 'sourceType', 'prompt', 'template', 'message', 'strictness', 'url', 'method'].includes(e.target.dataset.field)) {
+          if (['label', 'sourceType', 'prompt', 'template', 'message', 'strictness',
+            'url', 'method', 'question', 'variable', 'left', 'operator', 'right',
+            'title'].includes(e.target.dataset.field)) {
             this.renderNodes();
             if (window.feather) {
               window.feather.replace();
             }
           }
           // Changing the method shows or hides the request body field.
-          if (['sourceType', 'method'].includes(e.target.dataset.field)) {
+          if (['sourceType', 'method', 'operator'].includes(e.target.dataset.field)) {
             this.renderProperties();
           }
 
@@ -1363,6 +1591,70 @@
         input.addEventListener('input', e => {
           this.testValues[node.id] = this.testValues[node.id] || {};
           this.testValues[node.id][e.target.dataset.testVar] = e.target.value;
+        });
+      });
+
+      // Repeating groups: choices and assignments behave identically, so the
+      // wiring is shared rather than written twice with one of them subtly
+      // different.
+      [
+        { add: 'wf-add-choice', key: 'choices', indexAttr: 'choiceIndex',
+          fieldAttr: 'choiceField', removeAttr: 'removeChoice',
+          blank: () => ({ id: this.uid('choice'), label: '', value: '' }) },
+        { add: 'wf-add-assignment', key: 'assignments', indexAttr: 'assignmentIndex',
+          fieldAttr: 'assignmentField', removeAttr: 'removeAssignment',
+          blank: () => ({ variable: '', value: '' }) }
+      ].forEach(group => {
+        this.el.properties.querySelector(`#${group.add}`)?.addEventListener('click', () => {
+          node.data[group.key] = node.data[group.key] || [];
+          node.data[group.key].push(group.blank());
+          this.markDirty();
+          this.pushHistory();
+          this.render();
+        });
+
+        this.el.properties.querySelectorAll(`[data-${group.removeAttr.replace(/([A-Z])/g, '-$1').toLowerCase()}]`)
+          .forEach(button => {
+            button.addEventListener('click', () => {
+              const index = parseInt(button.dataset[group.removeAttr], 10);
+              const removed = node.data[group.key][index];
+              node.data[group.key].splice(index, 1);
+
+              // Drop edges hanging off an output that no longer exists,
+              // otherwise they point at a handle that is gone.
+              if (removed && removed.id) {
+                this.edges = this.edges.filter(edge =>
+                  !(edge.source === node.id && edge.sourceHandle === removed.id));
+              }
+
+              this.markDirty();
+              this.pushHistory();
+              this.render();
+            });
+          });
+
+        this.el.properties.querySelectorAll(`[data-${group.indexAttr.replace(/([A-Z])/g, '-$1').toLowerCase()}]`)
+          .forEach(row => {
+            const index = parseInt(row.dataset[group.indexAttr], 10);
+            row.querySelectorAll(`[data-${group.fieldAttr.replace(/([A-Z])/g, '-$1').toLowerCase()}]`)
+              .forEach(input => {
+                input.addEventListener('input', event => {
+                  node.data[group.key][index][event.target.dataset[group.fieldAttr]] = event.target.value;
+                  this.markDirty();
+                  this.renderNodes();
+                });
+              });
+          });
+      });
+
+      this.el.properties.querySelectorAll('[data-taglist]').forEach(input => {
+        input.addEventListener('input', event => {
+          node.data[event.target.dataset.taglist] = event.target.value
+            .split(',')
+            .map(tag => tag.trim())
+            .filter(Boolean);
+          this.markDirty();
+          this.renderNodes();
         });
       });
 
@@ -1469,10 +1761,105 @@
       });
     }
 
+    // -- templates --------------------------------------------------------
+
+    /**
+     * Offer the flows somebody was going to build anyway.
+     *
+     * Loaded on demand rather than at start-up: most sessions are edits to an
+     * existing workflow and never open this.
+     */
+    async openTemplates() {
+      this.el.templatePicker.hidden = false;
+      this.el.templateList.innerHTML = '<p class="text-muted">Loading…</p>';
+
+      try {
+        const { templates } = await this.api('/templates');
+
+        this.el.templateList.innerHTML = templates.map(template => `
+          <button type="button" class="wf-template-card" data-template="${escapeHtml(template.id)}">
+            <span class="wf-template-industry">${escapeHtml(template.industry)}</span>
+            <span class="wf-template-name">${escapeHtml(template.name)}</span>
+            <span class="wf-template-summary">${escapeHtml(template.summary)}</span>
+            <span class="wf-template-requires">Needs: ${escapeHtml(template.requires)}</span>
+          </button>`).join('');
+
+        this.el.templateList.querySelectorAll('[data-template]').forEach(card => {
+          card.addEventListener('click', () => this.applyTemplate(card.dataset.template));
+        });
+      } catch (error) {
+        this.el.templateList.innerHTML =
+          `<p class="text-danger">${escapeHtml(error.message)}</p>`;
+      }
+    }
+
+    /**
+     * Load a template onto the canvas.
+     *
+     * Replaces what is there, so an author with unsaved work is asked first —
+     * losing a half-built flow to a misclick is not recoverable through undo
+     * once the page has moved on.
+     */
+    async applyTemplate(id) {
+      if (this.nodes.length > 0 &&
+          !confirm('This replaces everything on the canvas. Continue?')) {
+        return;
+      }
+
+      try {
+        const { template } = await this.api(`/templates/${encodeURIComponent(id)}`);
+
+        // Ids are regenerated so two templates loaded in one session cannot
+        // collide, and so a saved workflow never shares ids with the template
+        // it came from.
+        const idMap = new Map();
+        this.nodes = template.nodes.map(node => {
+          const fresh = this.uid('node');
+          idMap.set(node.id, fresh);
+          return {
+            id: fresh,
+            type: node.type,
+            position: { ...node.position },
+            data: JSON.parse(JSON.stringify(node.data))
+          };
+        });
+
+        this.edges = template.edges.map(edge => ({
+          id: this.uid('edge'),
+          source: idMap.get(edge.source),
+          target: idMap.get(edge.target),
+          sourceHandle: edge.sourceHandle || null
+        })).filter(edge => edge.source && edge.target);
+
+        if (!this.workflow.name || this.workflow.name === 'Untitled workflow') {
+          this.workflow.name = template.name;
+          this.el.title.textContent = template.name;
+        }
+
+        this.el.templatePicker.hidden = true;
+        this.selectedNodeId = null;
+        this.markDirty();
+        this.pushHistory();
+        this.render();
+        this.fitView();
+        this.applyTransform();
+
+        this.toast(`Loaded "${template.name}". Change the wording to suit you, then publish.`, 'success');
+      } catch (error) {
+        this.toast(error.message, 'danger');
+      }
+    }
+
     // -- toolbar actions --------------------------------------------------
 
     bindToolbar() {
       const on = (id, handler) => document.getElementById(id)?.addEventListener('click', handler);
+
+      on('wf-open-templates', () => this.openTemplates());
+      on('wf-template-close', () => {
+        this.el.templatePicker.hidden = true;
+      });
+      on('wf-templates', () => this.openTemplates());
 
       on('wf-save', () => this.save());
       on('wf-publish', () => this.publish());
@@ -1555,16 +1942,32 @@
 
       const rect = this.el.canvas.getBoundingClientRect();
       const padding = 60;
-      const zoom = Math.min(
-        MAX_ZOOM,
-        Math.max(MIN_ZOOM,
-          Math.min((rect.width - padding * 2) / (maxX - minX), (rect.height - padding * 2) / (maxY - minY)))
+
+      // Floored well above MIN_ZOOM. A wide flow fitted to the window lands
+      // around 35%, where the node titles are unreadable and "fit to view"
+      // shows you a diagram of something you cannot read. Better to show the
+      // start of it at a legible size and let the canvas be panned — a
+      // workflow is read left to right anyway.
+      const READABLE_ZOOM = 0.6;
+
+      const fitted = Math.min(
+        (rect.width - padding * 2) / (maxX - minX),
+        (rect.height - padding * 2) / (maxY - minY)
       );
+
+      const zoom = Math.min(MAX_ZOOM, Math.max(READABLE_ZOOM, fitted));
+      const fitsWhole = fitted >= READABLE_ZOOM;
 
       this.view = {
         zoom,
-        x: (rect.width - (maxX - minX) * zoom) / 2 - minX * zoom,
-        y: (rect.height - (maxY - minY) * zoom) / 2 - minY * zoom
+        // Centred when the whole thing fits; otherwise anchored to the entry
+        // point, because that is where reading starts.
+        x: fitsWhole
+          ? (rect.width - (maxX - minX) * zoom) / 2 - minX * zoom
+          : padding - minX * zoom,
+        y: fitsWhole
+          ? (rect.height - (maxY - minY) * zoom) / 2 - minY * zoom
+          : padding - minY * zoom
       };
       this.applyTransform();
     }

@@ -164,6 +164,23 @@ const ConversationSchema = new mongoose.Schema({
     at: { type: Date }
   },
   /**
+   * Where the published workflow got to.
+   *
+   * A workflow that asks a question has to survive until the answer arrives,
+   * which is a different message, often minutes later and sometimes on a
+   * different socket. Without this the walk restarts from the entry point every
+   * time and the same question is asked forever.
+   *
+   * `variables` are what the flow has collected so far. Values only — never a
+   * credential, because this is read back into a prompt.
+   */
+  workflowState: {
+    workflowId: { type: mongoose.Schema.Types.ObjectId, ref: 'Workflow' },
+    awaiting: { type: mongoose.Schema.Types.Mixed },
+    variables: { type: mongoose.Schema.Types.Mixed },
+    updatedAt: { type: Date }
+  },
+  /**
    * What the customer thought of it.
    *
    * The operator is copied in at rating time rather than looked up later,

@@ -494,6 +494,11 @@
 
         addBotMessage(messageText, true, sender);
 
+        // Quick replies, when the workflow offered a set of choices.
+        if (Array.isArray(message.choices) && message.choices.length > 0) {
+          addQuickReplies(message.choices);
+        }
+
         // Handle file responses if present
         if (message.fileUrl) {
           addFileResponse(message.fileUrl, message.fileName, sender);
@@ -539,6 +544,11 @@
         const sender = message.senderName || 'Operator';
 
         addBotMessage(messageText, true, sender);
+
+        // Quick replies, when the workflow offered a set of choices.
+        if (Array.isArray(message.choices) && message.choices.length > 0) {
+          addQuickReplies(message.choices);
+        }
 
         // Handle file responses if present
         if (message.fileUrl) {
@@ -1275,6 +1285,43 @@
   }
 
   // Set typing indicator visibility
+  /**
+   * Buttons for a question with a known set of answers.
+   *
+   * Tapping one sends its label as an ordinary message, so nothing downstream
+   * needs a special case: the transcript reads naturally, an operator joining
+   * later sees what was chosen, and a visitor who prefers to type still can.
+   *
+   * The buttons are removed once used. Leaving them behind invites answering
+   * a question that has already moved on, which is how a flow gets out of step
+   * with the person in it.
+   */
+  function addQuickReplies(choices) {
+    const existing = chatMessages.querySelector('.quick-replies');
+    if (existing) {
+      existing.remove();
+    }
+
+    const group = document.createElement('div');
+    group.className = 'quick-replies';
+
+    choices.slice(0, 8).forEach(choice => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'quick-reply';
+      button.textContent = choice.label;
+      button.addEventListener('click', () => {
+        group.remove();
+        chatInput.value = choice.label;
+        sendMessage();
+      });
+      group.appendChild(button);
+    });
+
+    chatMessages.appendChild(group);
+    scrollToBottom();
+  }
+
   /** A neutral, non-attributed line: not the bot speaking, but a state change. */
   function addSystemNotice(text) {
     const notice = document.createElement('div');

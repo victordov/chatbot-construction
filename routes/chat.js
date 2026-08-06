@@ -6,6 +6,7 @@ const tenantService = require('../services/tenant');
 const { logger } = require('../services/logging');
 const usageService = require('../services/usage');
 const contactService = require('../services/contacts');
+const replyService = require('../services/reply');
 
 const router = express.Router();
 
@@ -138,10 +139,17 @@ router.post('/message', async (req, res) => {
         content: msg.content
       }));
 
-    // Built per request so the reply uses this tenant's persona and templates
-    // rather than a single shared, tenant-less assistant.
-    const aiService = await AIService.forCompany(companyId);
-    const botResponse = await aiService.generateResponse(message.trim(), history);
+    // The same path the socket handler takes: the tenant's published workflow
+    // if they have one, otherwise their assistant. Two entry points answering
+    // the same message differently is how a REST fallback quietly stops
+    // behaving like the product.
+    const reply = await replyService.generate({
+      conversation,
+      message: message.trim(),
+      history
+    });
+
+    const botResponse = reply.text;
 
     conversation.messages.push({
       content: botResponse,
@@ -153,6 +161,7 @@ router.post('/message', async (req, res) => {
 
     socketManager.emitToSession(sessionId, 'bot-message', {
       text: botResponse,
+      choices: reply.choices || undefined,
       timestamp: new Date()
     });
 
@@ -163,13 +172,18 @@ router.post('/message', async (req, res) => {
       timestamp: new Date()
     });
 
-    usageService.record(companyId, { aiResponses: 1, messages: 1 });
+    // Only an assistant reply is a model call; a workflow that answered from a
+    // template or a lookup did not use one.
+    usageService.record(companyId, reply.source === 'workflow'
+      ? { messages: 1 }
+      : { aiResponses: 1, messages: 1 });
 
     res.json({
       success: true,
       message: {
         content: botResponse,
         sender: 'bot',
+        choices: reply.choices || undefined,
         timestamp: new Date()
       }
     });

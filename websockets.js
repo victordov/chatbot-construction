@@ -11,6 +11,7 @@ const contactService = require('./services/contacts');
 const emailChannel = require('./services/email-channel');
 const csatService = require('./services/csat');
 const assignmentService = require('./services/assignment');
+const replyService = require('./services/reply');
 const { operatorRoom, GLOBAL_OPERATOR_ROOM } = require('./socketManager');
 const { logger } = require('./services/logging');
 
@@ -604,8 +605,11 @@ function setupWebSockets(server) {
             });
           }
         } else if (conversation.botEnabled !== false) {
-          // No operator connected and bot enabled, generate an AI response for the user
-          const aiService = await AIService.forCompany(clientCompanyId);
+          // No operator connected and bot enabled: the published workflow
+          // answers if the tenant has one, otherwise the assistant does.
+          //
+          // This used to call the assistant directly, which is why a published
+          // workflow had no effect on any live conversation.
           const messageHistory = conversation.messages
             .slice(-10)
             .map(msg => ({
@@ -613,7 +617,13 @@ function setupWebSockets(server) {
               content: msg.content
             }));
 
-          const botResponse = await aiService.generateResponse(message, messageHistory);
+          const reply = await replyService.generate({
+            conversation,
+            message,
+            history: messageHistory
+          });
+
+          const botResponse = reply.text;
 
           // Create a message ID for the bot response
           const botMessageId = 'bot_' + Date.now();
@@ -642,6 +652,10 @@ function setupWebSockets(server) {
           const responseData = {
             id: dbBotMessageId,
             clientId: botMessageId,
+            // Quick replies, when the workflow offered a set of choices. The
+            // widget renders them as buttons; a visitor tapping one is
+            // unambiguous in a way that typing never is.
+            choices: reply.choices || undefined,
             timestamp: new Date()
           };
 
@@ -660,7 +674,23 @@ function setupWebSockets(server) {
 
           socket.emit('bot-message', responseData);
 
-          usageService.record(clientCompanyId, { aiResponses: 1, messages: 1 });
+          // A workflow node can ask for a person. Honour it here rather than
+          // leaving the escalation as a sentence the visitor has to act on.
+          if (reply.escalate && reply.escalate.enabled !== false) {
+            const escalated = await assignmentService.autoAssign(conversation);
+            allOperators(clientCompanyId, 'operator-requested', {
+              sessionId,
+              assigned: escalated.assigned,
+              timestamp: new Date()
+            });
+          }
+
+          // Only an assistant reply is a model call. A workflow that answered
+          // from a fixed template or a lookup did not use the model, and
+          // metering it as one would overcharge the tenant.
+          usageService.record(clientCompanyId, reply.source === 'workflow'
+            ? { messages: 1 }
+            : { aiResponses: 1, messages: 1 });
 
           toOperators(clientCompanyId, 'new-message', {
             sessionId,
@@ -830,6 +860,9 @@ function setupWebSockets(server) {
           {
             $set: {
               hasOperator: true,
+              // The workflow stops here. Two of them asking questions at once
+              // — a person and a half-finished flow — is worse than either.
+              workflowState: { awaiting: null, variables: {}, updatedAt: new Date() },
               operatorId: socket.user.id,
               operatorName
             }
@@ -1256,7 +1289,10 @@ function setupWebSockets(server) {
               endedAt: new Date(),
               hasOperator: false,
               operatorId: null,
-              operatorName: null
+              operatorName: null,
+              // A visitor returning days later should not be answered as
+              // though they were still half way through answering a question.
+              workflowState: { awaiting: null, variables: {}, updatedAt: new Date() }
             }
           },
           { new: true }

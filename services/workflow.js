@@ -481,9 +481,10 @@ class WorkflowService {
         break;
       case 'vector_store':
       case 'vector-store':
-        if (!config.collectionName && !config.collection) {
-          throw new Error(`Knowledge node ${node.id} with vector store source must have a collection name`);
-        }
+        // An empty collection means this company's own knowledge base, which
+        // is what almost everyone wants and the only one most tenants have.
+        // Demanding a name they have never seen was a wall in front of the
+        // most common configuration.
         break;
       default:
         throw new Error(`Knowledge node ${node.id} has an unsupported source type: ${data.sourceType}`);
@@ -494,6 +495,42 @@ class WorkflowService {
     case 'router':
       if (!Array.isArray(data.conditions)) {
         throw new Error(`Router node ${node.id} must have conditions array`);
+      }
+      break;
+
+    case 'ask':
+      if (!data.question || String(data.question).trim().length === 0) {
+        throw new Error(`Ask node ${node.id} must have a question`);
+      }
+      if (!data.variable || String(data.variable).trim().length === 0) {
+        throw new Error(`Ask node ${node.id} must say where to save the answer`);
+      }
+      break;
+
+    case 'buttons':
+      if (!Array.isArray(data.choices) || data.choices.length === 0) {
+        throw new Error(`Choices node ${node.id} must offer at least one choice`);
+      }
+      if (data.choices.some(choice => !choice || !String(choice.label || '').trim())) {
+        throw new Error(`Choices node ${node.id} has a choice with no label`);
+      }
+      break;
+
+    case 'condition':
+      if (!data.left || String(data.left).trim().length === 0) {
+        throw new Error(`Check node ${node.id} must have a value to check`);
+      }
+      break;
+
+    case 'task':
+      if (!data.title || String(data.title).trim().length === 0) {
+        throw new Error(`Task node ${node.id} must have a title`);
+      }
+      break;
+
+    case 'tag':
+      if (!Array.isArray(data.tags) || data.tags.length === 0) {
+        throw new Error(`Tag node ${node.id} must have at least one tag`);
       }
       break;
 
@@ -535,6 +572,8 @@ class WorkflowService {
     case 'start':
     case 'moderation':
     case 'operator-handoff':
+    case 'set':
+    case 'business-hours':
       // No extra configuration required.
       break;
 

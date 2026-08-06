@@ -67,10 +67,23 @@ const TaskSchema = new mongoose.Schema({
       }
     }
   },
+  /**
+   * The person who raised it, when a person did.
+   *
+   * Not required, because a workflow can raise a task too and there is no user
+   * behind it — it was the bot, acting on what a customer said. Requiring a
+   * user meant every task a flow tried to create was silently rejected by
+   * validation, which is a miserable way for an automation to fail.
+   * `createdByBot` says which it was, rather than leaving an empty field to
+   * guess at.
+   */
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
-    required: true
+    ref: 'User'
+  },
+  createdByBot: {
+    type: Boolean,
+    default: false
   },
   // Company reference for multi-tenancy
   company: {

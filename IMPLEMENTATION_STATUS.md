@@ -30,7 +30,29 @@ delete.
 execution plan and walks it at request time. Safety and persona prompts are
 injected into every LLM node at compile time and cannot be edited out. The
 runtime lazily loads a tenant's published workflow on first use, so a restart
-does not take every bot offline.
+does not take every bot offline. `services/reply.js` is the single seam both
+the socket handler and the REST fallback go through: a published workflow
+answers if the tenant has one, the assistant otherwise, and a workflow that
+fails falls back rather than leaving a visitor with silence.
+
+**Conversations, not single replies.** A workflow can ask a question, wait, and
+use the answer: where it got to is kept on the conversation, so the next message
+resumes instead of starting again. Answers are validated by format, a wrong one
+is asked for again a few times, and then the flow takes its "could not answer"
+path rather than trapping somebody in a loop. Choice nodes render as buttons in
+the widget and are matched tolerantly — the tap, the label, or the number all
+work. Beyond that: branch on a value rather than on what the visitor said,
+compute a value, branch on whether anyone is actually available, tag the
+conversation, and raise a task carrying everything the flow collected. There is
+deliberately no code node: running tenant-supplied JavaScript in this process
+would need a sandbox that does not exist here.
+
+**Workflow templates.** Six complete flows a tenant can start from — order
+status, returns, front-desk triage, lead qualification, appointment booking and
+verified account lookup — rather than a blank canvas. Each says up front what it
+needs before it will work, every one checks whether a person is available before
+promising one, and every one has a way out to a human. There is a test that they
+all still validate.
 
 **Knowledge retrieval.** `services/embeddings.js` + `services/vector-store.js`.
 Backend is chosen automatically: Qdrant (`QDRANT_URL`), Atlas `$vectorSearch`
@@ -156,10 +178,15 @@ content-hashed widget assets cached for a year with the loader on `no-cache`.
   people asking about" but will not group synonyms.
 - **CRM/ticketing integrations** (Salesforce, Zendesk, Shopify) from `todo.md`
   are not built, and there is no public API or webhook system for customers.
+  A workflow's Call an API node covers many of the same cases in the meantime.
+- **A workflow cannot call another workflow**, and there is no loop construct.
+  Both are deliberate for now: cycles are rejected at design time because the
+  executor walks the graph, and a conversation that loops is almost always a
+  bug rather than an intention.
 
 ## Test suite
 
-`npm test` — 430 tests across 26 suites. An in-memory MongoDB starts
+`npm test` — 488 tests across 27 suites. An in-memory MongoDB starts
 automatically (`tests/globalSetup.js`), so no local `mongod` is needed.
 `tests/setup.js` blanks `OPENAI_API_KEY` so the suite never makes a real model
 call; the embedding and intent tests therefore assert on ranking and plumbing

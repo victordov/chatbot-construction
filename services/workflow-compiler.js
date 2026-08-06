@@ -22,14 +22,20 @@ const KnowledgeConnectorService = require('./knowledge-connector');
 const { logger } = require('./logging');
 const { getIntentClassifier } = require('./intent-classifier');
 const workflowActions = require('./workflow-actions');
+const nodes = require('./workflow-nodes');
 
 const CONFIGURATION_NODES = new Set(['persona', 'moderation']);
 
 /** Node types the executor knows how to run. */
 const FLOW_NODES = new Set([
   'start', 'knowledge', 'knowledge-source', 'llm',
-  'response', 'router', 'fallback', 'operator-handoff', 'action'
+  'response', 'router', 'fallback', 'operator-handoff', 'action',
+  // Nodes that make a workflow a conversation rather than a single reply.
+  'ask', 'buttons', 'condition', 'set', 'business-hours', 'tag', 'task'
 ]);
+
+/** Nodes that stop the walk and wait for the visitor to answer. */
+const WAITING_NODES = new Set(['ask', 'buttons']);
 
 /**
  * Nodes that legitimately have more than one output, and the handles they use.
@@ -39,7 +45,13 @@ const FLOW_NODES = new Set([
  */
 const BRANCHING_NODES = new Map([
   ['router', null],
-  ['action', ['success', 'error']]
+  ['action', ['success', 'error']],
+  ['condition', ['true', 'false']],
+  ['business-hours', ['open', 'closed']],
+  // One output per choice, plus a fallback for an answer that matched none.
+  ['buttons', null],
+  // An answer that fails validation too many times takes its own path.
+  ['ask', ['next', 'invalid']]
 ]);
 
 const MAX_EXECUTION_STEPS = 50;
@@ -557,6 +569,79 @@ class WorkflowCompilerService {
   }
 
   /**
+   * Pick up where the last turn left off.
+   *
+   * Returns null when there is nothing to resume, so a fresh conversation
+   * simply starts at the entry point.
+   *
+   * @returns {{nextId: string|null}|{reprompt: string, state: object}|null}
+   */
+  resume(steps, state, userMessage, variables) {
+    const awaiting = state && state.awaiting;
+
+    if (!awaiting || !awaiting.nodeId) {
+      return null;
+    }
+
+    const step = steps[awaiting.nodeId];
+
+    if (!step) {
+      // The workflow was edited and the node is gone. Starting again is the
+      // only coherent option, and it is better than replying to a question
+      // that no longer exists.
+      return null;
+    }
+
+    const edges = step.next || [];
+    const attempts = (awaiting.attempts || 0) + 1;
+    const maxAttempts = awaiting.maxAttempts || nodes.MAX_ASK_ATTEMPTS;
+
+    if (awaiting.kind === 'choice') {
+      const choice = nodes.matchChoice(userMessage, awaiting.choices);
+
+      if (choice) {
+        variables[awaiting.variable] = choice.value;
+        const named = edges.find(edge => edge.handle === choice.id);
+        return { nextId: named ? named.target : (edges[0] && edges[0].target) || null };
+      }
+
+      if (attempts >= maxAttempts) {
+        // Stop asking. Somebody typing something else three times over is
+        // telling you the buttons do not cover their problem.
+        const other = edges.find(edge => edge.handle === 'other');
+        return { nextId: other ? other.target : null };
+      }
+
+      return {
+        reprompt: 'Sorry — could you pick one of those options?',
+        choices: awaiting.choices,
+        state: { ...state, awaiting: { ...awaiting, attempts } }
+      };
+    }
+
+    const result = nodes.validateAnswer(userMessage, awaiting.kind, awaiting.pattern);
+
+    if (result.valid) {
+      variables[awaiting.variable] = result.value;
+      const next = edges.find(edge => edge.handle === 'next') ||
+        edges.find(edge => !edge.handle) || edges[0];
+      return { nextId: next ? next.target : null };
+    }
+
+    if (attempts >= maxAttempts) {
+      // Give up on the question rather than trapping somebody in a loop. The
+      // `invalid` branch is where a flow hands over to a person.
+      const invalid = edges.find(edge => edge.handle === 'invalid');
+      return { nextId: invalid ? invalid.target : null };
+    }
+
+    return {
+      reprompt: result.message,
+      state: { ...state, awaiting: { ...awaiting, attempts } }
+    };
+  }
+
+  /**
    * Execute a compiled workflow by walking the graph from the entry point.
    *
    * The previous implementation ignored the graph entirely and went straight to
@@ -604,7 +689,13 @@ class WorkflowCompilerService {
       }
     }
 
+    // Variables carried over from earlier turns come first, so an answer
+    // collected three messages ago is still available; the current message
+    // always wins over a stale copy of itself.
+    const carried = (context.state && context.state.variables) || {};
+
     const variables = {
+      ...carried,
       user_input: userMessage,
       user_message: userMessage,
       knowledge_result: knowledgeContext,
@@ -614,8 +705,33 @@ class WorkflowCompilerService {
     let currentId = entryPoint;
     let response = null;
     let escalate = null;
+    let choices = null;
+    let awaiting = null;
     const visited = [];
     const actionRuns = [];
+
+    // Resume, if the last turn stopped at a question.
+    //
+    // Without this the walk restarts from the entry point on every message, so
+    // a workflow could never ask anything: the answer would be treated as a
+    // brand new conversation and the question asked again, forever.
+    const resumed = this.resume(steps, context.state, userMessage, variables);
+
+    if (resumed) {
+      if (resumed.reprompt) {
+        // The answer did not validate and there are attempts left, so the
+        // question is asked again rather than the flow moving on with a value
+        // it knows is wrong.
+        return {
+          success: true,
+          response: resumed.reprompt,
+          choices: resumed.choices,
+          state: resumed.state,
+          metadata: { path: [], tenantId, awaiting: true }
+        };
+      }
+      currentId = resumed.nextId;
+    }
 
     while (currentId && visited.length < MAX_EXECUTION_STEPS) {
       const step = steps[currentId];
@@ -685,6 +801,45 @@ class WorkflowCompilerService {
         break;
       }
 
+      case 'ask':
+      case 'buttons':
+      case 'condition':
+      case 'set':
+      case 'business-hours':
+      case 'tag':
+      case 'task': {
+        const outcome = await this.runNode(step.type, step, {
+          currentId,
+          variables,
+          companyId: tenantId,
+          sessionId: context.sessionId,
+          conversationId: context.conversationId,
+          render: template => this.renderTemplate(template, variables)
+        });
+
+        Object.assign(variables, outcome.variables || {});
+
+        if (outcome.response) {
+          response = outcome.response;
+        }
+        if (outcome.choices) {
+          choices = outcome.choices;
+        }
+
+        if (outcome.awaiting) {
+          // The visitor now has a question in front of them. Stop here and
+          // remember where, so their answer resumes rather than restarting.
+          awaiting = outcome.awaiting;
+          nextId = null;
+          break;
+        }
+
+        nextId = outcome.branch
+          ? this.resolveBranch(step, outcome.branch)
+          : nextId;
+        break;
+      }
+
       case 'fallback':
         response = this.renderTemplate(step.data.message, variables) ||
             routing.fallback?.message ||
@@ -747,6 +902,14 @@ class WorkflowCompilerService {
       success: true,
       response,
       escalation: escalate,
+      // Buttons for the widget to render, when the last node offered any.
+      choices,
+      // Handed back to the caller to persist on the conversation. Without it
+      // the next message would start the workflow again from the top.
+      state: {
+        awaiting,
+        variables: this.persistableVariables(variables)
+      },
       metadata: {
         knowledgeUsed: Boolean(knowledgeContext),
         path: visited,
@@ -757,6 +920,58 @@ class WorkflowCompilerService {
         tenantId
       }
     };
+  }
+
+  /**
+   * Dispatch to the node implementations in workflow-nodes.
+   *
+   * A failing node returns nothing rather than throwing: one broken step
+   * should degrade the conversation, not end it.
+   */
+  async runNode(type, step, context) {
+    const handlers = {
+      ask: nodes.runAsk,
+      buttons: nodes.runButtons,
+      condition: nodes.runCondition,
+      set: nodes.runSet,
+      'business-hours': nodes.runBusinessHours,
+      tag: nodes.runTag,
+      task: nodes.runTask
+    };
+
+    const handler = handlers[type];
+
+    if (!handler) {
+      return {};
+    }
+
+    try {
+      return (await handler(step, context)) || {};
+    } catch (error) {
+      logger.error('Workflow node failed', { type, error: error.message });
+      return {};
+    }
+  }
+
+  /**
+   * Follow a named output.
+   *
+   * Falls through to the only edge when a node has one, so a condition wired
+   * to a single next step still works while the author is building it up.
+   */
+  resolveBranch(step, branch) {
+    const edges = step.next || [];
+    const named = edges.find(edge => edge.handle === branch);
+
+    if (named) {
+      return named.target;
+    }
+
+    if (edges.length === 1 && !edges[0].handle) {
+      return edges[0].target;
+    }
+
+    return null;
   }
 
   /**
@@ -782,6 +997,28 @@ class WorkflowCompilerService {
     }
 
     return null;
+  }
+
+  /**
+   * The variables worth carrying to the next turn.
+   *
+   * The current message and the retrieved knowledge are per-turn by nature;
+   * keeping them would mean a question answered two turns ago silently
+   * referring to the wrong message.
+   */
+  persistableVariables(variables) {
+    const transient = new Set([
+      'user_input', 'user_message', 'knowledge_result', 'action_error'
+    ]);
+
+    return Object.fromEntries(
+      Object.entries(variables)
+        .filter(([key, value]) => !transient.has(key) && value !== undefined && value !== null)
+        // Capped: this is persisted on the conversation, and a workflow that
+        // accumulated a variable per turn would grow without limit.
+        .slice(0, 50)
+        .map(([key, value]) => [key, String(value).slice(0, 2000)])
+    );
   }
 
   /**

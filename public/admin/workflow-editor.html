@@ -60,6 +60,7 @@
                         <i data-feather="more-vertical"></i>
                     </button>
                     <ul class="dropdown-menu dropdown-menu-end">
+                        <li><button class="dropdown-item" id="wf-templates"><i data-feather="layout"></i> Start from a template</button></li>
                         <li><button class="dropdown-item" id="wf-versions"><i data-feather="clock"></i> Version history</button></li>
                         <li><button class="dropdown-item" id="wf-duplicate"><i data-feather="copy"></i> Duplicate</button></li>
                         <li><hr class="dropdown-divider"></li>
@@ -86,9 +87,35 @@
                     <div class="wf-node-layer" id="wf-nodes"></div>
                 </div>
 
+                <!-- A blank canvas is the worst thing to hand somebody who has
+                     just been told they can automate their support, so the
+                     empty state leads with the flows rather than the parts. -->
                 <div class="wf-empty-hint" id="wf-empty-hint">
                     <i data-feather="git-branch"></i>
-                    <p>Start by adding a <strong>Persona</strong> and a <strong>Start</strong> node.</p>
+                    <p>Start from something that already works, or build your own.</p>
+                    <button class="btn btn-primary btn-sm" id="wf-open-templates">
+                        Browse templates
+                    </button>
+                    <p class="small text-muted mt-2 mb-0">
+                        Or drag a <strong>Persona</strong> and a <strong>Start</strong> node
+                        from the left.
+                    </p>
+                </div>
+
+                <div class="wf-template-picker" id="wf-template-picker" hidden>
+                    <div class="wf-template-panel">
+                        <div class="wf-template-head">
+                            <div>
+                                <h5 class="mb-1">Start from a template</h5>
+                                <p class="text-muted small mb-0">
+                                    Each one is a complete flow. Change the wording, fill in
+                                    anything it needs, and publish.
+                                </p>
+                            </div>
+                            <button class="btn-close" id="wf-template-close" aria-label="Close"></button>
+                        </div>
+                        <div class="wf-template-list" id="wf-template-list"></div>
+                    </div>
                 </div>
 
                 <div class="wf-canvas-controls">
