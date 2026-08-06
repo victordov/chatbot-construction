@@ -93,6 +93,28 @@ const ConversationSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Task'
   }],
+  /**
+   * Operator-only notes. Never sent to the visitor and never included in the
+   * model's context — the whole point is somewhere to write things you would
+   * not say out loud, and to carry context across a handover.
+   */
+  notes: [{
+    body: { type: String, required: true },
+    author: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    authorName: { type: String },
+    /** System notes record transfers and similar events. */
+    system: { type: Boolean, default: false },
+    createdAt: { type: Date, default: Date.now }
+  }],
+  /**
+   * Who has handed this conversation on, and to whom. Kept so an operator
+   * picking up a transferred chat can see where it came from.
+   */
+  transferredFrom: {
+    operatorId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    operatorName: { type: String },
+    at: { type: Date }
+  },
   startedAt: {
     type: Date,
     default: Date.now

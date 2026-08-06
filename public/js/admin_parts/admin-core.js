@@ -296,6 +296,9 @@ function initializeDashboard(token, user) {
   if (typeof setupAssistantSection === 'function') {
     setupAssistantSection();
   }
+  if (typeof setupOperatorTools === 'function') {
+    setupOperatorTools(socket);
+  }
   setupExport();
 
   // Check URL parameters for chat selection

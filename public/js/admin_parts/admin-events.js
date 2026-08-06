@@ -93,6 +93,11 @@ function setupEventHandlers(socket) {
     // Enable leave button
     const leaveBtn = document.getElementById('leave-chat-btn');
     leaveBtn.disabled = false;
+
+    // The queue's "mine" count just changed.
+    if (typeof applyChatFilter === 'function') {
+      applyChatFilter();
+    }
   });
 
   // End chat button
@@ -128,6 +133,10 @@ function setupEventHandlers(socket) {
 
     updateSuggestionButtons(false);
     resetChatView();
+
+    if (typeof applyChatFilter === 'function') {
+      applyChatFilter();
+    }
   });
 
   // Send message

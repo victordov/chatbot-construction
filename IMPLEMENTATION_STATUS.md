@@ -58,6 +58,16 @@ abandonment, a weekday/hour staffing heatmap, per-operator workload with
 median and mean response time, recurring topics, and task throughput.
 Advanced metrics are gated on the plan's analytics tier.
 
+**Operator tools.** Saved replies inserted from the composer with `/`, internal
+notes that never reach the visitor or the model, conversation transfer with a
+handover note, and a queue filtered by All / Mine / Waiting so several chats
+can be worked at once.
+
+**Availability.** Per-company business hours in the company's own timezone.
+Outside them the widget stops implying someone is about to answer. Whether an
+operator is actually connected is read from the socket rooms, so it cannot
+drift from reality.
+
 **File uploads.** MIME allowlist, size cap, random storage ids, tenant-scoped
 downloads served as attachments with `nosniff`.
 
@@ -89,7 +99,7 @@ content-hashed widget assets cached for a year with the loader on `no-cache`.
 
 ## Test suite
 
-`npm test` — 190 tests across 18 suites. An in-memory MongoDB starts
+`npm test` — 208 tests across 19 suites. An in-memory MongoDB starts
 automatically (`tests/globalSetup.js`), so no local `mongod` is needed.
 `tests/setup.js` blanks `OPENAI_API_KEY` so the suite never makes a real model
 call; the embedding and intent tests therefore assert on ranking and plumbing

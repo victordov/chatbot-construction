@@ -13,10 +13,43 @@ const ResponseTemplate = require('../models/response-template');
 const Company = require('../models/company');
 const { getResponseTemplateService } = require('../services/responseTemplates');
 const assistantConfig = require('../services/assistant-config');
-const { auth, admin } = require('../middleware/auth');
+const { auth, admin, operator } = require('../middleware/auth');
 const { logger } = require('../services/logging');
 
 const VALID_ROLES = ['greeting', 'fallback', 'offTopic', 'handoff'];
+
+/**
+ * Operators need to read templates so they can insert one into a reply. Only
+ * managing them requires admin, so this route is registered before that gate.
+ */
+router.get('/mine', auth, operator, async (req, res) => {
+  try {
+    if (!req.user.company) {
+      return res.json({ templates: [] });
+    }
+
+    const templates = await ResponseTemplate.find({
+      company: req.user.company.id,
+      enabled: true
+    }).select('name responses variables role').sort({ name: 1 }).lean();
+
+    // Pre-rendered: an operator inserting a reply wants the finished text, not
+    // a template with [PLACEHOLDER] markers they have to fill in by hand.
+    const service = getResponseTemplateService();
+
+    res.json({
+      templates: templates.map(template => ({
+        _id: template._id,
+        name: template.name,
+        role: template.role,
+        text: service.render(template)
+      }))
+    });
+  } catch (error) {
+    logger.error('Failed to list templates for operator', { error: error.message });
+    res.status(500).json({ error: 'Failed to load replies' });
+  }
+});
 
 router.use(auth, admin);
 

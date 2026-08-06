@@ -14,6 +14,9 @@
     // Content-hashed URLs for the widget's own dependencies, supplied by the
     // loader from /api/widget/config so they can be cached immutably.
     assets: {},
+    // Whether the company is open and an operator could pick up. Null means
+    // unknown, which is treated as available.
+    availability: null,
     chatbotName: 'Assistant',
     primaryColor: '#2196f3',
     initialMessage: 'Hello! How can I assist you today?',
@@ -98,6 +101,17 @@
     // Display initial message
     if (config.initialMessage) {
       addBotMessage(config.initialMessage);
+    }
+
+    // Say so up front when nobody can answer. Letting a visitor type into a
+    // widget that implies a human is coming, at 3am, is the wrong promise.
+    if (config.availability && config.availability.open === false) {
+      const closedMessage = config.availability.offlineMessage ||
+        'We are closed at the moment.';
+      const returnHint = config.availability.opensAt
+        ? ` We reopen ${config.availability.opensAt}.`
+        : '';
+      addBotMessage(closedMessage + returnHint);
     }
 
     // Start heartbeat to keep connection alive

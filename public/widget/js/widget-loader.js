@@ -119,7 +119,12 @@
           settings.initialMessage = s.welcomeMessage;
         }
 
-        return { settings: settings, assets: remote.assets || {} };
+        return {
+          settings: settings,
+          assets: remote.assets || {},
+          // Whether anyone can actually answer right now.
+          availability: remote.availability || null
+        };
       })
       .catch(function() {
         return { settings: {}, assets: {} };
@@ -161,7 +166,8 @@
             widgetKey: parsed.widgetKey,
             // Passed through so the widget loads its own dependencies from
             // hashed URLs too.
-            assets: assets
+            assets: assets,
+            availability: remote.availability || null
           }
         );
 

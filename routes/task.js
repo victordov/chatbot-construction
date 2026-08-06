@@ -291,7 +291,9 @@ router.post('/:id/comments', auth, operator, async (req, res) => {
       content,
       attachments: attachments || [],
       author: req.user.id,
-      authorName: req.user.username
+      // Prefer the display name so a comment is signed the way a colleague
+      // would recognise, matching notes and transfers.
+      authorName: req.user.displayName || req.user.username
     };
 
     // Create the comment

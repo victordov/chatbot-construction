@@ -1,7 +1,7 @@
 ### **General Tasks**
 
-- [ ] 4. The operator should be able to connect to multiple active chats at once.
-- [ ] 6. Implement the name of the user in the admin list of chats so the from is not unknown.
+- [x] 4. The operator should be able to connect to multiple active chats at once. (Queue now has All/Mine/Waiting filters, joined-state highlighting and per-chat unread counts.)
+- [x] 6. Implement the name of the user in the admin list of chats so the from is not unknown.
 
 ---
 

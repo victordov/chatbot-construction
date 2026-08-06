@@ -583,6 +583,11 @@ function addChatToList(chat) {
 
   chatList.appendChild(chatItem);
 
+  // A new arrival must respect whichever filter the operator is working in.
+  if (typeof applyChatFilter === 'function') {
+    applyChatFilter();
+  }
+
   // Add event listener
   chatItem.addEventListener('click', function() {
     // Deselect all chats
@@ -656,6 +661,10 @@ function addChatToList(chat) {
     const viewTasksBtn = document.getElementById('view-tasks-btn');
     viewTasksBtn.disabled = false;
 
+    // Transfer and notes only make sense once a conversation is selected.
+    document.getElementById('transfer-chat-btn').disabled = false;
+    document.getElementById('notes-toggle-btn').disabled = false;
+
     // Update URL with chat parameter
     updateUrlWithParams({
       section: 'active-chats',
@@ -683,6 +692,11 @@ function loadChatMessages(sessionId) {
 
       // Display user contact information if available
       displayUserContactInfo(data);
+
+      // Internal notes arrive with the conversation.
+      if (typeof setConversationNotes === 'function') {
+        setConversationNotes(data.notes || []);
+      }
 
       if (data.messages && data.messages.length > 0) {
         data.messages.forEach(msg => {
@@ -883,6 +897,13 @@ function resetChatView() {
   document.getElementById('join-chat-btn').disabled = true;
   document.getElementById('end-chat-btn').disabled = true;
   document.getElementById('leave-chat-btn').disabled = true;
+  document.getElementById('transfer-chat-btn').disabled = true;
+  document.getElementById('notes-toggle-btn').disabled = true;
+  document.getElementById('notes-panel').style.display = 'none';
+
+  if (typeof setConversationNotes === 'function') {
+    setConversationNotes([]);
+  }
 }
 
 // Update active chat count
@@ -1062,6 +1083,10 @@ function updateChatOperatorStatus(sessionId, hasOperator, operatorName = '') {
     window.joinedChats.add(sessionId);
     // Save joined chats to localStorage
     window.saveJoinedChats();
+  }
+
+  if (typeof applyChatFilter === 'function') {
+    applyChatFilter();
   }
 }
 

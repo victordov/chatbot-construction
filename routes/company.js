@@ -2,6 +2,7 @@ const express = require('express');
 const Company = require('../models/company');
 const User = require('../models/user');
 const tenantService = require('../services/tenant');
+const availabilityService = require('../services/availability');
 const { auth, superadmin, admin, sameCompany } = require('../middleware/auth');
 const crypto = require('crypto');
 
@@ -128,6 +129,90 @@ router.put('/me/widget', requireOwnCompany, async (req, res) => {
   } catch (error) {
     console.error('Error updating widget config:', error);
     res.status(500).json({ error: 'Failed to update widget configuration' });
+  }
+});
+
+/**
+ * When this company is open. Read and written by its own admins.
+ */
+router.get('/me/hours', requireOwnCompany, async (req, res) => {
+  try {
+    const company = await Company.findById(req.user.company.id).select('businessHours').lean();
+    const availability = await availabilityService.status(req.user.company.id);
+
+    res.json({
+      businessHours: company?.businessHours || { enabled: false, timezone: 'UTC', days: [] },
+      // What a visitor would see right now, so an admin can sanity-check the
+      // schedule they just entered against reality.
+      current: availability
+    });
+  } catch (error) {
+    console.error('Error loading business hours:', error);
+    res.status(500).json({ error: 'Failed to load business hours' });
+  }
+});
+
+router.put('/me/hours', requireOwnCompany, async (req, res) => {
+  try {
+    const { enabled, timezone, days, offlineMessage } = req.body;
+    const company = await Company.findById(req.user.company.id);
+
+    if (!company) {
+      return res.status(404).json({ error: 'Company not found' });
+    }
+
+    if (timezone) {
+      // Reject an unknown zone rather than storing it and silently falling
+      // back to UTC every time the schedule is evaluated.
+      try {
+        new Intl.DateTimeFormat('en-GB', { timeZone: timezone }).format(new Date());
+      } catch {
+        return res.status(400).json({ error: `"${timezone}" is not a recognised timezone` });
+      }
+    }
+
+    const cleanDays = Array.isArray(days)
+      ? days
+        .filter(day => Number.isInteger(day.day) && day.day >= 0 && day.day <= 6)
+        .map(day => {
+          const opensAt = Number(day.opensAt);
+          const closesAt = Number(day.closesAt);
+          return {
+            day: day.day,
+            closed: Boolean(day.closed),
+            opensAt: Number.isFinite(opensAt) ? Math.max(0, Math.min(1440, opensAt)) : 0,
+            closesAt: Number.isFinite(closesAt) ? Math.max(0, Math.min(1440, closesAt)) : 1440
+          };
+        })
+      : [];
+
+    const backwards = cleanDays.find(day => !day.closed && day.closesAt <= day.opensAt);
+    if (backwards) {
+      return res.status(400).json({
+        error: 'Closing time must be after opening time. Overnight hours are not supported yet.'
+      });
+    }
+
+    company.businessHours = {
+      enabled: Boolean(enabled),
+      timezone: timezone || 'UTC',
+      days: cleanDays,
+      offlineMessage: offlineMessage !== undefined
+        ? String(offlineMessage).trim()
+        : company.businessHours?.offlineMessage
+    };
+
+    await company.save();
+    availabilityService.invalidate(req.user.company.id);
+
+    res.json({
+      success: true,
+      businessHours: company.businessHours,
+      current: await availabilityService.status(req.user.company.id)
+    });
+  } catch (error) {
+    console.error('Error saving business hours:', error);
+    res.status(500).json({ error: 'Failed to save business hours' });
   }
 });
 

@@ -11,6 +11,7 @@ const express = require('express');
 const router = express.Router();
 const tenantService = require('../services/tenant');
 const assetManifest = require('../services/asset-manifest');
+const availabilityService = require('../services/availability');
 const { logger } = require('../services/logging');
 
 const DEFAULT_SETTINGS = {
@@ -42,10 +43,20 @@ router.get('/config', async (req, res) => {
       });
     }
 
+    // Whether anyone can actually pick up. The widget uses this to avoid
+    // promising a person outside opening hours or when nobody is logged in.
+    const availability = await availabilityService.status(company._id);
+
     res.json({
       recognised: true,
       companyName: company.name,
       settings: { ...DEFAULT_SETTINGS, ...(company.widgetSettings || {}) },
+      availability: {
+        open: availability.open,
+        canReachOperator: availability.canReachOperator,
+        offlineMessage: availability.offlineMessage,
+        opensAt: availability.opensAt
+      },
       assets
     });
   } catch (error) {

@@ -8,6 +8,7 @@ const { enforceLimit } = require('../middleware/quota');
 const analyticsService = require('../services/analytics');
 const usageService = require('../services/usage');
 const { logger } = require('../services/logging');
+const socketManager = require('../socketManager');
 const {
   containsRegex,
   companyFilter,
@@ -226,6 +227,174 @@ router.post('/chat/:sessionId/contact-info', async (req, res) => {
   } catch (error) {
     logger.error('Error updating contact information', { error });
     res.status(500).json({ error: 'Failed to update contact information' });
+  }
+});
+
+/**
+ * Internal notes.
+ *
+ * Operator-only: never sent to the visitor, and deliberately never fed to the
+ * model. This is where you write "customer was abusive on the phone earlier"
+ * or "billing already refunded this" so the next person picking the chat up
+ * is not starting cold.
+ */
+router.post('/chat/:sessionId/notes', async (req, res) => {
+  try {
+    const conversation = await loadScopedConversation(req, res);
+    if (!conversation) {
+      return;
+    }
+
+    const body = String(req.body.body || '').trim();
+    if (!body) {
+      return res.status(400).json({ error: 'A note cannot be empty' });
+    }
+    if (body.length > 5000) {
+      return res.status(400).json({ error: 'Notes are limited to 5000 characters' });
+    }
+
+    const note = {
+      body,
+      author: req.user.id,
+      authorName: req.user.displayName || req.user.username,
+      createdAt: new Date()
+    };
+
+    conversation.notes.push(note);
+    await conversation.save();
+
+    // Other operators viewing this conversation should see it appear.
+    socketManager.emitToOperators(conversation.company, 'conversation-note', {
+      sessionId: conversation.sessionId,
+      note
+    });
+
+    res.status(201).json({ note });
+  } catch (error) {
+    logger.error('Error adding conversation note', { error });
+    res.status(500).json({ error: 'Failed to add the note' });
+  }
+});
+
+router.delete('/chat/:sessionId/notes/:noteId', async (req, res) => {
+  try {
+    const conversation = await loadScopedConversation(req, res);
+    if (!conversation) {
+      return;
+    }
+
+    const note = conversation.notes.id(req.params.noteId);
+    if (!note) {
+      return res.status(404).json({ error: 'Note not found' });
+    }
+
+    // Only the author may remove a note, or an admin cleaning up. A note is a
+    // record other people may be relying on.
+    const isAuthor = note.author && note.author.toString() === req.user.id.toString();
+    const isAdmin = req.user.role === 'superadmin' || req.user.role === 'company_admin';
+
+    if (!isAuthor && !isAdmin) {
+      return res.status(403).json({ error: 'You can only delete your own notes' });
+    }
+
+    note.deleteOne();
+    await conversation.save();
+
+    res.json({ success: true });
+  } catch (error) {
+    logger.error('Error deleting conversation note', { error });
+    res.status(500).json({ error: 'Failed to delete the note' });
+  }
+});
+
+/**
+ * Hand a conversation to a colleague.
+ *
+ * There was previously no way to do this: an operator who picked up a chat
+ * they could not resolve had to leave it and hope someone else noticed.
+ */
+router.post('/chat/:sessionId/transfer', async (req, res) => {
+  try {
+    const conversation = await loadScopedConversation(req, res);
+    if (!conversation) {
+      return;
+    }
+
+    const { operatorId, note } = req.body;
+    if (!operatorId) {
+      return res.status(400).json({ error: 'Choose an operator to transfer to' });
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(operatorId)) {
+      return res.status(400).json({ error: 'Invalid operator' });
+    }
+
+    const target = await User.findById(operatorId).select('username displayName company isActive role');
+
+    if (!target || !target.isActive) {
+      return res.status(404).json({ error: 'That operator is not available' });
+    }
+
+    // The receiving operator must be in the same company, or the transfer
+    // would hand another tenant's conversation to them.
+    if (!canAccessCompany(req.user, target.company)) {
+      return res.status(403).json({ error: 'You can only transfer within your own company' });
+    }
+
+    if (target._id.toString() === req.user.id.toString()) {
+      return res.status(400).json({ error: 'That conversation is already yours' });
+    }
+
+    const from = {
+      operatorId: req.user.id,
+      operatorName: req.user.displayName || req.user.username,
+      at: new Date()
+    };
+    const targetName = target.displayName || target.username;
+
+    conversation.transferredFrom = from;
+    conversation.operatorId = target._id;
+    conversation.operatorName = targetName;
+    conversation.hasOperator = true;
+
+    // Recorded as a system note so the history explains itself later.
+    conversation.notes.push({
+      body: note
+        ? `Transferred from ${from.operatorName} to ${targetName}: ${String(note).trim()}`
+        : `Transferred from ${from.operatorName} to ${targetName}`,
+      author: req.user.id,
+      authorName: from.operatorName,
+      system: true,
+      createdAt: new Date()
+    });
+
+    await conversation.save();
+
+    // The receiving operator gets a direct nudge; everyone else just sees the
+    // assignment change in their queue.
+    socketManager.emitToSession(`user:${target._id}`, 'chat-transferred-to-you', {
+      sessionId: conversation.sessionId,
+      from: from.operatorName,
+      note: note || null
+    });
+
+    socketManager.emitToOperators(conversation.company, 'chat-assigned', {
+      sessionId: conversation.sessionId,
+      operatorId: target._id,
+      operatorName: targetName,
+      from: from.operatorName
+    });
+
+    logger.info('Conversation transferred', {
+      sessionId: conversation.sessionId,
+      from: from.operatorName,
+      to: targetName
+    });
+
+    res.json({ success: true, operatorName: targetName });
+  } catch (error) {
+    logger.error('Error transferring conversation', { error });
+    res.status(500).json({ error: 'Failed to transfer the conversation' });
   }
 });
 

@@ -20,10 +20,16 @@ const auth = async (req, res, next) => {
       return res.status(401).json({ error: 'Token is not valid' });
     }
 
-    // Add user to request
+    // Add user to request.
+    //
+    // `displayName` is included because several routes attribute records to
+    // "displayName || username" - notes, transfers, task comments. Without it
+    // every one of those silently fell back to the username, so a note written
+    // by Bea Baker was signed "admin".
     req.user = {
       id: user._id,
       username: user.username,
+      displayName: user.displayName,
       email: user.email,
       role: user.role,
       company: user.company ? {

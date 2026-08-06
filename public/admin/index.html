@@ -191,15 +191,29 @@
                         <div class="col-md-4">
                             <div class="card">
                                 <div class="card-header">
-                                    Active Conversations
+                                    <div class="d-flex justify-content-between align-items-center mb-2">
+                                        <span class="fw-semibold">Conversations</span>
+                                        <span class="badge bg-secondary" id="queue-count">0</span>
+                                    </div>
+                                    <!-- An operator working several chats needs to
+                                         separate theirs from the open queue. -->
+                                    <div class="btn-group btn-group-sm w-100" role="group" aria-label="Filter conversations">
+                                        <button type="button" class="btn btn-outline-secondary active" data-chat-filter="all">All</button>
+                                        <button type="button" class="btn btn-outline-secondary" data-chat-filter="mine">
+                                            Mine <span class="badge bg-primary ms-1" id="mine-count">0</span>
+                                        </button>
+                                        <button type="button" class="btn btn-outline-secondary" data-chat-filter="unassigned">
+                                            Waiting <span class="badge bg-warning text-dark ms-1" id="waiting-count">0</span>
+                                        </button>
+                                    </div>
                                 </div>
                                 <div class="list-group list-group-flush" id="active-chat-list">
-                                    <a href="#" class="list-group-item list-group-item-action empty-state">No active conversations</a>
+                                    <div class="list-group-item empty-state">No active conversations</div>
                                 </div>
                             </div>
                         </div>
                         <div class="col-md-8">
-                            <div class="card">
+                            <div class="card conversation-card">
                                 <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
                                     <span id="selected-chat-title" class="fw-semibold">Select a conversation</span>
                                     <!-- Ordered by frequency of use: the primary
@@ -209,6 +223,11 @@
                                         <button class="btn btn-sm btn-primary" id="join-chat-btn" disabled>Join Chat</button>
                                         <button class="btn btn-sm btn-outline-secondary" id="create-task-btn" disabled>Create Task</button>
                                         <button class="btn btn-sm btn-outline-secondary" id="view-tasks-btn" disabled>View Tasks</button>
+                                        <button class="btn btn-sm btn-outline-secondary" id="transfer-chat-btn" disabled>Transfer</button>
+                                        <button class="btn btn-sm btn-outline-secondary position-relative" id="notes-toggle-btn" disabled>
+                                            Notes
+                                            <span class="badge bg-secondary ms-1" id="notes-count">0</span>
+                                        </button>
                                         <span class="action-divider"></span>
                                         <button class="btn btn-sm btn-outline-warning" id="leave-chat-btn" disabled>Leave</button>
                                         <button class="btn btn-sm btn-outline-danger" id="end-chat-btn" disabled>End Chat</button>
@@ -246,9 +265,32 @@
                                             <p>Select a conversation to view messages</p>
                                         </div>
                                     </div>
+                                    <!-- Operator-only. Never sent to the visitor. -->
+                                    <div id="notes-panel" class="notes-panel mt-3" style="display: none;">
+                                        <div class="d-flex justify-content-between align-items-center mb-2">
+                                            <strong class="small">Internal notes</strong>
+                                            <span class="badge bg-secondary-subtle text-secondary-emphasis">
+                                                Not visible to the customer
+                                            </span>
+                                        </div>
+                                        <div id="notes-list" class="notes-list mb-2"></div>
+                                        <div class="input-group input-group-sm">
+                                            <input type="text" class="form-control" id="note-input"
+                                                   placeholder="Add a note for your colleagues…">
+                                            <button class="btn btn-outline-secondary" id="add-note-btn">Add</button>
+                                        </div>
+                                    </div>
+
                                     <div id="operator-input" class="mt-3" style="display: none;">
+                                        <!-- Appears when the operator types "/" -->
+                                        <div id="canned-reply-picker" class="canned-picker" style="display: none;"></div>
                                         <div class="input-group">
-                                            <input type="text" class="form-control" id="operator-message" placeholder="Type your message...">
+                                            <button class="btn btn-outline-secondary" id="canned-reply-btn"
+                                                    type="button" title="Insert a saved reply (/)">
+                                                <span data-feather="zap"></span>
+                                            </button>
+                                            <input type="text" class="form-control" id="operator-message"
+                                                   placeholder="Type your message, or / for a saved reply…" autocomplete="off">
                                             <button class="btn btn-primary" id="send-operator-message">Send</button>
                                         </div>
                                     </div>
@@ -975,6 +1017,60 @@
                         </div>
                     </div>
 
+                    <div class="card mb-4">
+                        <div class="card-header">
+                            <h5 class="mb-0">Business hours</h5>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted">
+                                Outside these hours the widget stops implying someone is about to
+                                answer, and collects contact details instead.
+                            </p>
+
+                            <div class="form-check form-switch mb-3">
+                                <input class="form-check-input" type="checkbox" id="hours-enabled">
+                                <label class="form-check-label" for="hours-enabled">
+                                    Limit availability to set hours
+                                </label>
+                            </div>
+
+                            <div id="hours-config">
+                                <div class="row g-3 mb-3">
+                                    <div class="col-md-6">
+                                        <label for="hours-timezone" class="form-label">Timezone</label>
+                                        <select class="form-select" id="hours-timezone"></select>
+                                        <div class="form-text">Your local time, not the server's.</div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <label class="form-label">Right now</label>
+                                        <div id="hours-current" class="form-control-plaintext"></div>
+                                    </div>
+                                </div>
+
+                                <div class="table-responsive mb-3">
+                                    <table class="table table-sm align-middle" style="max-width: 34rem;">
+                                        <thead>
+                                            <tr>
+                                                <th>Day</th>
+                                                <th>Open</th>
+                                                <th>From</th>
+                                                <th>To</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="hours-table"></tbody>
+                                    </table>
+                                </div>
+
+                                <div class="mb-3">
+                                    <label for="hours-offline-message" class="form-label">Message when closed</label>
+                                    <textarea class="form-control" id="hours-offline-message" rows="2"></textarea>
+                                </div>
+                            </div>
+
+                            <button type="button" class="btn btn-primary" id="save-hours-btn">Save hours</button>
+                        </div>
+                    </div>
+
                     <div class="card">
                         <div class="card-header">
                             <h5 class="mb-0">Appearance</h5>
@@ -1583,6 +1679,36 @@
         </div>
     </div>
 
+    <!-- Transfer conversation -->
+    <div class="modal fade" id="transferModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Transfer conversation</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label for="transfer-operator" class="form-label">Transfer to</label>
+                        <select class="form-select" id="transfer-operator"></select>
+                    </div>
+                    <div class="mb-3">
+                        <label for="transfer-note" class="form-label">Handover note <span class="text-muted">(optional)</span></label>
+                        <textarea class="form-control" id="transfer-note" rows="3"
+                                  placeholder="Customer is chasing order 1234, refund already approved."></textarea>
+                        <div class="form-text">
+                            Saved as an internal note so the next person is not starting cold.
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-primary" id="confirm-transfer-btn">Transfer</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Canned reply editor -->
     <div class="modal fade" id="templateModal" tabindex="-1" aria-hidden="true">
         <div class="modal-dialog modal-lg modal-dialog-scrollable">
@@ -1736,5 +1862,6 @@
     <script src="/js/admin_parts/admin-billing.js"></script>
     <script src="/js/admin_parts/admin-analytics.js"></script>
     <script src="/js/admin_parts/admin-assistant.js"></script>
+    <script src="/js/admin_parts/admin-operator-tools.js"></script>
 </body>
 </html>
