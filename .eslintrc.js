@@ -68,6 +68,7 @@ module.exports = {
         setupWidgetSection: 'readonly',
         setupBillingSection: 'readonly',
         setupAnalytics: 'readonly',
+        setupAssistantSection: 'readonly',
         resizeChartsIn: 'readonly',
         initializeAnalyticsCharts: 'readonly',
         updateChatVolumeChart: 'readonly',

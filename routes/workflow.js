@@ -190,6 +190,10 @@ router.post('/:id/publish', authMiddleware, checkWorkflowAccess, async (req, res
     const tenantId = workflow.company || req.user.id;
     let hotSwapCompleted = false;
 
+    // The published workflow's Persona node is what the assistant uses, so a
+    // publish must invalidate the resolved persona immediately.
+    require('../services/assistant-config').invalidate(workflow.company);
+
     try {
       await runtimeRegistry.getRuntimeService().hotSwapWorkflow(tenantId, workflow);
       hotSwapCompleted = true;

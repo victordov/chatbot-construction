@@ -293,6 +293,9 @@ function initializeDashboard(token, user) {
   if (typeof setupAnalytics === 'function') {
     setupAnalytics();
   }
+  if (typeof setupAssistantSection === 'function') {
+    setupAssistantSection();
+  }
   setupExport();
 
   // Check URL parameters for chat selection

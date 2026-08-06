@@ -1,359 +1,217 @@
 /**
- * Prompt Engineering Service for Chatbot Application
+ * Response strategies.
  *
- * This service manages prompt engineering techniques to generate
- * professional and persuasive responses for the chatbot.
+ * This module used to hold a dozen real-estate roles — "you are a top
+ * performing real estate sales consultant", "you are a mortgage and financial
+ * advisor" — so every tenant's bot behaved like an estate agent whatever
+ * business they ran.
+ *
+ * What remains is deliberately about the *shape* of a reply, not the industry
+ * it is in. "Someone has raised a complaint" wants the same structure whether
+ * the product is software, insurance or garden furniture: acknowledge, resolve,
+ * commit to a timeframe. Who the assistant is comes from the tenant's persona,
+ * which is set in the workflow editor and layered on top of these.
  */
 
 /**
- * Predefined prompt structures for different response scenarios
+ * Strategies keyed by the shape of the request, not the subject matter.
+ *
+ * `{PERSONA}` is substituted with the tenant's own description of their
+ * assistant, so these never assert an identity of their own.
  */
 const PROMPT_STRUCTURES = {
-  // General property information prompt
-  propertyInformation: `
-You are a professional real estate agent with 15+ years of experience. 
-Provide detailed and accurate information about {PROPERTY_TYPE} in {LOCATION}.
-Highlight key features, amenities, and benefits that would appeal to potential buyers or renters.
-Use a confident but warm tone, emphasizing value and unique selling points.
-Focus on the following aspects: {FOCUS_POINTS}.
-Keep your response between 100-150 words, maintaining a professional but approachable tone.
+  // Someone wants to know something.
+  informational: `
+{PERSONA}
+
+The customer has asked: {QUERY_TOPIC}
+
+Answer using only the information available to you. Where you do not know
+something, say so plainly rather than guessing. Lead with the direct answer,
+then add the detail that supports it. Keep it under 150 words unless the
+question genuinely needs more.
   `,
 
-  // Sales-oriented prompt for persuasive responses
-  salesPersuasion: `
-You are a top-performing real estate sales consultant with expertise in closing deals.
-The client is interested in {PROPERTY_TYPE} in {LOCATION} with a budget of {BUDGET}.
-Create a persuasive response that emphasizes the benefits of acting quickly in the current market.
-Highlight limited availability, market trends, and potential for value appreciation.
-Include a subtle call to action suggesting the next step (viewing, application, deposit).
-Use social proof by mentioning similar properties that were quickly taken by other clients.
-Maintain a professional tone that creates a sense of urgency without being pushy.
-Keep your response between 100-150 words.
-  `,
-
-  // Problem-solving prompt for addressing client concerns
+  // Something has gone wrong and they are unhappy about it.
   concernResolution: `
-You are a customer service specialist in property management with a reputation for problem-solving.
-The client has expressed the following concern: {CONCERN}.
-Acknowledge their concern empathetically and validate their feelings.
-Provide a clear and specific solution to address their issue.
-Outline the steps your company will take to resolve the matter.
-Give a realistic timeframe for resolution.
-End with reassurance and a commitment to their satisfaction.
-Maintain a professional, solution-oriented tone throughout.
-Keep your response between 100-150 words.
+{PERSONA}
+
+The customer has raised this concern: {CONCERN}
+
+Acknowledge the problem and its impact on them before doing anything else.
+Give a specific resolution rather than a general reassurance, say what will
+happen next and by when, and avoid defensive or evasive language. If you
+cannot resolve it yourself, say who will and when they will be in touch.
+Keep it under 150 words.
   `,
 
-  // Mortgage and financial advice prompt
-  financialGuidance: `
-You are a mortgage and financial advisor specializing in real estate investments.
-The client is considering financing options for a {PROPERTY_TYPE} valued at {PROPERTY_VALUE}.
-They have a down payment of {DOWN_PAYMENT} and a credit score of approximately {CREDIT_SCORE}.
-Provide professional advice on the best financing options available to them.
-Compare at least two mortgage products with their respective benefits.
-Include specific numbers where possible (interest rates, monthly payments, terms).
-Maintain a balanced tone that presents facts without pushing any particular option.
-Keep your response between 150-200 words, focusing on clarity and precision.
+  // They are choosing between options.
+  comparison: `
+{PERSONA}
+
+The customer is comparing options and asked: {QUERY_TOPIC}
+
+Set out the genuine differences that bear on their decision. Be even-handed:
+name the drawbacks of each option as well as the strengths. Where one option
+suits a particular circumstance better, say which circumstance rather than
+simply declaring a winner. Close by naming the factor that should drive their
+choice. Keep it under 200 words.
   `,
 
-  // Neighborhood and location highlights prompt
-  neighborhoodHighlights: `
-You are a local area expert with in-depth knowledge of {LOCATION}.
-The client is considering moving to this area and wants to know about the lifestyle and amenities.
-Describe the neighborhood's character, highlighting:
-1. Local amenities (parks, shopping, restaurants)
-2. Transportation options
-3. Schools and educational facilities
-4. Community atmosphere and demographics
-5. Recent developments or future plans for the area
-Balance positive aspects with practical considerations.
-Use specific local references to demonstrate authentic knowledge.
-Keep your response between 150-200 words, using a helpful and informative tone.
+  // They need to do something and want to know how.
+  instructional: `
+{PERSONA}
+
+The customer wants to know how to: {QUERY_TOPIC}
+
+Give the steps in order, numbered. Keep each step to a single action. Note
+anything they need to have ready before starting, and anything that commonly
+goes wrong. Do not pad with encouragement. Keep it under 200 words.
   `,
 
-  // Property comparison prompt
-  propertyComparison: `
-You are a data-driven real estate analyst specializing in property comparisons.
-Compare these properties objectively:
-Property A: {PROPERTY_A_DETAILS}
-Property B: {PROPERTY_B_DETAILS}
-Structure your analysis around price, location, features, condition, and investment potential.
-Use a side-by-side comparison approach for clarity.
-Highlight the unique advantages of each property.
-Conclude with factors the client should prioritize in their decision-making.
-Maintain a neutral, analytical tone without showing preference for either property.
-Keep your response between 150-200 words, emphasizing facts over opinion.
-  `,
+  // The request is beyond what the assistant can do.
+  escalation: `
+{PERSONA}
 
-  // Rental application guidance prompt
-  rentalApplicationGuidance: `
-You are a tenant placement specialist with experience in successful rental applications.
-The client is preparing to apply for a rental property in a competitive market.
-Provide professional guidance on how to make their application stand out.
-Include advice on:
-1. Documentation preparation (financial records, references, identification)
-2. Presentation of their application
-3. Communication with the property manager
-4. Common mistakes to avoid
-5. Follow-up strategies
-Emphasize professional approaches that demonstrate reliability and responsibility.
-Keep your response between 100-150 words, using an encouraging but practical tone.
-  `,
+The customer has asked about something you cannot resolve: {QUERY_TOPIC}
 
-  // Investment property analysis prompt
-  investmentAnalysis: `
-You are a real estate investment analyst with expertise in ROI calculations.
-Analyze this investment opportunity professionally:
-Property: {PROPERTY_DETAILS}
-Purchase Price: {PURCHASE_PRICE}
-Expected Rental Income: {RENTAL_INCOME}
-Estimated Annual Expenses: {ANNUAL_EXPENSES}
-Calculate key metrics including cap rate, cash-on-cash return, and potential appreciation.
-Discuss the risk factors and market conditions that could affect this investment.
-Provide a balanced assessment of the property's investment potential.
-Include at least one specific recommendation for maximizing returns.
-Keep your response between 150-200 words, using a precise, data-focused tone.
-  `,
-
-  // Property management services prompt
-  managementServices: `
-You are a property management company representative showcasing your services.
-The client owns {NUMBER_OF_PROPERTIES} properties and is considering professional management.
-Outline your company's property management services, focusing on:
-1. Tenant screening and placement
-2. Rent collection and financial reporting
-3. Maintenance coordination and emergency responses
-4. Legal compliance and documentation
-5. Communication and owner reporting
-Emphasize the time and stress your services will save the owner.
-Include specific numbers regarding fees, response times, and occupancy rates.
-Keep your response between 150-200 words, using a professional, service-oriented tone.
-  `,
-
-  // Lease terms explanation prompt
-  leaseTermsExplanation: `
-You are a legal expert specializing in real estate contracts and leases.
-Explain the following lease terms clearly to a prospective tenant:
-{LEASE_TERMS}
-Break down complex legal language into straightforward explanations.
-Highlight important responsibilities and rights for both tenant and landlord.
-Flag any unusual or particularly important clauses that deserve special attention.
-Maintain a balanced perspective that respects both parties' interests.
-Use a professional, informative tone that builds trust.
-Keep your response between 100-150 words, prioritizing clarity and comprehension.
-  `,
-
-  // Property viewing preparation prompt
-  viewingPreparation: `
-You are a professional showing agent preparing a client for a property viewing.
-The viewing is for a {PROPERTY_TYPE} in {LOCATION} scheduled for {VIEWING_TIME}.
-Provide guidance on:
-1. What to prepare before the viewing
-2. Key aspects of the property to evaluate during the visit
-3. Questions they should ask the agent or current owner
-4. Red flags or issues to look for
-5. Next steps after the viewing if they're interested
-Tailor your advice to help them make the most informed decision possible.
-Keep your response between 100-150 words, using a helpful, preparatory tone.
+Say clearly that you are passing this to a colleague, without pretending to
+have an answer. Confirm what you have understood so they do not have to repeat
+themselves. Set expectations about what happens next. Keep it under 80 words.
   `
 };
 
 /**
- * Prompt Engineering Service for generating professional and persuasive responses
+ * The persona used when a tenant has not set one.
+ *
+ * Deliberately says nothing about any industry, and does not invent expertise
+ * the assistant does not have.
  */
+const DEFAULT_PERSONA = `
+You are a customer support assistant. You are accurate, concise and plain
+spoken. You do not invent facts, and you say when you do not know something.
+`.trim();
+
+/**
+ * Patterns that suggest which strategy fits a message.
+ *
+ * All industry-neutral: the previous set matched on "mortgage", "lease",
+ * "neighborhood" and "property".
+ */
+const STRATEGY_PATTERNS = {
+  concernResolution: /\b(problem|issue|concern(ed)?|worried|complaint|complain|broken|not working|doesn'?t work|failed|wrong|unhappy|disappointed)\b/i,
+  comparison: /\b(compare|comparison|difference|differences|better|versus|vs\.?|which one|which should|instead of)\b/i,
+  instructional: /\b(how do i|how to|how can i|steps|guide|walk me through|set up|configure|install)\b/i,
+  escalation: /\b(speak to (a|someone)|human|agent|representative|manager|escalate|complain to)\b/i
+};
+
 class PromptEngineeringService {
   constructor(options = {}) {
     this.prompts = { ...PROMPT_STRUCTURES, ...(options.customPrompts || {}) };
-    this.defaultSystemMessage = options.defaultSystemMessage || this.getDefaultSystemMessage();
+    this.persona = options.persona || DEFAULT_PERSONA;
   }
 
   /**
-   * Get the default system message for AI interactions
-   * @returns {string} - The default system message
+   * The tenant's persona, or the neutral default.
    */
   getDefaultSystemMessage() {
-    return `
-You are a professional real estate and property management assistant with the following qualities:
-- You have expert knowledge in real estate, property management, and mortgage financing
-- You communicate in a professional, clear, and concise manner
-- You provide accurate information while maintaining a persuasive and helpful tone
-- You prioritize customer needs and focus on solutions
-- You balance being informative with being personable and approachable
-- You avoid industry jargon unless necessary, and explain technical terms when used
-- You consistently represent the company's values of integrity, excellence, and client satisfaction
-
-When responding to inquiries:
-1. Address the client respectfully and acknowledge their specific question
-2. Provide comprehensive but concise information
-3. Include specific details where helpful (numbers, data, options)
-4. End with a clear next step or call to action when appropriate
-5. Maintain a tone that is professional, helpful, and builds confidence
-    `;
+    return this.persona;
   }
 
   /**
-   * Get a specific prompt structure by type
-   * @param {string} promptType - The type of prompt structure to retrieve
-   * @param {Object} variables - Variables to replace in the prompt
-   * @returns {string} - The populated prompt structure
+   * Set the persona for this tenant. Called with whatever the company
+   * configured in their workflow's Persona node.
+   */
+  setPersona(persona) {
+    if (persona && String(persona).trim()) {
+      this.persona = String(persona).trim();
+    }
+  }
+
+  /**
+   * A populated strategy prompt.
    */
   getPromptStructure(promptType, variables = {}) {
-    // If prompt type doesn't exist, use a generic professional response prompt
-    const promptTemplate = this.prompts[promptType] || this.getGenericPrompt();
+    const template = this.prompts[promptType] || this.prompts.informational;
 
-    // Replace all variables in the prompt template
-    let populatedPrompt = promptTemplate;
+    // The persona is always available to a strategy, so none of them has to
+    // assert an identity of its own.
+    const allVariables = { PERSONA: this.persona, ...variables };
 
-    for (const [key, value] of Object.entries(variables)) {
-      const regex = new RegExp(`\\{${key}\\}`, 'g');
-      populatedPrompt = populatedPrompt.replace(regex, value);
-    }
+    let populated = template;
+    Object.entries(allVariables).forEach(([key, value]) => {
+      if (value === undefined || value === null) {
+        return;
+      }
+      const safeKey = String(key).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      populated = populated.replace(new RegExp(`\\{${safeKey}\\}`, 'g'), String(value));
+    });
 
-    return populatedPrompt;
+    return populated.trim();
   }
 
-  /**
-   * Get a generic professional response prompt
-   * @returns {string} - A generic professional response prompt
-   */
-  getGenericPrompt() {
-    return `
-You are a professional real estate and property management assistant.
-The client has asked about: {QUERY_TOPIC}
-Provide a helpful, accurate, and professional response.
-Balance being informative with being concise.
-Use a warm, professional tone throughout.
-Keep your response between 100-150 words unless more detail is necessary.
-    `;
-  }
-
-  /**
-   * Create a system message using a specific prompt type
-   * @param {string} promptType - The type of prompt to use
-   * @param {Object} variables - Variables to replace in the prompt
-   * @returns {string} - The system message for the AI
-   */
   createSystemMessage(promptType, variables = {}) {
     return this.getPromptStructure(promptType, variables);
   }
 
-  /**
-   * Create a complete message array for AI processing using a prompt structure
-   * @param {string} promptType - The type of prompt to use
-   * @param {string} userQuery - The user's query
-   * @param {Array} messageHistory - Previous message history
-   * @param {Object} variables - Variables to replace in the prompt
-   * @returns {Array} - Array of messages for AI processing
-   */
   createPromptMessages(promptType, userQuery, messageHistory = [], variables = {}) {
-    // Create system message with prompt structure
-    const systemMessage = this.createSystemMessage(promptType, variables);
-
-    // Format messages for AI
     return [
-      { role: 'system', content: systemMessage },
+      { role: 'system', content: this.createSystemMessage(promptType, variables) },
       ...messageHistory,
       { role: 'user', content: userQuery }
     ];
   }
 
-  /**
-   * Add a new prompt structure or update an existing one
-   * @param {string} promptType - The type of prompt structure
-   * @param {string} promptTemplate - The prompt template to add
-   */
   addPromptStructure(promptType, promptTemplate) {
     this.prompts[promptType] = promptTemplate;
   }
 
-  /**
-   * Get all available prompt types
-   * @returns {Array<string>} - Array of prompt types
-   */
   getPromptTypes() {
     return Object.keys(this.prompts);
   }
 
   /**
-   * Detect the appropriate prompt type based on user query
-   * @param {string} userQuery - The user's query
-   * @returns {string} - The detected prompt type
-   */  /**
-   * Detect the appropriate prompt type based on user query
-   * @param {string} userQuery - The user's query
-   * @returns {string} - The detected prompt type
+   * Choose a strategy from the shape of the message.
+   *
+   * Falls back to `informational`, which is the safe default: answering the
+   * question plainly is never actively wrong, whereas treating a simple query
+   * as a complaint is.
    */
   detectPromptType(userQuery) {
-    // Convert query to lowercase for easier matching
-    const query = userQuery.toLowerCase();
+    const query = String(userQuery || '');
 
-    // Define patterns for detecting prompt types
-    const promptPatterns = {
-      salesPersuasion: /why should i|convince me|is it worth|benefits of buying|advantages|should i buy/i,
-      concernResolution: /problem|issue|concerned|worried|complaint|not working|broken/i,
-      financialGuidance: /mortgage|loan|finance|down payment|interest rate|afford|options do you offer/i,
-      neighborhoodHighlights: /neighborhood|area|location|nearby|surroundings|community/i,
-      propertyComparison: /compare|difference|better|versus|which (one|property)|a or b/i,
-      rentalApplicationGuidance: /application|apply|how to rent|approval|requirements/i,
-      investmentAnalysis: /investment|return|roi|profit|cash flow|appreciation/i,
-      managementServices: /management|services|manage my property|property manager/i,
-      leaseTermsExplanation: /lease|contract|agreement|terms|sign|legal/i,
-      viewingPreparation: /viewing|tour|visit|see the property|inspection/i,
-      propertyInformation: /tell me about|information|details|features|property|apartment|house/i
-    };
-
-    // Check each prompt type for pattern matches
-    for (const [promptType, pattern] of Object.entries(promptPatterns)) {
+    for (const [strategy, pattern] of Object.entries(STRATEGY_PATTERNS)) {
       if (pattern.test(query)) {
-        return promptType;
+        return strategy;
       }
     }
 
-    // Default to property information if no specific type is detected
-    return 'propertyInformation';
+    return 'informational';
   }
+
   /**
-   * Extract relevant variables from user query
-   * @param {string} userQuery - The user's query
-   * @returns {Object} - Extracted variables
+   * Pull out the few things a strategy prompt needs.
+   *
+   * The previous implementation extracted property types, locations and
+   * budgets with hardcoded patterns — including a literal check for the word
+   * "Miami". Nothing here is domain-specific: a generic extractor cannot know
+   * what matters to a given business, and guessing wrongly is worse than not
+   * guessing. Anything richer belongs in the tenant's own workflow.
    */
   extractVariables(userQuery) {
-    const variables = {};
-    // Extract property types
-    const propertyTypeRegex = /(?:apartments?|houses?|condos?|townhouses?|duplexes?|penthouses?|studios?|lofts?)/i;
-    const propertyTypeMatch = userQuery.match(propertyTypeRegex);
-    if (propertyTypeMatch) {
-      variables.PROPERTY_TYPE = propertyTypeMatch[0].toLowerCase();
-    }    // Extract locations - different patterns
-    if (userQuery.includes('Miami')) {
-      variables.LOCATION = 'Miami';
-    } else {
-      const locationRegex = /\bin\s+([A-Za-z\s]+?)(?:\s+with|\s*,|\s*\.|\s*\?|\s*$)/i;
-      const locationMatch = userQuery.match(locationRegex);
-      if (locationMatch && locationMatch[1]) {
-        variables.LOCATION = locationMatch[1].trim();
-      }
-    }
-    // Extract budget/price mentions
-    const priceRegex = /\$?([\d,]+(?:\.\d+)?)\s*(?:k|thousand|million|m)?/i;
-    const priceMatch = userQuery.match(priceRegex);
-    if (priceMatch) {
-      variables.BUDGET = priceMatch[0].includes('$') ? priceMatch[0].trim() : '$' + priceMatch[0].trim();
-      variables.PROPERTY_VALUE = variables.BUDGET;
-      variables.PURCHASE_PRICE = variables.BUDGET;
-    }
+    const query = String(userQuery || '');
+    const variables = { QUERY_TOPIC: query };
 
-    // Extract the main concern if present
-    if (userQuery.includes('concerned about') || userQuery.includes('worried about')) {
-      const concernRegex = /(?:concerned|worried) about\s+(.+?)(?:\.|\?|$)/i;
-      const concernMatch = userQuery.match(concernRegex);
-      if (concernMatch && concernMatch[1]) {
-        variables.CONCERN = concernMatch[1].trim();
-      }
+    const concernMatch = query.match(
+      /(?:concerned|worried|unhappy|frustrated)\s+(?:about|with|that)\s+(.+?)(?:[.?!]|$)/i
+    );
+    if (concernMatch && concernMatch[1]) {
+      variables.CONCERN = concernMatch[1].trim();
+    } else if (STRATEGY_PATTERNS.concernResolution.test(query)) {
+      // The whole message is the concern when it is not phrased as "worried
+      // about X".
+      variables.CONCERN = query;
     }
-
-    // For queries not clearly defining variables, set the topic
-    variables.QUERY_TOPIC = userQuery;
 
     return variables;
   }
@@ -361,5 +219,6 @@ Keep your response between 100-150 words unless more detail is necessary.
 
 module.exports = {
   PromptEngineeringService,
-  PROMPT_STRUCTURES
+  PROMPT_STRUCTURES,
+  DEFAULT_PERSONA
 };

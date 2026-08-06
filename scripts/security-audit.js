@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// filepath: c:\dev\proj\personal\chatbot-construction\scripts\security-audit.js
+
 
 /**
  * Security Audit Script

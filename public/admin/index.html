@@ -69,6 +69,12 @@
                             </a>
                         </li>
                         <li class="nav-item">
+                            <a class="nav-link" href="#assistant-section" data-section="assistant" data-roles="superadmin,company_admin">
+                                <span data-feather="message-circle"></span>
+                                Assistant
+                            </a>
+                        </li>
+                        <li class="nav-item">
                             <a class="nav-link" href="#billing-section" data-section="billing" data-roles="superadmin,company_admin">
                                 <span data-feather="credit-card"></span>
                                 Plan &amp; Usage
@@ -759,6 +765,78 @@
                                     </table>
                                 </div>
                             </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Assistant Section: who the bot is, and what it can say
+                     without involving the model. Nothing here ships with the
+                     product - every business fills it in themselves. -->
+                <section id="assistant-section" class="content-section">
+                    <div class="card mb-4">
+                        <div class="card-header">
+                            <h5 class="mb-0">Who your assistant is</h5>
+                        </div>
+                        <div class="card-body">
+                            <div id="persona-source-note" class="alert alert-info d-none"></div>
+                            <form id="assistant-config-form">
+                                <div class="mb-3">
+                                    <label for="assistant-persona" class="form-label">Persona</label>
+                                    <textarea class="form-control" id="assistant-persona" rows="4"
+                                              placeholder="You are the support assistant for Acme Tools, a hardware supplier. You are practical and direct, and you never guess at stock levels or delivery dates."></textarea>
+                                    <div class="form-text">
+                                        Describe your business and how the assistant should sound. This is
+                                        prepended to every reply.
+                                    </div>
+                                </div>
+                                <div class="mb-3">
+                                    <label for="assistant-scope" class="form-label">Scope <span class="text-muted">(optional)</span></label>
+                                    <input type="text" class="form-control" id="assistant-scope"
+                                           placeholder="orders, delivery, returns and product questions">
+                                    <div class="form-text">
+                                        Leave empty and the assistant answers anything. Fill it in and it will
+                                        politely decline questions outside that remit — at the cost of one extra
+                                        model call per message.
+                                    </div>
+                                </div>
+                                <button type="submit" class="btn btn-primary">Save assistant</button>
+                            </form>
+                        </div>
+                    </div>
+
+                    <div class="card mb-4">
+                        <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+                            <div>
+                                <h5 class="mb-0">Canned replies</h5>
+                                <small class="text-muted">
+                                    Answered instantly, without a model call. Matched by meaning, so
+                                    "can I get my money back" reaches a template about refunds.
+                                </small>
+                            </div>
+                            <button class="btn btn-primary btn-sm" id="new-template-btn">
+                                <span data-feather="plus"></span> New reply
+                            </button>
+                        </div>
+                        <div class="card-body">
+                            <div id="template-list"></div>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-header">
+                            <h5 class="mb-0">Test a message</h5>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted">
+                                Semantic matching is hard to predict from the trigger phrases alone.
+                                Type what a customer might say and see which reply it would get.
+                            </p>
+                            <div class="input-group mb-3" style="max-width: 40rem;">
+                                <input type="text" class="form-control" id="template-preview-input"
+                                       placeholder="e.g. how do I return something?">
+                                <button class="btn btn-outline-primary" id="template-preview-btn">Test</button>
+                            </div>
+                            <div id="template-preview-result"></div>
                         </div>
                     </div>
                 </section>
@@ -1505,6 +1583,96 @@
         </div>
     </div>
 
+    <!-- Canned reply editor -->
+    <div class="modal fade" id="templateModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-lg modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="templateModalLabel">New canned reply</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <input type="hidden" id="template-id">
+
+                    <div class="mb-3">
+                        <label for="template-name" class="form-label">Name</label>
+                        <input type="text" class="form-control" id="template-name"
+                               placeholder="Returns policy">
+                        <div class="form-text">For your own reference. Customers never see it.</div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="template-role" class="form-label">Role</label>
+                        <select class="form-select" id="template-role">
+                            <option value="">No role — matched by example phrases</option>
+                            <option value="greeting">Greeting — the opening line</option>
+                            <option value="fallback">Fallback — when nothing else fits</option>
+                            <option value="offTopic">Off topic — outside the assistant's scope</option>
+                            <option value="handoff">Handoff — passing to a person</option>
+                        </select>
+                        <div class="form-text">
+                            A role is a fixed slot in the conversation, filled by one reply.
+                        </div>
+                    </div>
+
+                    <div class="mb-3" id="template-triggers-group">
+                        <label for="template-triggers" class="form-label">Example phrases</label>
+                        <textarea class="form-control" id="template-triggers" rows="3"
+                                  placeholder="how do I return something&#10;I want to send this back&#10;refund please"></textarea>
+                        <div class="form-text">
+                            One per line. Matched by meaning, not exact words — three or four
+                            varied phrasings work better than a long list of near-duplicates.
+                        </div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="template-responses" class="form-label">Replies</label>
+                        <textarea class="form-control" id="template-responses" rows="5"
+                                  placeholder="You can return anything unused within [RETURN_WINDOW] days. Start a return at [RETURNS_URL]."></textarea>
+                        <div class="form-text">
+                            One reply per line. If you give several, one is chosen at random so the
+                            bot does not sound like a recording. Use <code>[NAME]</code> markers for
+                            values you set below.
+                        </div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label">Values</label>
+                        <div id="template-variables"></div>
+                        <button type="button" class="btn btn-sm btn-outline-secondary mt-2" id="add-variable-btn">
+                            Add value
+                        </button>
+                        <div class="form-text">
+                            Fills the <code>[NAME]</code> markers above. Anything unfilled is left
+                            visible in the reply, so you can spot it.
+                        </div>
+                    </div>
+
+                    <div class="mb-3" id="template-threshold-group">
+                        <label for="template-threshold" class="form-label">
+                            Match confidence: <span id="template-threshold-value">0.35</span>
+                        </label>
+                        <input type="range" class="form-range" id="template-threshold"
+                               min="0.15" max="0.75" step="0.05" value="0.35">
+                        <div class="form-text">
+                            Higher means fewer, more certain matches. Raise it if this reply fires
+                            when it should not.
+                        </div>
+                    </div>
+
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="template-enabled" checked>
+                        <label class="form-check-label" for="template-enabled">Enabled</label>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-primary" id="save-template-btn">Save</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Change Plan Modal (superadmin) -->
     <div class="modal fade" id="changePlanModal" tabindex="-1" aria-hidden="true">
         <div class="modal-dialog">
@@ -1567,5 +1735,6 @@
     <script src="/js/admin_parts/admin-widget.js"></script>
     <script src="/js/admin_parts/admin-billing.js"></script>
     <script src="/js/admin_parts/admin-analytics.js"></script>
+    <script src="/js/admin_parts/admin-assistant.js"></script>
 </body>
 </html>

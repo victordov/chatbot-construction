@@ -15,6 +15,12 @@ company on creation. Operators join a per-company socket room
 hand-off, with a REST fallback at `POST /api/chat/message`. End-to-end
 encryption uses TweetNaCl served from this origin.
 
+**Industry neutrality.** Nothing about any particular business is compiled into
+the product. A company says who its assistant is (`Assistant` → Persona, or a
+workflow's Persona node) and defines its own canned replies, which are matched
+to a visitor's message by meaning rather than keyword. A company that
+configures nothing gets a plain assistant answering from its knowledge base.
+
 **Visual workflow editor.** `public/js/workflow-editor/editor.js` — a
 dependency-free SVG editor. Create, connect, validate, save, publish (with
 hot-swap into the live runtime), version history with rollback, duplicate,
@@ -83,7 +89,7 @@ content-hashed widget assets cached for a year with the loader on `no-cache`.
 
 ## Test suite
 
-`npm test` — 171 tests across 18 suites. An in-memory MongoDB starts
+`npm test` — 190 tests across 18 suites. An in-memory MongoDB starts
 automatically (`tests/globalSetup.js`), so no local `mongod` is needed.
 `tests/setup.js` blanks `OPENAI_API_KEY` so the suite never makes a real model
 call; the embedding and intent tests therefore assert on ranking and plumbing

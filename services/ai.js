@@ -1,5 +1,5 @@
 const { OpenAI } = require('openai');
-const { ResponseTemplateService } = require('./responseTemplates');
+const { getResponseTemplateService } = require('./responseTemplates');
 const { PromptEngineeringService } = require('./promptEngineering');
 const { logger } = require('./logging');
 
@@ -10,12 +10,17 @@ const openai = process.env.OPENAI_API_KEY ?
   }) :
   null;
 
-// Default system message to set the assistant's behavior
+/**
+ * The assistant's behaviour when a tenant has not configured a persona.
+ *
+ * Deliberately says nothing about any industry. This used to describe a
+ * property management company, so every tenant's bot introduced itself as one
+ * until they built a workflow.
+ */
 const DEFAULT_SYSTEM_MESSAGE = `
-You are a helpful assistant for a property management company. 
-Your goal is to provide information about properties, answer questions about apartments, 
-mortgage options, and payment plans. Be professional, concise, and helpful.
-If asked about topics unrelated to property management, politely redirect the conversation.
+You are a customer support assistant. Be accurate, concise and plain spoken.
+Answer from the information available to you, and say plainly when you do not
+know something rather than guessing.
 `;
 
 /**
@@ -68,40 +73,47 @@ async function getChatGPTResponse(messages, options = {}) {
  * @param {string} message - The user's message
  * @returns {Promise<boolean>} - Whether the message is on-topic
  */
-async function isOnTopic(message, openaiClient = openai) {
+async function isOnTopic(message, openaiClient = openai, scope = null) {
+  // No configured scope means every question is in scope. This is the default
+  // and the common case: a general-purpose assistant has no business refusing
+  // to answer.
+  //
+  // The previous implementation hardcoded the scope to "property management,
+  // real estate, apartments, housing, mortgages, or payment plans" and spent
+  // an extra model call on every single message to enforce it.
+  if (!scope || !String(scope).trim()) {
+    return true;
+  }
+
   try {
-    // If we don't have an OpenAI instance (e.g., in testing), default to true
     if (!openaiClient) {
       return true;
     }
 
     const response = await openaiClient.chat.completions.create({
-      model: 'gpt-3.5-turbo',
+      model: process.env.OPENAI_CLASSIFIER_MODEL || 'gpt-4o-mini',
       messages: [
         {
           role: 'system',
-          content: `
-            Determine if the following message is related to property management, real estate, 
-            apartments, housing, mortgages, or payment plans. Respond with only "true" if it is 
-            related, or "false" if it is not related.
-          `
+          content: 'Decide whether the message falls within this assistant\'s remit.\n\n' +
+            `Remit: ${scope}\n\n` +
+            'Reply with only "true" or "false".'
         },
-        {
-          role: 'user',
-          content: message
-        }
+        { role: 'user', content: message }
       ],
-      temperature: 0.1,
+      temperature: 0,
       max_tokens: 5
     });
 
-    const result = response.choices[0].message.content.trim().toLowerCase();
-    return result === 'true';
+    return response.choices[0].message.content.trim().toLowerCase().startsWith('true');
   } catch (error) {
+    // Fail open: refusing to answer because a classifier call failed is worse
+    // than answering something slightly off-topic.
     logger.error('Error checking if message is on-topic:', { error });
-    return true; // Default to allowing the message
+    return true;
   }
 }
+
 
 /**
  * Summarize a conversation
@@ -154,13 +166,37 @@ class AIService {
     // Set a higher token limit for GPT-4o
     this.maxTokens = options.maxTokens || 4000;
 
-    // Initialize response template service
-    this.templateService = options.templateService ||
-      new ResponseTemplateService(options.templateOptions);
+    // Which tenant this instance is answering for. Templates and persona are
+    // per-company, so without it the service can only use neutral defaults.
+    this.companyId = options.companyId || null;
 
-    // Initialize prompt engineering service
+    // Optional description of what this assistant is for. Empty means the
+    // assistant answers anything, which is the default.
+    this.scope = options.scope || null;
+
+    this.templateService = options.templateService || getResponseTemplateService();
+
     this.promptService = options.promptService ||
       new PromptEngineeringService(options.promptOptions);
+  }
+
+  /**
+   * Point this service at a tenant. Called by the socket layer once the
+   * conversation's company is known.
+   */
+  setCompany(companyId) {
+    this.companyId = companyId || null;
+  }
+
+  /**
+   * Adopt a tenant's persona, so replies sound like their business rather than
+   * a generic assistant.
+   */
+  setPersona(persona) {
+    if (persona && String(persona).trim()) {
+      this.systemMessage = String(persona).trim();
+      this.promptService.setPersona(persona);
+    }
   }  /**
    * Generate a response to a user message
    * @param {string} message - The user's message
@@ -169,21 +205,21 @@ class AIService {
    */
   async generateResponse(message, messageHistory = []) {
     try {
-      // Check if message is on-topic
-      const onTopic = await isOnTopic(message, this.openai);
+      // Only enforced when the tenant configured a scope; otherwise every
+      // question is in scope and this costs nothing.
+      const onTopic = await isOnTopic(message, this.openai, this.scope);
 
       if (!onTopic) {
-        // Use a template for off-topic responses
-        return this.templateService.getTemplate('offTopic');
+        const offTopic = await this.templateService.getByRole(this.companyId, 'offTopic');
+        return offTopic ||
+          'That is outside what I can help with here. Would you like me to pass you to a colleague?';
       }
 
-      // Check if we have a predefined template that matches the query
-      const templateResponse = this.checkForTemplateMatch(message);
+      const templateResponse = await this.checkForTemplateMatch(message);
       if (templateResponse) {
         return templateResponse;
       }
 
-      // Use prompt engineering for more complex or specific queries
       return await this.generateEngineeredResponse(message, messageHistory);
     } catch (error) {
       logger.error('Error generating AI response:', { error });
@@ -196,66 +232,31 @@ class AIService {
    * @param {string} message - The user's message
    * @returns {string|null} - The template response or null if no match
    */
-  checkForTemplateMatch(message) {
-    // Convert message to lowercase for easier matching
-    const lowerMessage = message.toLowerCase();
+  async checkForTemplateMatch(message) {
+    if (!this.companyId) {
+      // No tenant, no templates. Fall through to the model.
+      return null;
+    }
 
-    // Check for greeting patterns
+    const lowerMessage = String(message).toLowerCase();
+
+    // A greeting is the one universal case worth special-casing, and only
+    // because a tenant that defined a greeting template clearly wants it used.
     if (this.isGreeting(lowerMessage)) {
-      return this.templateService.getTemplate('greeting');
+      const greeting = await this.templateService.getByRole(this.companyId, 'greeting');
+      if (greeting) {
+        return greeting;
+      }
     }
 
-    // Check for property inquiry patterns
-    if (this.isPropertyInquiry(lowerMessage)) {
-      return this.templateService.getTemplate('propertyInquiry');
-    }
-
-    // Check for mortgage information patterns
-    if (this.isMortgageInquiry(lowerMessage)) {
-      // Extract interest rate if available in configuration
-      const interestRate = process.env.CURRENT_INTEREST_RATE || '3.5';
-      const downPayment = process.env.MIN_DOWN_PAYMENT || '20';
-
-      return this.templateService.getTemplate('mortgageInformation', {
-        RATE: interestRate,
-        PERCENTAGE: downPayment
-      });
-    }
-
-    // Check for viewing scheduling patterns
-    if (this.isViewingRequest(lowerMessage)) {
-      // Get available time slots from configuration or database
-      const availableSlots = process.env.AVAILABLE_VIEWING_SLOTS ||
-        'Monday-Friday, 9 AM to 5 PM';
-
-      return this.templateService.getTemplate('scheduleViewing', {
-        SLOTS: availableSlots
-      });
-    }
-
-    // Check for application process inquiries
-    if (this.isApplicationInquiry(lowerMessage)) {
-      const applicationFee = process.env.APPLICATION_FEE || '50';
-      const processingTime = process.env.APPLICATION_PROCESSING_TIME || '3-5';
-
-      return this.templateService.getTemplate('applicationProcess', {
-        AMOUNT: applicationFee,
-        TIMEFRAME: processingTime
-      });
-    }
-
-    // Check for payment plan inquiries
-    if (this.isPaymentPlanInquiry(lowerMessage)) {
-      const annualDiscount = process.env.ANNUAL_PAYMENT_DISCOUNT || '10';
-
-      return this.templateService.getTemplate('paymentPlans', {
-        DISCOUNT: annualDiscount
-      });
-    }
-
-    // No template match found
-    return null;
+    // Everything else is matched against the templates this company defined,
+    // by meaning rather than by keyword. There is no built-in list of
+    // "property inquiry" or "mortgage inquiry" patterns any more - what counts
+    // as a recognisable question is the tenant's to decide.
+    const match = await this.templateService.match(this.companyId, message);
+    return match ? match.text : null;
   }
+
   /**
    * Generate a response using prompt engineering techniques
    * @param {string} message - The user's message
@@ -305,77 +306,6 @@ class AIService {
   }
 
   /**
-   * Check if the message is a property inquiry
-   * @param {string} message - The lowercase message
-   * @returns {boolean} - Whether the message is a property inquiry
-   */
-  isPropertyInquiry(message) {
-    const propertyInquiryPatterns = [
-      'looking for', 'searching for', 'interested in', 'available',
-      'do you have', 'property', 'apartment', 'house', 'condo',
-      'rent', 'buy', 'purchase'
-    ];
-
-    return propertyInquiryPatterns.some(pattern => message.includes(pattern));
-  }
-
-  /**
-   * Check if the message is a mortgage inquiry
-   * @param {string} message - The lowercase message
-   * @returns {boolean} - Whether the message is a mortgage inquiry
-   */
-  isMortgageInquiry(message) {
-    const mortgagePatterns = [
-      'mortgage', 'loan', 'financing', 'interest rate', 'down payment',
-      'monthly payment', 'term', 'pre-approval', 'qualify'
-    ];
-
-    return mortgagePatterns.some(pattern => message.includes(pattern));
-  }
-
-  /**
-   * Check if the message is a viewing request
-   * @param {string} message - The lowercase message
-   * @returns {boolean} - Whether the message is a viewing request
-   */
-  isViewingRequest(message) {
-    const viewingPatterns = [
-      'schedule', 'viewing', 'tour', 'visit', 'see the property',
-      'appointment', 'when can i see', 'show me'
-    ];
-
-    return viewingPatterns.some(pattern => message.includes(pattern));
-  }
-
-  /**
-   * Check if the message is an application inquiry
-   * @param {string} message - The lowercase message
-   * @returns {boolean} - Whether the message is an application inquiry
-   */
-  isApplicationInquiry(message) {
-    const applicationPatterns = [
-      'application', 'apply', 'how do i rent', 'process', 'approval',
-      'requirements', 'qualify', 'background check', 'credit check'
-    ];
-
-    return applicationPatterns.some(pattern => message.includes(pattern));
-  }
-
-  /**
-   * Check if the message is a payment plan inquiry
-   * @param {string} message - The lowercase message
-   * @returns {boolean} - Whether the message is a payment plan inquiry
-   */
-  isPaymentPlanInquiry(message) {
-    const paymentPlanPatterns = [
-      'payment plan', 'payment options', 'how to pay', 'installments',
-      'monthly payment', 'discount', 'payment schedule'
-    ];
-
-    return paymentPlanPatterns.some(pattern => message.includes(pattern));
-  }
-
-  /**
    * Summarize a conversation
    * @param {Array} messages - Array of conversation messages
    * @returns {Promise<string>} - The summary
@@ -393,16 +323,15 @@ class AIService {
    */
   async generateOperatorSuggestion(userMessage, messageHistory = []) {
     try {
-      // Check if message is on-topic
-      const onTopic = await isOnTopic(userMessage, this.openai);
+      const onTopic = await isOnTopic(userMessage, this.openai, this.scope);
 
       if (!onTopic) {
-        // Use a template for off-topic responses
-        return this.templateService.getTemplate('offTopic');
+        const offTopic = await this.templateService.getByRole(this.companyId, 'offTopic');
+        return offTopic ||
+          'This looks outside our remit - you may want to redirect the customer.';
       }
 
-      // Check if we have a predefined template that matches the query
-      const templateResponse = this.checkForTemplateMatch(userMessage);
+      const templateResponse = await this.checkForTemplateMatch(userMessage);
       if (templateResponse) {
         return templateResponse;
       }
@@ -455,5 +384,27 @@ Include all relevant information that might help the user, as the operator can e
     }
   }
 }
+
+/**
+ * An AIService configured for one tenant: their persona, their scope, their
+ * templates.
+ *
+ * Every call site used to do `new AIService()`, which meant the hardcoded
+ * property-management persona regardless of whose conversation it was.
+ */
+AIService.forCompany = async function forCompany(companyId, options = {}) {
+  const service = new AIService({ ...options, companyId });
+
+  if (companyId) {
+    // Required lazily: assistant-config depends on the workflow model, which
+    // depends back on this module through the compiler.
+    const { resolve } = require('./assistant-config');
+    const { persona, scope } = await resolve(companyId);
+    service.setPersona(persona);
+    service.scope = scope;
+  }
+
+  return service;
+};
 
 module.exports = AIService;

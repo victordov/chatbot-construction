@@ -513,7 +513,7 @@ function setupWebSockets(server) {
           // Check if suggestions are enabled for this conversation
           if (conversation.suggestionsEnabled !== false) {
             // Process with AI to get operator suggestion
-            const aiService = new AIService();
+            const aiService = await AIService.forCompany(clientCompanyId);
 
             // Get conversation history for context
             const messageHistory = conversation.messages
@@ -553,7 +553,7 @@ function setupWebSockets(server) {
           }
         } else if (conversation.botEnabled !== false) {
           // No operator connected and bot enabled, generate an AI response for the user
-          const aiService = new AIService();
+          const aiService = await AIService.forCompany(clientCompanyId);
           const messageHistory = conversation.messages
             .slice(-10)
             .map(msg => ({
@@ -802,7 +802,7 @@ function setupWebSockets(server) {
               }));
 
             // Generate suggestions
-            const suggestionService = new AIService();
+            const suggestionService = await AIService.forCompany(clientCompanyId);
             const suggestion = await suggestionService.generateOperatorSuggestion(
               lastUserMessage.content,
               messageHistory
@@ -927,7 +927,7 @@ function setupWebSockets(server) {
           }));
 
         // Generate suggestions
-        const suggestionService = new AIService();
+        const suggestionService = await AIService.forCompany(operatorCompanyId);
         const suggestion = await suggestionService.generateOperatorSuggestion(
           targetMessage.content,
           messageHistory

@@ -1,6 +1,6 @@
 # Docker Setup for MongoDB
 
-This document explains how to use Docker to run MongoDB instances for the Chatbot Construction application.
+This document explains how to use Docker to run MongoDB instances for the Chatbot Platform.
 
 ## Overview
 

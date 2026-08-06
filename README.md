@@ -1,4 +1,4 @@
-# Chatbot Construction Application
+# Chatbot Platform
 
 ## Getting Started
 
@@ -18,7 +18,7 @@ This guide explains how to run the application, what needs to be configured, and
 1. Clone the repository:
    ```sh
    git clone <your-repo-url>
-   cd chatbot-construction
+   cd chatbot-platform
    ```
 2. Install dependencies:
    ```sh

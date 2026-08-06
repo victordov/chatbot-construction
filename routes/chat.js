@@ -7,7 +7,6 @@ const { logger } = require('../services/logging');
 const usageService = require('../services/usage');
 
 const router = express.Router();
-const aiService = new AIService();
 
 const MAX_MESSAGE_LENGTH = 4000;
 const HISTORY_CONTEXT = 10;
@@ -128,6 +127,9 @@ router.post('/message', async (req, res) => {
         content: msg.content
       }));
 
+    // Built per request so the reply uses this tenant's persona and templates
+    // rather than a single shared, tenant-less assistant.
+    const aiService = await AIService.forCompany(companyId);
     const botResponse = await aiService.generateResponse(message.trim(), history);
 
     conversation.messages.push({

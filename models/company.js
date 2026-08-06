@@ -36,6 +36,18 @@ const CompanySchema = new mongoose.Schema({
     lowercase: true
   }],
   /**
+   * Who this company's assistant is, for tenants who have not built a workflow
+   * yet. A workflow's Persona node takes precedence when one exists.
+   *
+   * `scope` is optional. Leaving it empty means the assistant answers anything;
+   * setting it makes the assistant decline questions outside that remit.
+   */
+  assistant: {
+    persona: { type: String, trim: true },
+    scope: { type: String, trim: true }
+  },
+
+  /**
    * Tenant-specific widget branding, surfaced to the widget at bootstrap.
    */
   widgetSettings: {
