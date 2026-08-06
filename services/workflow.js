@@ -6,7 +6,116 @@ const Workflow = require('../models/workflow');
 const WorkflowVersion = require('../models/workflow-version');
 const KnowledgeSource = require('../models/knowledge-source');
 const WorkflowCompilerService = require('./workflow-compiler');
+const secrets = require('./secrets');
 const { logger } = require('./logging');
+
+/**
+ * Encrypt any credential an action node carries, and keep the one already
+ * stored when the editor sends the node back without it.
+ *
+ * The editor never receives a saved secret - it gets `hasSecret: true` and an
+ * empty value - so a save that leaves the field blank must not be read as
+ * "clear the credential", or editing a node's URL would silently break its
+ * authentication.
+ */
+function protectNodeSecrets(incomingNodes, existingNodes = []) {
+  if (!Array.isArray(incomingNodes)) {
+    return incomingNodes;
+  }
+
+  const previous = new Map(
+    existingNodes.map(node => [node.id, (node.data && node.data.auth) || {}])
+  );
+
+  return incomingNodes.map(node => {
+    const auth = node.data && node.data.auth;
+
+    if (!auth || !auth.type || auth.type === 'none') {
+      // Switching authentication off drops the stored credential rather than
+      // leaving it decryptable in a node nobody is looking at any more.
+      if (auth) {
+        return { ...node, data: { ...node.data, auth: { type: 'none' } } };
+      }
+      return node;
+    }
+
+    const provided = auth.value;
+    const stored = previous.get(node.id) || {};
+
+    let value;
+    if (provided && !secrets.isEncrypted(provided)) {
+      value = secrets.encrypt(provided);
+    } else if (provided && secrets.isEncrypted(provided)) {
+      value = provided;
+    } else {
+      value = stored.value || '';
+    }
+
+    return {
+      ...node,
+      data: {
+        ...node.data,
+        auth: { type: auth.type, header: auth.header, value }
+      }
+    };
+  });
+}
+
+/**
+ * Strip credentials before a workflow crosses back to a browser.
+ *
+ * Whether one is set is useful in the editor; the value itself is not, and an
+ * admin should not be able to read back a key a colleague entered.
+ *
+ * This walks the whole document rather than the two or three places a
+ * credential is expected. The first version redacted `nodes` and
+ * `compiledChain.steps`, and the ciphertext still went out - because the stored
+ * chain is actually nested under `compiledChain.compilationResult`, twice over,
+ * in the execution plan and the chain config. Anything shaped like an auth
+ * block gets redacted wherever it turns up, so a future change to the compiled
+ * shape cannot quietly reintroduce the leak.
+ *
+ * The value is a ciphertext, not a plaintext key, so this was not an immediate
+ * disclosure - but handing out the encrypted secret means anyone who later gets
+ * the key can decrypt what they already collected.
+ */
+function redactWorkflow(workflow) {
+  if (!workflow) {
+    return workflow;
+  }
+
+  const plain = typeof workflow.toObject === 'function' ? workflow.toObject() : workflow;
+
+  const isAuthBlock = value =>
+    value && typeof value === 'object' && !Array.isArray(value) &&
+    Object.prototype.hasOwnProperty.call(value, 'value') &&
+    Object.prototype.hasOwnProperty.call(value, 'type');
+
+  // Copies on the way down rather than editing in place: the argument is
+  // usually a live mongoose document whose Mixed paths are shared with what the
+  // caller goes on to save, and stripping those removed the credential from the
+  // workflow being persisted.
+  const walk = (value, key) => {
+    if (Array.isArray(value)) {
+      return value.map(item => walk(item));
+    }
+
+    if (!value || typeof value !== 'object' || value instanceof Date ||
+        typeof value.toHexString === 'function') {
+      return value;
+    }
+
+    if (key === 'auth' && isAuthBlock(value)) {
+      return { type: value.type || 'none', header: value.header, hasSecret: Boolean(value.value) };
+    }
+
+    return Object.fromEntries(
+      Object.entries(value).map(([childKey, child]) => [childKey, walk(child, childKey)])
+    );
+  };
+
+  return walk(plain);
+}
 
 class WorkflowService {
   constructor() {
@@ -25,14 +134,21 @@ class WorkflowService {
 
       const workflow = new Workflow({
         ...workflowData,
+        nodes: protectNodeSecrets(workflowData.nodes),
         company,
         createdBy: user.id,
         version: 1
       });
 
       // Compile workflow if it has nodes
-      if (workflowData.nodes && workflowData.nodes.length > 0) {
-        const compiledChain = await this.compileWorkflow(workflowData, company);
+      if (workflow.nodes && workflow.nodes.length > 0) {
+        // Compiled from the protected nodes, so the chain that gets persisted
+        // carries the encrypted credential rather than the plaintext one the
+        // request arrived with.
+        const compiledChain = await this.compileWorkflow(
+          { nodes: workflow.nodes, edges: workflow.edges },
+          company
+        );
         workflow.compiledChain = compiledChain;
       }
 
@@ -122,6 +238,10 @@ class WorkflowService {
       // Validate updates
       if (updateData.nodes || updateData.edges) {
         this.validateWorkflow(updateData);
+      }
+
+      if (updateData.nodes) {
+        updateData.nodes = protectNodeSecrets(updateData.nodes, workflow.nodes);
       }
 
       // Recompile if structure changed
@@ -377,6 +497,23 @@ class WorkflowService {
       }
       break;
 
+    case 'action': {
+      if (!data.url || String(data.url).trim().length === 0) {
+        throw new Error(`Action node ${node.id} must have a URL`);
+      }
+
+      // A mapping with a name but no path would quietly resolve to nothing, so
+      // a downstream reply would say "your order is " and stop.
+      (data.outputs || []).forEach(output => {
+        if (output.variable && !output.path) {
+          throw new Error(
+            `Action node ${node.id}: "${output.variable}" has no path into the response`
+          );
+        }
+      });
+      break;
+    }
+
     case 'fallback':
       if (!data.message || data.message.trim().length === 0) {
         throw new Error(`Fallback node ${node.id} must have a message`);
@@ -544,4 +681,8 @@ class WorkflowService {
   }
 }
 
-module.exports = new WorkflowService();
+const instance = new WorkflowService();
+
+module.exports = instance;
+module.exports.redactWorkflow = redactWorkflow;
+module.exports.protectNodeSecrets = protectNodeSecrets;

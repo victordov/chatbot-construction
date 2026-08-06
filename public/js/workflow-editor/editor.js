@@ -111,6 +111,25 @@
           placeholder: 'Sorry, I did not catch that. Could you rephrase?' }
       ]
     },
+    action: {
+      label: 'Call an API', icon: 'zap', color: '#e83e8c',
+      description: 'Look something up in your own system',
+      inputs: 1, outputs: 2,
+      fields: [
+        { key: 'url', label: 'URL', type: 'text', required: true,
+          placeholder: 'https://api.yourcompany.com/orders/{{order_id}}',
+          help: 'Must be https. Placeholders are URL-encoded before being sent.' },
+        { key: 'method', label: 'Method', type: 'select',
+          options: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] },
+        { key: 'body', label: 'Request body (JSON)', type: 'textarea', rows: 4,
+          placeholder: '{"question": "{{user_input}}"}',
+          showWhen: d => (d.method || 'GET') !== 'GET' },
+        { key: 'auth', label: 'Authentication', type: 'auth' },
+        { key: 'outputs', label: 'Read from the response', type: 'outputs' },
+        { key: 'timeoutMs', label: 'Timeout (ms)', type: 'text', placeholder: '8000',
+          help: 'Between 1000 and 20000. A visitor is waiting, so keep it short.' }
+      ]
+    },
     'operator-handoff': {
       label: 'Human Handoff', icon: 'users', color: '#6610f2',
       description: 'Escalate to a live operator',
@@ -132,6 +151,10 @@
     router: { label: 'Router', conditions: [] },
     moderation: { label: 'Moderation', strictness: 'medium' },
     fallback: { label: 'Fallback', message: 'Sorry, I did not understand that.' },
+    action: {
+      label: 'Call an API', method: 'GET', url: '', outputs: [],
+      auth: { type: 'none' }, timeoutMs: 8000
+    },
     'operator-handoff': { label: 'Human Handoff', message: 'Let me connect you with a colleague.' }
   };
 
@@ -146,6 +169,43 @@
     { value: 'contains', label: 'Contains text' },
     { value: 'regex', label: 'Regex' }
   ];
+
+  /** Host plus path, so a long URL still reads on a 190px node. */
+  function shortUrl(url) {
+    const stripped = String(url).replace(/^https?:\/\//, '');
+    return stripped.length > 34 ? `${stripped.slice(0, 33)}…` : stripped;
+  }
+
+  /**
+   * The output ports a node has, in the order they are drawn.
+   *
+   * Two node types branch, for different reasons: a router has one port per
+   * routing rule plus "Otherwise", and an action has one for the call working
+   * and one for it failing. Everything else has a single unlabelled output.
+   *
+   * Kept in one place because the node rendering and the edge geometry both
+   * need the same list - when they disagreed, edges left from empty space.
+   */
+  function outputHandles(node) {
+    if (node.type === 'router') {
+      return [
+        ...(node.data.conditions || []).map((c, i) => ({
+          handle: c.id || `cond_${i}`,
+          label: c.label || c.value || `Rule ${i + 1}`
+        })),
+        { handle: 'default', label: 'Otherwise' }
+      ];
+    }
+
+    if (node.type === 'action') {
+      return [
+        { handle: 'success', label: 'Worked' },
+        { handle: 'error', label: 'Failed' }
+      ];
+    }
+
+    return [{ handle: null, label: '' }];
+  }
 
   const CONDITION_HELP = {
     intent: {
@@ -197,6 +257,9 @@
       this.selectedEdgeId = null;
       this.dirty = false;
       this.validationErrors = [];
+      // Stand-in values for an action node's placeholders, keyed by node id.
+      // Scaffolding for the "Try it" button, deliberately not persisted.
+      this.testValues = {};
 
       this.view = { x: 0, y: 0, zoom: 1 };
       this.history = [];
@@ -451,7 +514,7 @@
       const groups = {
         'Entry & identity': ['start', 'persona'],
         'Answering': ['knowledge', 'llm', 'response'],
-        'Control flow': ['router', 'fallback', 'operator-handoff'],
+        'Control flow': ['router', 'action', 'fallback', 'operator-handoff'],
         'Safety': ['moderation']
       };
 
@@ -491,7 +554,39 @@
     addNodeAtCentre(type) {
       const rect = this.el.canvas.getBoundingClientRect();
       const centre = this.toCanvas(rect.left + rect.width / 2, rect.top + rect.height / 3);
-      this.addNode(type, { x: centre.x - NODE_WIDTH / 2, y: centre.y });
+      this.addNode(type, this.freeSpotNear(centre.x - NODE_WIDTH / 2, centre.y));
+    }
+
+    /**
+     * The nearest place a node can sit without landing on another one.
+     *
+     * Clicking the palette used to drop every node at the same point, so a
+     * second one covered the first and looked like it had not been added.
+     */
+    freeSpotNear(x, y) {
+      const clear = (px, py) => !this.nodes.some(node =>
+        Math.abs(node.position.x - px) < NODE_WIDTH + 20 &&
+        Math.abs(node.position.y - py) < NODE_HEIGHT + 20);
+
+      if (clear(x, y)) {
+        return { x, y };
+      }
+
+      // Spiral outwards in the direction a workflow grows: right, then down.
+      for (let ring = 1; ring <= 12; ring += 1) {
+        const candidates = [
+          { x: x + ring * (NODE_WIDTH + 40), y },
+          { x, y: y + ring * (NODE_HEIGHT + 40) },
+          { x: x + ring * (NODE_WIDTH + 40), y: y + ring * (NODE_HEIGHT + 40) },
+          { x: x - ring * (NODE_WIDTH + 40), y }
+        ];
+        const spot = candidates.find(c => clear(c.x, c.y));
+        if (spot) {
+          return spot;
+        }
+      }
+
+      return { x, y };
     }
 
     addNode(type, position) {
@@ -802,11 +897,7 @@
           ports.push(`<span class="wf-port wf-port-in" data-port="in" data-node-id="${node.id}" title="Incoming"></span>`);
         }
         if (def.outputs > 0) {
-          // Routers get one labelled port per condition plus a default port.
-          const handles = node.type === 'router'
-            ? [...(node.data.conditions || []).map((c, i) => ({ handle: c.id || `cond_${i}`, label: c.label || c.value || `Rule ${i + 1}` })),
-              { handle: 'default', label: 'Otherwise' }]
-            : [{ handle: null, label: '' }];
+          const handles = outputHandles(node);
 
           handles.forEach((h, index) => {
             const offset = handles.length === 1 ? 50 : (100 / (handles.length + 1)) * (index + 1);
@@ -842,6 +933,7 @@
       case 'knowledge': return `${d.sourceType || 'no source'}${d.config?.sheetId ? ` · ${d.config.sheetId}` : ''}`;
       case 'router': return `${(d.conditions || []).length} condition(s)`;
       case 'moderation': return `Strictness: ${d.strictness || 'medium'}`;
+      case 'action': return d.url ? `${d.method || 'GET'} ${shortUrl(d.url)}` : 'No URL set';
       case 'start': return 'Conversation entry point';
       default: return '';
       }
@@ -867,9 +959,14 @@
       }
 
       let fraction = 0.5;
-      if (node.type === 'router') {
-        const handles = [...(node.data.conditions || []).map((c, i) => c.id || `cond_${i}`), 'default'];
-        const index = handles.indexOf(handle || 'default');
+      const handles = outputHandles(node);
+      if (handles.length > 1) {
+        // Must match the offsets renderNodes uses, or an edge leaves from
+        // somewhere the port is not. An edge with no handle predates the
+        // branching outputs, so it takes the first port - which for a router
+        // means "Otherwise", the branch it would have fallen through to.
+        const wanted = handle || (node.type === 'router' ? 'default' : handles[0].handle);
+        const index = Math.max(0, handles.findIndex(h => h.handle === wanted));
         fraction = (index + 1) / (handles.length + 1);
       }
       void def;
@@ -965,6 +1062,8 @@
 
         ${fields.map(field => this.renderField(node, field)).join('')}
 
+        ${node.type === 'action' ? this.renderActionTest(node) : ''}
+
         ${def.singleton ? '' : `
           <button class="btn btn-outline-danger btn-sm w-100 mt-3" id="wf-delete-node">
             <i data-feather="trash-2"></i> Delete node
@@ -1003,6 +1102,12 @@
       case 'conditions':
         return this.renderConditions(node);
 
+      case 'auth':
+        return this.renderAuth(node);
+
+      case 'outputs':
+        return this.renderOutputs(node);
+
       default:
         control = `<input class="form-control form-control-sm" id="${id}" data-field="${field.key}"
             value="${escapeHtml(value)}" placeholder="${escapeHtml(field.placeholder || '')}">`;
@@ -1012,6 +1117,129 @@
         <label class="form-label" for="${id}">${escapeHtml(field.label)}${required}</label>
         ${control}${help}
       </div>`;
+    }
+
+    /**
+     * Credentials for the tenant's API.
+     *
+     * The stored value never comes back from the server - it arrives as
+     * `hasSecret: true` and nothing else - so this shows whether one is set and
+     * offers to replace it. An admin cannot read back a key a colleague
+     * entered, which is the point.
+     */
+    renderAuth(node) {
+      const auth = node.data.auth || { type: 'none' };
+      const types = [
+        { value: 'none', label: 'None' },
+        { value: 'bearer', label: 'Bearer token' },
+        { value: 'header', label: 'Custom header' },
+        { value: 'basic', label: 'Basic (user:password)' }
+      ];
+
+      const secretState = auth.hasSecret
+        ? `<div class="form-text text-success d-flex align-items-center gap-1">
+             <i data-feather="check" style="width:14px;height:14px"></i>
+             A credential is saved. Type a new one to replace it.
+           </div>`
+        : '<div class="form-text">Stored encrypted. It is never shown again once saved.</div>';
+
+      return `
+        <div class="mb-3">
+          <label class="form-label" for="wf-auth-type">Authentication</label>
+          <select class="form-select form-select-sm" id="wf-auth-type">
+            ${types.map(t =>
+    `<option value="${t.value}" ${t.value === (auth.type || 'none') ? 'selected' : ''}>${escapeHtml(t.label)}</option>`).join('')}
+          </select>
+
+          ${auth.type === 'header' ? `
+            <input class="form-control form-control-sm mt-2" id="wf-auth-header"
+                   value="${escapeHtml(auth.header || 'x-api-key')}" placeholder="Header name">` : ''}
+
+          ${auth.type && auth.type !== 'none' ? `
+            <input class="form-control form-control-sm mt-2" id="wf-auth-value" type="password"
+                   autocomplete="new-password"
+                   placeholder="${auth.hasSecret ? 'Leave blank to keep the saved value' : 'Paste the key or token'}">
+            ${secretState}` : ''}
+        </div>`;
+    }
+
+    /**
+     * The test panel, plus somewhere to put values for the placeholders.
+     *
+     * Without these a URL like /orders/{{order_id}} tests as /orders/ and
+     * returns a 404 that tells the admin nothing about their configuration.
+     * The values are scaffolding, so they are held for the session rather than
+     * saved onto the node.
+     */
+    renderActionTest(node) {
+      const template = `${node.data.url || ''} ${node.data.body || ''}`;
+      const placeholders = [...new Set(
+        (template.match(/\{\{\s*([\w.]+)\s*\}\}/g) || [])
+          .map(match => match.replace(/[{}\s]/g, ''))
+      )].filter(name => name !== 'user_input');
+
+      const values = this.testValues[node.id] || {};
+
+      return `
+        <div class="wf-workflow-settings">
+          <h6>Try it</h6>
+          ${placeholders.length ? `
+            <div class="form-text mb-2">Values to stand in for the placeholders.</div>
+            ${placeholders.map(name => `
+              <div class="mb-2">
+                <label class="form-label small mb-1" for="wf-test-var-${name}">{{${escapeHtml(name)}}}</label>
+                <input class="form-control form-control-sm" id="wf-test-var-${name}"
+                       data-test-var="${escapeHtml(name)}" value="${escapeHtml(values[name] || '')}">
+              </div>`).join('')}` : ''}
+          <button class="btn btn-outline-primary btn-sm w-100" id="wf-test-action">
+            <i data-feather="play-circle"></i> Test this call
+          </button>
+          <div id="wf-test-result" class="mt-2"></div>
+        </div>`;
+    }
+
+    /**
+     * Which parts of the response the rest of the workflow can use.
+     *
+     * Explicit by design: nothing from the response reaches the model or the
+     * transcript unless it is named here, so an endpoint that returns more than
+     * expected does not leak it into the conversation.
+     */
+    renderOutputs(node) {
+      const outputs = node.data.outputs || [];
+
+      return `
+        <div class="mb-3">
+          <label class="form-label">Read from the response</label>
+          <div class="form-text mb-2">
+            Pick out the fields you need. Use them later as
+            <code>{{name}}</code>. Nothing else from the response is used.
+          </div>
+          ${outputs.map((output, i) => `
+            <div class="wf-output" data-output-index="${i}">
+              <div class="wf-output-row">
+                <span class="wf-output-prefix">{{</span>
+                <input class="form-control form-control-sm" data-output-field="variable"
+                       value="${escapeHtml(output.variable || '')}" placeholder="order_status"
+                       aria-label="Name to use later">
+                <span class="wf-output-prefix">}}</span>
+                <button class="btn btn-sm btn-outline-danger" data-remove-output="${i}" title="Remove">
+                  <i data-feather="x"></i>
+                </button>
+              </div>
+              <input class="form-control form-control-sm mt-1" data-output-field="path"
+                     value="${escapeHtml(output.path || '')}" placeholder="data.order.status"
+                     aria-label="Where it sits in the response">
+            </div>`).join('')}
+          <button class="btn btn-sm btn-outline-secondary w-100 mt-2" id="wf-add-output">
+            <i data-feather="plus"></i> Add field
+          </button>
+          ${outputs.length ? `
+            <div class="form-text mt-2">
+              Below each name, the path into the JSON — e.g.
+              <code>data.order.status</code> or <code>items.0.id</code>.
+            </div>` : ''}
+        </div>`;
     }
 
     renderConditions(node) {
@@ -1055,18 +1283,143 @@
           this.markDirty();
 
           // Only the fields that change the node's appearance need a repaint.
-          if (['label', 'sourceType', 'prompt', 'template', 'message', 'strictness'].includes(e.target.dataset.field)) {
+          if (['label', 'sourceType', 'prompt', 'template', 'message', 'strictness', 'url', 'method'].includes(e.target.dataset.field)) {
             this.renderNodes();
             if (window.feather) {
               window.feather.replace();
             }
           }
-          if (e.target.dataset.field === 'sourceType') {
+          // Changing the method shows or hides the request body field.
+          if (['sourceType', 'method'].includes(e.target.dataset.field)) {
             this.renderProperties();
+          }
+
+          // Editing a URL or body changes which placeholders exist, and the
+          // "Try it" inputs are built from them. Redrawn on `change` rather
+          // than `input` so the field is not rebuilt under the cursor on every
+          // keystroke.
+          if (e.type === 'change' && ['url', 'body'].includes(e.target.dataset.field)) {
+            this.renderProperties();
+            if (window.feather) {
+              window.feather.replace();
+            }
           }
         };
         input.addEventListener('input', handler);
         input.addEventListener('change', handler);
+      });
+
+      this.el.properties.querySelector('#wf-auth-type')?.addEventListener('change', e => {
+        node.data.auth = { ...(node.data.auth || {}), type: e.target.value };
+        this.markDirty();
+        this.renderProperties();
+      });
+
+      this.el.properties.querySelector('#wf-auth-header')?.addEventListener('input', e => {
+        node.data.auth = { ...(node.data.auth || {}), header: e.target.value };
+        this.markDirty();
+      });
+
+      this.el.properties.querySelector('#wf-auth-value')?.addEventListener('input', e => {
+        // Only sent when non-empty, so leaving the field blank keeps whatever
+        // is already stored rather than wiping it.
+        node.data.auth = { ...(node.data.auth || {}), value: e.target.value };
+        this.markDirty();
+      });
+
+      this.el.properties.querySelector('#wf-add-output')?.addEventListener('click', () => {
+        node.data.outputs = node.data.outputs || [];
+        node.data.outputs.push({ variable: '', path: '' });
+        this.markDirty();
+        this.renderProperties();
+        if (window.feather) {
+          window.feather.replace();
+        }
+      });
+
+      this.el.properties.querySelectorAll('[data-remove-output]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          node.data.outputs.splice(parseInt(btn.dataset.removeOutput, 10), 1);
+          this.markDirty();
+          this.pushHistory();
+          this.renderProperties();
+          if (window.feather) {
+            window.feather.replace();
+          }
+        });
+      });
+
+      this.el.properties.querySelectorAll('.wf-output').forEach(row => {
+        const index = parseInt(row.dataset.outputIndex, 10);
+        row.querySelectorAll('[data-output-field]').forEach(input => {
+          input.addEventListener('input', e => {
+            node.data.outputs[index][e.target.dataset.outputField] = e.target.value;
+            this.markDirty();
+          });
+        });
+      });
+
+      this.el.properties.querySelectorAll('[data-test-var]').forEach(input => {
+        input.addEventListener('input', e => {
+          this.testValues[node.id] = this.testValues[node.id] || {};
+          this.testValues[node.id][e.target.dataset.testVar] = e.target.value;
+        });
+      });
+
+      this.el.properties.querySelector('#wf-test-action')?.addEventListener('click', async () => {
+        const button = this.el.properties.querySelector('#wf-test-action');
+        const output = this.el.properties.querySelector('#wf-test-result');
+
+        button.disabled = true;
+        button.innerHTML = 'Calling…';
+        output.innerHTML = '';
+
+        try {
+          const payload = await this.api('/actions/test', {
+            method: 'POST',
+            body: JSON.stringify({
+              config: node.data,
+              variables: this.testValues[node.id] || {},
+              workflowId: this.workflowId,
+              nodeId: node.id
+            })
+          });
+
+          const result = payload.result;
+
+          if (!result) {
+            output.innerHTML = '<div class="alert alert-danger py-2 px-3 small mb-0">The test could not run</div>';
+            return;
+          }
+
+          const mapped = Object.entries(result.variables || {});
+
+          output.innerHTML = `
+            <div class="alert alert-${result.ok ? 'success' : 'danger'} py-2 px-3 small mb-0">
+              <div class="fw-semibold">
+                ${result.ok ? 'Worked' : 'Failed'}
+                ${result.status ? `· HTTP ${result.status}` : ''}
+                ${result.durationMs ? `· ${result.durationMs}ms` : ''}
+              </div>
+              ${result.error ? `<div class="mt-1">${escapeHtml(result.error)}</div>` : ''}
+              ${mapped.length ? `
+                <dl class="row mb-0 mt-2">
+                  ${mapped.map(([name, value]) => `
+                    <dt class="col-5 text-truncate">{{${escapeHtml(name)}}}</dt>
+                    <dd class="col-7 text-truncate mb-0">${escapeHtml(value) || '<em>empty</em>'}</dd>`).join('')}
+                </dl>` : ''}
+              ${result.body ? `
+                <details class="mt-2">
+                  <summary>Response</summary>
+                  <pre class="small mb-0 mt-1" style="max-height:200px;overflow:auto">${escapeHtml(result.body)}</pre>
+                </details>` : ''}
+            </div>`;
+        } catch (error) {
+          output.innerHTML = `<div class="alert alert-danger py-2 px-3 small mb-0">${escapeHtml(error.message)}</div>`;
+        } finally {
+          button.disabled = false;
+          button.innerHTML = 'Test this call';
+        }
       });
 
       this.el.properties.querySelector('#wf-delete-node')?.addEventListener('click', () => {

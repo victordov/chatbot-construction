@@ -9,8 +9,8 @@
  *   configuration - `persona`, `moderation`. These configure the whole chain
  *                   and legitimately have no edges.
  *   flow          - `start`, `knowledge-source`, `llm`, `response`, `router`,
- *                   `fallback`, `operator-handoff`. These are wired together
- *                   and walked at execution time.
+ *                   `fallback`, `operator-handoff`, `action`. These are wired
+ *                   together and walked at execution time.
  *
  * The distinction matters: the previous validator treated every unconnected
  * node as an orphan, so a workflow with a persona and a start node - the
@@ -21,13 +21,25 @@ const { OpenAI } = require('openai');
 const KnowledgeConnectorService = require('./knowledge-connector');
 const { logger } = require('./logging');
 const { getIntentClassifier } = require('./intent-classifier');
+const workflowActions = require('./workflow-actions');
 
 const CONFIGURATION_NODES = new Set(['persona', 'moderation']);
 
 /** Node types the executor knows how to run. */
 const FLOW_NODES = new Set([
   'start', 'knowledge', 'knowledge-source', 'llm',
-  'response', 'router', 'fallback', 'operator-handoff'
+  'response', 'router', 'fallback', 'operator-handoff', 'action'
+]);
+
+/**
+ * Nodes that legitimately have more than one output, and the handles they use.
+ *
+ * Everything else with two outgoing edges is ambiguous - the executor would
+ * follow whichever happened to be first - so it is rejected at design time.
+ */
+const BRANCHING_NODES = new Map([
+  ['router', null],
+  ['action', ['success', 'error']]
 ]);
 
 const MAX_EXECUTION_STEPS = 50;
@@ -163,11 +175,20 @@ class WorkflowCompilerService {
 
     nodes.forEach(node => {
       const type = this.nodeType(node);
-      if (type !== 'router' && (outgoing.get(node.id) || 0) > 1) {
+      const count = outgoing.get(node.id) || 0;
+
+      if (!BRANCHING_NODES.has(type) && count > 1) {
         errors.push(
-          `"${node.data?.label || node.id}" has ${outgoing.get(node.id)} outgoing connections. ` +
-          'Only Router nodes can branch - use a Router to choose between paths.'
+          `"${node.data?.label || node.id}" has ${count} outgoing connections. ` +
+          'Only Router and Action nodes can branch - use a Router to choose between paths.'
         );
+      }
+
+      // An action node's destination is checked here, at design time, so a bad
+      // URL is a validation error in the editor rather than a failed call in
+      // front of a customer.
+      if (type === 'action') {
+        errors.push(...this.validateActionNode(node, edges, warnings));
       }
     });
 
@@ -176,6 +197,57 @@ class WorkflowCompilerService {
     }
 
     return { valid: errors.length === 0, errors, warnings };
+  }
+
+  /**
+   * Check an action node's configuration.
+   *
+   * A URL containing `{{placeholders}}` cannot be fully validated until it is
+   * rendered, so the check is run against the template with the placeholders
+   * removed - enough to catch a missing scheme or a private address, without
+   * rejecting a legitimately dynamic URL.
+   */
+  validateActionNode(node, edges = [], warnings = []) {
+    const errors = [];
+    const data = node.data || {};
+    const name = data.label || node.id;
+
+    if (!data.url) {
+      errors.push(`"${name}" needs the URL of the API to call`);
+    } else {
+      const probe = String(data.url).replace(/\{\{\s*[\w.]+\s*\}\}/g, 'x');
+      const check = workflowActions.validateUrl(probe);
+      if (!check.valid) {
+        errors.push(`"${name}": ${check.error}`);
+      }
+    }
+
+    if (data.method && !workflowActions.ALLOWED_METHODS.has(String(data.method).toUpperCase())) {
+      errors.push(`"${name}" uses an unsupported method "${data.method}"`);
+    }
+
+    if (data.body && String(data.method || 'GET').toUpperCase() !== 'GET') {
+      try {
+        // Placeholders are replaced with a quoted string first so a template
+        // like {"id": "{{order_id}}"} parses.
+        JSON.parse(String(data.body).replace(/\{\{\s*[\w.]+\s*\}\}/g, 'x'));
+      } catch {
+        errors.push(`"${name}" has a request body that is not valid JSON`);
+      }
+    }
+
+    // A warning, not an error: the workflow still runs, but an API that is
+    // down or slow will drop the visitor into the generic fallback with no
+    // acknowledgement that anything was attempted.
+    const handles = edges.filter(e => e.source === node.id).map(e => e.sourceHandle);
+    if (handles.length > 0 && !handles.includes('error')) {
+      warnings.push(
+        `"${name}" has nothing connected to its Failed output. If the API is ` +
+        'down the visitor will get the generic fallback message.'
+      );
+    }
+
+    return errors;
   }
 
   /**
@@ -325,7 +397,10 @@ class WorkflowCompilerService {
       routing: {
         conditions: [],
         fallback: null
-      }
+      },
+      // Recorded for the editor and for support: which external systems this
+      // workflow reaches out to. Credentials are deliberately not included.
+      actions: []
     };
 
     nodes.forEach(node => {
@@ -345,6 +420,9 @@ class WorkflowCompilerService {
         break;
       case 'fallback':
         chainConfig.routing.fallback = this.compileFallbackNode(node);
+        break;
+      case 'action':
+        chainConfig.actions.push({ id: node.id, label: node.data.label, url: node.data.url });
         break;
       default:
         break;
@@ -537,6 +615,7 @@ class WorkflowCompilerService {
     let response = null;
     let escalate = null;
     const visited = [];
+    const actionRuns = [];
 
     while (currentId && visited.length < MAX_EXECUTION_STEPS) {
       const step = steps[currentId];
@@ -575,6 +654,34 @@ class WorkflowCompilerService {
           fallback: routing.fallback
         });
         nextId = this.resolveRouterTarget(step, match);
+        break;
+      }
+
+      case 'action': {
+        // The call the whole node exists for. Its result becomes variables the
+        // rest of the walk can use, so a downstream reply can say "your order
+        // shipped on Tuesday" rather than "let me look into that".
+        const result = await workflowActions.execute(step.data, variables);
+
+        Object.assign(variables, result.variables);
+        variables.action_status = result.ok ? 'success' : 'failed';
+        variables.action_error = result.ok ? '' : result.error;
+
+        actionRuns.push({
+          node: currentId,
+          label: step.data.label || 'Action',
+          ok: result.ok,
+          status: result.status,
+          durationMs: result.durationMs
+        });
+
+        if (!result.ok) {
+          logger.warn('Workflow action node failed', {
+            tenantId, node: currentId, error: result.error
+          });
+        }
+
+        nextId = this.resolveActionTarget(step, result.ok);
         break;
       }
 
@@ -643,9 +750,38 @@ class WorkflowCompilerService {
       metadata: {
         knowledgeUsed: Boolean(knowledgeContext),
         path: visited,
+        // Surfaced so an operator picking up the conversation, and the
+        // analytics view, can see the bot actually did something rather than
+        // only said something.
+        actions: actionRuns,
         tenantId
       }
     };
+  }
+
+  /**
+   * Pick the branch an action node takes.
+   *
+   * A workflow that only draws the success path still works: a failure simply
+   * ends the walk and the fallback answers, which is better than following the
+   * success path with no data and telling the customer their order shipped.
+   */
+  resolveActionTarget(step, ok) {
+    const edges = step.next || [];
+    const wanted = ok ? 'success' : 'error';
+
+    const named = edges.find(e => e.handle === wanted);
+    if (named) {
+      return named.target;
+    }
+
+    // One unlabelled output is the simple case - a single "then" - and only
+    // applies on success.
+    if (ok && edges.length === 1 && !edges[0].handle) {
+      return edges[0].target;
+    }
+
+    return null;
   }
 
   /**

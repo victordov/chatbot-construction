@@ -5,6 +5,8 @@
 const express = require('express');
 const router = express.Router();
 const WorkflowService = require('../services/workflow');
+const { redactWorkflow } = require('../services/workflow');
+const workflowActions = require('../services/workflow-actions');
 const KnowledgeSource = require('../models/knowledge-source');
 const { auth: authMiddleware } = require('../middleware/auth');
 const { logger } = require('../services/logging');
@@ -45,7 +47,7 @@ router.get('/', authMiddleware, checkWorkflowAccess, async (req, res) => {
 
     res.json({
       success: true,
-      workflows,
+      workflows: workflows.map(redactWorkflow),
       count: workflows.length
     });
   } catch (error) {
@@ -98,7 +100,7 @@ router.get('/:id', authMiddleware, checkWorkflowAccess, async (req, res) => {
 
     res.json({
       success: true,
-      workflow
+      workflow: redactWorkflow(workflow)
     });
   } catch (error) {
     logger.error('Error fetching workflow:', error);
@@ -133,7 +135,7 @@ router.post('/', authMiddleware, checkWorkflowAccess, requireFeature('workflows'
 
     res.status(201).json({
       success: true,
-      workflow,
+      workflow: redactWorkflow(workflow),
       message: 'Workflow created successfully'
     });
   } catch (error) {
@@ -166,7 +168,7 @@ router.put('/:id', authMiddleware, checkWorkflowAccess, async (req, res) => {
 
     res.json({
       success: true,
-      workflow,
+      workflow: redactWorkflow(workflow),
       message: 'Workflow updated successfully'
     });
   } catch (error) {
@@ -213,7 +215,7 @@ router.post('/:id/publish', authMiddleware, checkWorkflowAccess, async (req, res
 
     res.json({
       success: true,
-      workflow,
+      workflow: redactWorkflow(workflow),
       hotSwapCompleted,
       message: hotSwapCompleted
         ? 'Workflow published and is now live'
@@ -249,7 +251,7 @@ router.post('/:id/archive', authMiddleware, checkWorkflowAccess, async (req, res
 
     res.json({
       success: true,
-      workflow,
+      workflow: redactWorkflow(workflow),
       message: 'Workflow archived successfully'
     });
   } catch (error) {
@@ -273,7 +275,9 @@ router.get('/:id/versions', authMiddleware, checkWorkflowAccess, async (req, res
 
     res.json({
       success: true,
-      versions,
+      // A version snapshot embeds the nodes as they were, credentials and all,
+      // so it needs the same redaction as a live workflow.
+      versions: versions.map(redactWorkflow),
       count: versions.length
     });
   } catch (error) {
@@ -306,7 +310,7 @@ router.post('/:id/rollback/:version', authMiddleware, checkWorkflowAccess, async
 
     res.json({
       success: true,
-      workflow,
+      workflow: redactWorkflow(workflow),
       message: `Workflow rolled back to version ${version}`
     });
   } catch (error) {
@@ -360,7 +364,7 @@ router.get('/active/current', authMiddleware, async (req, res) => {
 
     res.json({
       success: true,
-      workflow
+      workflow: redactWorkflow(workflow)
     });
   } catch (error) {
     logger.error('Error fetching active workflow:', error);
@@ -406,6 +410,64 @@ router.post('/validate', authMiddleware, checkWorkflowAccess, async (req, res) =
       ? 'Workflow structure is valid'
       : `Found ${errors.length} problem${errors.length === 1 ? '' : 's'}`
   });
+});
+
+/**
+ * Try an action node's call without publishing it.
+ *
+ * Configuring an API call blind - save, publish, wait for a customer to hit it,
+ * read the logs - is a miserable loop, so this runs it once and reports both
+ * what came back and what the field mappings picked out of it.
+ *
+ * This does mean an authenticated admin can make the server issue a request of
+ * their choosing. That is the same capability the node itself has, and it is
+ * bounded by the same address checks: private and reserved ranges are refused
+ * at connect time, on the resolved address, redirects included.
+ */
+router.post('/actions/test', authMiddleware, checkWorkflowAccess, async (req, res) => {
+  try {
+    const { config = {}, variables = {}, workflowId, nodeId } = req.body;
+
+    if (!config.url) {
+      return res.status(400).json({ success: false, error: 'Enter a URL to test' });
+    }
+
+    const auth = { ...(config.auth || {}) };
+
+    // The editor never holds a saved credential, so a test of an existing node
+    // has to pick the stored one up from the workflow - fetched with the
+    // tenant filter, so another company's secret cannot be borrowed by id.
+    if (auth.type && auth.type !== 'none' && !auth.value && workflowId && nodeId) {
+      const stored = await WorkflowService.getWorkflow(
+        workflowId,
+        req.user.role === 'superadmin' ? null : req.user.company?.id,
+        req.user.role
+      ).catch(() => null);
+
+      const node = stored && (stored.nodes || []).find(n => n.id === nodeId);
+      if (node && node.data && node.data.auth) {
+        auth.value = node.data.auth.value;
+      }
+    }
+
+    // Test values, so a URL containing {{order_id}} resolves to something.
+    const result = await workflowActions.execute(
+      { ...config, auth },
+      { user_input: 'test message', ...variables },
+      { includeBody: true }
+    );
+
+    logger.info('Workflow action tested', {
+      company: req.user.company?.id,
+      by: req.user.username,
+      ok: result.ok
+    });
+
+    res.json({ success: true, result });
+  } catch (error) {
+    logger.error('Error testing workflow action:', error);
+    res.status(500).json({ success: false, error: 'Failed to run the test' });
+  }
 });
 
 // Get workflow execution stats

@@ -74,6 +74,18 @@ inbound URL is public, so every request must carry the company's inbound
 secret; an unknown company and a disabled channel return the same 404 so the
 endpoint cannot enumerate tenants.
 
+**Actions in workflows.** A workflow can call the tenant's own API mid-
+conversation, so the bot resolves rather than only answers - "where is my
+order?" becomes a real lookup. The node branches on whether the call worked,
+and only the response fields the author named become variables the rest of the
+workflow can use; nothing else from the response reaches the model or the
+transcript. Credentials are encrypted at rest and never sent back to the
+editor, which sees only that one is set. Because a tenant types a URL that our
+server then fetches, the destination is checked at connect time on the resolved
+address, including on each redirect - private, loopback and cloud-metadata
+ranges are refused. A "Try it" button in the editor runs the call once and
+shows both what came back and what the field mappings picked out of it.
+
 **Operator tools.** Saved replies inserted from the composer with `/`, internal
 notes that never reach the visitor or the model, conversation transfer with a
 handover note, and a queue filtered by All / Mine / Waiting so several chats
@@ -115,7 +127,7 @@ content-hashed widget assets cached for a year with the loader on `no-cache`.
 
 ## Test suite
 
-`npm test` — 260 tests across 21 suites. An in-memory MongoDB starts
+`npm test` — 333 tests across 22 suites. An in-memory MongoDB starts
 automatically (`tests/globalSetup.js`), so no local `mongod` is needed.
 `tests/setup.js` blanks `OPENAI_API_KEY` so the suite never makes a real model
 call; the embedding and intent tests therefore assert on ranking and plumbing

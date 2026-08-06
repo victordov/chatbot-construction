@@ -35,6 +35,15 @@ const WorkflowSchema = new mongoose.Schema({
     id: { type: String, required: true },
     source: { type: String, required: true },
     target: { type: String, required: true },
+    // Which output the edge leaves from: a router's condition id or
+    // "default", an action's "success" or "error".
+    //
+    // Missing from this schema until now, so mongoose dropped it on save and
+    // every branch a tenant drew collapsed to "no handle" the moment the
+    // workflow was reloaded - a router with three rules routed everything the
+    // same way, and the failure branch of an action was unreachable.
+    sourceHandle: { type: String, default: null },
+    targetHandle: { type: String, default: null },
     type: { type: String, default: 'default' },
     data: { type: mongoose.Schema.Types.Mixed }
   }],

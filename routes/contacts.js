@@ -243,7 +243,7 @@ router.get('/identity/secret', admin, async (req, res) => {
       examples: {
         node: "crypto.createHmac('sha256', SECRET).update(String(userId)).digest('hex')",
         ruby: "OpenSSL::HMAC.hexdigest('sha256', SECRET, user_id.to_s)",
-        python: "hmac.new(SECRET.encode(), str(user_id).encode(), hashlib.sha256).hexdigest()",
+        python: 'hmac.new(SECRET.encode(), str(user_id).encode(), hashlib.sha256).hexdigest()',
         php: "hash_hmac('sha256', (string) $userId, SECRET)"
       }
     });

@@ -12,7 +12,10 @@ module.exports = {
   rules: {
     'indent': ['error', 2],
     'linebreak-style': ['error', 'unix'],
-    'quotes': ['error', 'single'],
+    // `avoidEscape` permits double quotes only where the string itself contains
+    // a single quote. The identity-verification code samples are exactly that:
+    // escaping them would leave customers copying \' out of the dashboard.
+    'quotes': ['error', 'single', { avoidEscape: true }],
     'semi': ['error', 'always'],
     'no-unused-vars': ['warn'],
     'no-console': ['warn', { allow: ['error', 'warn', 'info'] }],
