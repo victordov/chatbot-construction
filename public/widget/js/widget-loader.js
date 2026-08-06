@@ -83,9 +83,13 @@
   }
 
   /**
-   * Ask the server which tenant this key belongs to and how the widget should
-   * look. On failure the widget still loads with defaults plus any explicit
-   * attributes, so a network blip degrades rather than breaks.
+   * Ask the server which tenant this key belongs to, how the widget should
+   * look, and which asset build to load.
+   *
+   * On failure the widget still loads from the unhashed paths with default
+   * branding, so a network blip degrades rather than breaks.
+   *
+   * @returns {Promise<{settings: object, assets: object}>}
    */
   function fetchTenantSettings(serverUrl, widgetKey) {
     const url = serverUrl + '/api/widget/config' +
@@ -96,10 +100,11 @@
         return response.ok ? response.json() : null;
       })
       .then(function(remote) {
-        if (!remote || !remote.settings) {
-          return {};
+        if (!remote) {
+          return { settings: {}, assets: {} };
         }
-        const s = remote.settings;
+
+        const s = remote.settings || {};
         const settings = {};
         if (s.chatbotName) {
           settings.chatbotName = s.chatbotName;
@@ -113,41 +118,62 @@
         if (s.welcomeMessage) {
           settings.initialMessage = s.welcomeMessage;
         }
-        return settings;
+
+        return { settings: settings, assets: remote.assets || {} };
       })
       .catch(function() {
-        return {};
+        return { settings: {}, assets: {} };
       });
   }
 
+  /**
+   * Fetch config first, then load the widget from the content-hashed URL the
+   * server names.
+   *
+   * The order matters: the config response is what tells us which build to
+   * load. Fetching it first costs one round trip but lets the widget bundle
+   * itself be cached for a year, instead of being revalidated on every page
+   * view of every customer site.
+   */
   function loadWidgetScript(parsed) {
-    const script = document.createElement('script');
-    script.src = parsed.serverUrl + '/widget/js/widget.js';
+    fetchTenantSettings(parsed.serverUrl, parsed.widgetKey).then(function(remote) {
+      const assets = remote.assets || {};
+      const widgetSrc = parsed.serverUrl +
+        (assets['widget/js/widget.js'] || '/widget/js/widget.js');
 
-    script.onload = function() {
-      if (!window.ChatbotWidget) {
-        console.error('Chatbot Widget failed to load properly');
-        return;
-      }
+      const script = document.createElement('script');
+      script.src = widgetSrc;
 
-      fetchTenantSettings(parsed.serverUrl, parsed.widgetKey).then(function(tenantSettings) {
+      script.onload = function() {
+        if (!window.ChatbotWidget) {
+          console.error('Chatbot Widget failed to load properly');
+          return;
+        }
+
         // defaults -> tenant settings -> explicit snippet attributes
         const config = Object.assign(
           {},
           defaultConfig,
-          tenantSettings,
+          remote.settings || {},
           parsed.overrides,
-          { serverUrl: parsed.serverUrl, widgetKey: parsed.widgetKey }
+          {
+            serverUrl: parsed.serverUrl,
+            widgetKey: parsed.widgetKey,
+            // Passed through so the widget loads its own dependencies from
+            // hashed URLs too.
+            assets: assets
+          }
         );
+
         window.ChatbotWidget.init(config);
-      });
-    };
+      };
 
-    script.onerror = function() {
-      console.error('Failed to load Chatbot Widget script');
-    };
+      script.onerror = function() {
+        console.error('Failed to load Chatbot Widget script');
+      };
 
-    document.body.appendChild(script);
+      document.body.appendChild(script);
+    });
   }
 
   function init() {

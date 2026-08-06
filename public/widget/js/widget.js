@@ -11,6 +11,9 @@
     // attribute conversations to a company; without it, chats only reach the
     // right dashboard if the page's origin happens to be registered.
     widgetKey: null,
+    // Content-hashed URLs for the widget's own dependencies, supplied by the
+    // loader from /api/widget/config so they can be cached immutably.
+    assets: {},
     chatbotName: 'Assistant',
     primaryColor: '#2196f3',
     initialMessage: 'Hello! How can I assist you today?',
@@ -130,7 +133,8 @@
   // Load the encryption utility script
   function loadEncryptionUtil() {
     const script = document.createElement('script');
-    script.src = `${config.serverUrl}/widget/js/encryption.js`;
+    script.src = config.serverUrl +
+      (config.assets['widget/js/encryption.js'] || '/widget/js/encryption.js');
     script.onload = () => {
       encryptionUtil = new EncryptionUtil(config.serverUrl);
       encryptionUtil.init()
@@ -346,7 +350,8 @@
     // Add the CSS file
     const cssLink = document.createElement('link');
     cssLink.rel = 'stylesheet';
-    cssLink.href = `${config.serverUrl}/widget/css/widget.css`;
+    cssLink.href = config.serverUrl +
+      (config.assets['widget/css/widget.css'] || '/widget/css/widget.css');
     document.head.appendChild(cssLink);
 
     // Add custom styles for sender names and user details form

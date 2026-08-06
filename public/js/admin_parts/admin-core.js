@@ -290,6 +290,9 @@ function initializeDashboard(token, user) {
   if (typeof setupBillingSection === 'function') {
     setupBillingSection();
   }
+  if (typeof setupAnalytics === 'function') {
+    setupAnalytics();
+  }
   setupExport();
 
   // Check URL parameters for chat selection
@@ -305,6 +308,45 @@ function initializeDashboard(token, user) {
       viewChatHistory(params.session);
     }, 500); // Small delay to ensure data is loaded
   }
+}
+
+/**
+ * Re-measure any charts inside a section that has just become visible.
+ *
+ * Chart.js sizes a canvas when the chart is constructed. Sections other than
+ * the one open at page load are `display: none`, so their canvases measure
+ * zero and the chart draws nothing - the axes and labels appear, but the
+ * datasets are invisible. Chart.js does not re-measure on its own when the
+ * element later becomes visible, so we ask it to.
+ */
+function resizeChartsIn(sectionId) {
+  if (typeof Chart === 'undefined') {
+    return;
+  }
+
+  const section = document.getElementById(sectionId);
+  if (!section) {
+    return;
+  }
+
+  // Two frames: one for the browser to apply the display change and lay the
+  // section out, one for the canvas to have its final size.
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    section.querySelectorAll('canvas').forEach(canvas => {
+      const chart = Chart.getChart ? Chart.getChart(canvas) : null;
+      if (!chart) {
+        return;
+      }
+
+      // Chart.js wrote `width: 0px; height: 0px` inline from its initial
+      // measurement of a hidden canvas. resize() re-reads those styles, so
+      // without clearing them it measures zero again - the chart stays blank
+      // permanently. Clearing lets it size from the container.
+      canvas.style.width = '';
+      canvas.style.height = '';
+      chart.resize();
+    });
+  }));
 }
 
 /**
@@ -494,6 +536,14 @@ function setupNavigation() {
       if (pageTitle) {
         pageTitle.textContent = this.textContent.trim();
       }
+
+      // The Analytics charts are built on first view: see
+      // initializeAnalyticsCharts for why they cannot be built up front.
+      if (sectionId === 'analytics' && typeof initializeAnalyticsCharts === 'function') {
+        initializeAnalyticsCharts();
+      }
+
+      resizeChartsIn(sectionId + '-section');
 
       // If tasks section is clicked, load operators and show task list
       if (sectionId === 'tasks') {

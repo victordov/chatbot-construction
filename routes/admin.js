@@ -5,6 +5,8 @@ const User = require('../models/user');
 const Company = require('../models/company');
 const { auth, operator, admin } = require('../middleware/auth');
 const { enforceLimit } = require('../middleware/quota');
+const analyticsService = require('../services/analytics');
+const usageService = require('../services/usage');
 const { logger } = require('../services/logging');
 const {
   containsRegex,
@@ -507,6 +509,36 @@ router.get('/analytics', async (req, res) => {
   } catch (error) {
     logger.error('Error fetching analytics', { error });
     res.status(500).json({ error: 'Failed to retrieve analytics data' });
+  }
+});
+
+/**
+ * Deeper analytics: deflection, abandonment, staffing, operator performance,
+ * recurring topics and task throughput.
+ *
+ * Gated on the plan's analytics tier - it is a headline feature of the paid
+ * plans, and the queries are heavier than the basic dashboard's.
+ */
+router.get('/analytics/advanced', async (req, res) => {
+  try {
+    if (req.user.role !== 'superadmin') {
+      const subscription = await usageService.getSubscription(req.user.company?.id);
+      const tier = require('../config/plans').getPlan(subscription.planId).features.analytics;
+
+      if (tier !== 'advanced') {
+        return res.status(402).json({
+          error: 'Advanced analytics are available on the Professional plan and above.',
+          code: 'FEATURE_NOT_IN_PLAN',
+          feature: 'analytics'
+        });
+      }
+    }
+
+    const days = Math.min(365, Math.max(1, parseInt(req.query.days, 10) || 30));
+    res.json(await analyticsService.advanced(req.user, days));
+  } catch (error) {
+    logger.error('Error building advanced analytics', { error });
+    res.status(500).json({ error: 'Failed to build analytics' });
   }
 });
 

@@ -93,7 +93,9 @@ class EncryptionUtil {
    * same origin even when the widget is embedded on another domain.
    */
   static resolveBaseUrl() {
-    const script = document.querySelector('script[src*="/widget/js/encryption.js"]');
+    // The src may be content-hashed (encryption.<hash>.js), so match on the
+    // directory rather than the exact filename.
+    const script = document.querySelector('script[src*="/widget/js/encryption"]');
     if (script && script.src) {
       try {
         return new URL(script.src).origin;

@@ -303,37 +303,124 @@
 
                 <!-- Analytics Section -->
                 <section id="analytics-section" class="content-section">
-                    <div class="row">
-                        <div class="col-md-6">
-                            <div class="card">
-                                <div class="card-header">
-                                    <h5>Chat Volume Over Time</h5>
-                                </div>
+                    <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
+                        <div class="btn-group btn-group-sm" role="group" aria-label="Time range">
+                            <button type="button" class="btn btn-outline-secondary active" data-range="7">7 days</button>
+                            <button type="button" class="btn btn-outline-secondary" data-range="30">30 days</button>
+                            <button type="button" class="btn btn-outline-secondary" data-range="90">90 days</button>
+                        </div>
+                        <span class="text-muted small" id="analytics-range-label"></span>
+                    </div>
+
+                    <!-- Headline numbers. Deflection first: it is the metric
+                         that says whether the bot is earning its keep. -->
+                    <div class="row g-3 mb-4" id="analytics-headline">
+                        <div class="col-sm-6 col-xl-3">
+                            <div class="card h-100 stat-card">
                                 <div class="card-body">
-                                    <canvas id="chat-volume-chart"></canvas>
+                                    <div class="stat-label">Bot deflection</div>
+                                    <div class="stat-value" id="stat-deflection">—</div>
+                                    <div class="stat-detail" id="stat-deflection-detail"></div>
                                 </div>
                             </div>
                         </div>
-                        <div class="col-md-6">
-                            <div class="card">
-                                <div class="card-header">
-                                    <h5>Average Response Time</h5>
-                                </div>
+                        <div class="col-sm-6 col-xl-3">
+                            <div class="card h-100 stat-card">
                                 <div class="card-body">
-                                    <canvas id="response-time-chart"></canvas>
+                                    <div class="stat-label">Escalated to a human</div>
+                                    <div class="stat-value" id="stat-escalated">—</div>
+                                    <div class="stat-detail" id="stat-escalated-detail"></div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-sm-6 col-xl-3">
+                            <div class="card h-100 stat-card">
+                                <div class="card-body">
+                                    <div class="stat-label">Left unanswered</div>
+                                    <div class="stat-value" id="stat-abandoned">—</div>
+                                    <div class="stat-detail" id="stat-abandoned-detail"></div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-sm-6 col-xl-3">
+                            <div class="card h-100 stat-card">
+                                <div class="card-body">
+                                    <div class="stat-label">Tasks completed</div>
+                                    <div class="stat-value" id="stat-tasks">—</div>
+                                    <div class="stat-detail" id="stat-tasks-detail"></div>
                                 </div>
                             </div>
                         </div>
                     </div>
-                    <div class="row mt-4">
-                        <div class="col-md-12">
-                            <div class="card">
+
+                    <div id="analytics-locked" class="alert alert-info d-none">
+                        <strong>Advanced analytics</strong> are available on the Professional plan and above.
+                        The charts below still show volume and response time.
+                    </div>
+
+                    <div class="row g-4">
+                        <div class="col-xl-6">
+                            <div class="card h-100">
+                                <div class="card-header"><h5 class="mb-0">Chat volume over time</h5></div>
+                                <div class="card-body"><canvas id="chat-volume-chart"></canvas></div>
+                            </div>
+                        </div>
+                        <div class="col-xl-6">
+                            <div class="card h-100">
+                                <div class="card-header"><h5 class="mb-0">Average response time</h5></div>
+                                <div class="card-body"><canvas id="response-time-chart"></canvas></div>
+                            </div>
+                        </div>
+
+                        <div class="col-xl-7">
+                            <div class="card h-100">
                                 <div class="card-header">
-                                    <h5>Conversation Metrics</h5>
+                                    <h5 class="mb-0">When conversations start</h5>
+                                    <small class="text-muted">Darker means busier. Use it to plan cover.</small>
                                 </div>
                                 <div class="card-body">
+                                    <div id="peak-heatmap" class="heatmap"></div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="col-xl-5">
+                            <div class="card h-100">
+                                <div class="card-header"><h5 class="mb-0">What people ask about</h5></div>
+                                <div class="card-body">
+                                    <div id="topic-cloud" class="topic-cloud"></div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="col-12">
+                            <div class="card">
+                                <div class="card-header"><h5 class="mb-0">Operator performance</h5></div>
+                                <div class="card-body">
                                     <div class="table-responsive">
-                                        <table class="table table-striped">
+                                        <table class="table table-sm table-hover align-middle mb-0">
+                                            <thead>
+                                                <tr>
+                                                    <th>Operator</th>
+                                                    <th class="text-end">Conversations</th>
+                                                    <th class="text-end">Replies</th>
+                                                    <th class="text-end">Median response</th>
+                                                    <th class="text-end">Average response</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody id="operator-performance-table"></tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="col-12">
+                            <div class="card">
+                                <div class="card-header"><h5 class="mb-0">Conversation metrics</h5></div>
+                                <div class="card-body">
+                                    <div class="table-responsive">
+                                        <table class="table table-striped mb-0">
                                             <thead>
                                                 <tr>
                                                     <th>Metric</th>
@@ -1479,5 +1566,6 @@
     <script src="/js/admin_parts/admin-notifications.js"></script>
     <script src="/js/admin_parts/admin-widget.js"></script>
     <script src="/js/admin_parts/admin-billing.js"></script>
+    <script src="/js/admin_parts/admin-analytics.js"></script>
 </body>
 </html>

@@ -205,6 +205,17 @@
           scales: { y: { beginAtZero: true, suggestedMax: 10, ticks: { precision: 0 } } }
         }
       });
+
+      // Built while the section may still be hidden, in which case the canvas
+      // measured zero and Chart.js pinned it there with inline styles.
+      requestAnimationFrame(() => {
+        if (!usageHistoryChart) {
+          return;
+        }
+        canvas.style.width = '';
+        canvas.style.height = '';
+        usageHistoryChart.resize();
+      });
     } catch (error) {
       logger.error('Failed to load usage history:', error);
     }

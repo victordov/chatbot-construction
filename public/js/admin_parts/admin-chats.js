@@ -40,23 +40,88 @@ let topSourcesChart;
  * -1.0 to 1.0 axis that looked like a rendering fault rather than "no data
  * yet". Pinning the axis to zero with a small suggested maximum keeps an empty
  * chart legible.
+ *
+ * Returns a fresh object per call rather than a shared constant: Chart.js
+ * mutates the options object it is handed, so several charts sharing one
+ * object corrupt each other's scale state and silently stop drawing their
+ * datasets.
  */
-const CHART_BASE_OPTIONS = {
-  responsive: true,
-  maintainAspectRatio: true,
-  aspectRatio: 2,
-  interaction: { mode: 'index', intersect: false },
-  scales: {
-    y: {
-      beginAtZero: true,
-      suggestedMax: 5,
-      ticks: {
-        // Conversation counts are whole numbers; fractional ticks are noise.
-        precision: 0
+function chartBaseOptions() {
+  return {
+    responsive: true,
+    maintainAspectRatio: true,
+    aspectRatio: 2,
+    interaction: { mode: 'index', intersect: false },
+    scales: {
+      y: {
+        beginAtZero: true,
+        suggestedMax: 5,
+        ticks: {
+          // Conversation counts are whole numbers; fractional ticks are noise.
+          precision: 0
+        }
       }
     }
+  };
+}
+
+/**
+ * The most recent analytics payload, kept so charts built later (when their
+ * section is first opened) can be populated without another request.
+ */
+let lastAnalyticsData = null;
+
+/**
+ * Build the charts that live in the Analytics section.
+ *
+ * Deferred until the section is actually shown. Chart.js measures its canvas
+ * at construction, and a canvas inside a `display: none` section measures
+ * zero; it then pins that zero with inline styles and never recovers, so the
+ * axes render but the data never appears. Building on first view side-steps
+ * the whole problem rather than trying to repair it afterwards.
+ */
+function initializeAnalyticsCharts() {
+  if (chatVolumeChart) {
+    return;
   }
-};
+
+  const volumeCanvas = document.getElementById('chat-volume-chart');
+  const responseCanvas = document.getElementById('response-time-chart');
+  if (!volumeCanvas || !responseCanvas) {
+    return;
+  }
+
+  chatVolumeChart = new Chart(volumeCanvas.getContext('2d'), {
+    type: 'bar',
+    data: {
+      labels: [],
+      datasets: [{ label: 'Number of Chats', data: [], backgroundColor: '#0d6efd' }]
+    },
+    options: chartBaseOptions()
+  });
+
+  responseTimeChart = new Chart(responseCanvas.getContext('2d'), {
+    type: 'line',
+    data: {
+      labels: [],
+      datasets: [{
+        label: 'Response Time (seconds)', data: [],
+        borderColor: '#28a745', tension: 0.1, fill: false
+      }]
+    },
+    options: chartBaseOptions()
+  });
+
+  // Apply whatever the dashboard already fetched.
+  if (lastAnalyticsData) {
+    if (lastAnalyticsData.chatVolumeOverTime) {
+      updateChatVolumeChart(lastAnalyticsData.chatVolumeOverTime);
+    }
+    if (lastAnalyticsData.responseTimeOverTime) {
+      updateResponseTimeChart(lastAnalyticsData.responseTimeOverTime);
+    }
+  }
+}
 
 function initializeCharts() {
   // Chat Activity Chart
@@ -73,7 +138,7 @@ function initializeCharts() {
         fill: false
       }]
     },
-    options: CHART_BASE_OPTIONS
+    options: chartBaseOptions()
   });
 
   // Traffic sources. This slot used to hold a "Common Topics" doughnut with
@@ -95,38 +160,6 @@ function initializeCharts() {
       aspectRatio: 2,
       plugins: { legend: { position: 'right' } }
     }
-  });
-
-  // Chat Volume Chart
-  const volumeCtx = document.getElementById('chat-volume-chart').getContext('2d');
-  chatVolumeChart = new Chart(volumeCtx, {
-    type: 'bar',
-    data: {
-      labels: ['Week 1', 'Week 2', 'Week 3', 'Week 4'],
-      datasets: [{
-        label: 'Number of Chats',
-        data: [0, 0, 0, 0],
-        backgroundColor: '#007bff'
-      }]
-    },
-    options: CHART_BASE_OPTIONS
-  });
-
-  // Response Time Chart
-  const responseCtx = document.getElementById('response-time-chart').getContext('2d');
-  responseTimeChart = new Chart(responseCtx, {
-    type: 'line',
-    data: {
-      labels: ['Week 1', 'Week 2', 'Week 3', 'Week 4'],
-      datasets: [{
-        label: 'Response Time (seconds)',
-        data: [0, 0, 0, 0],
-        borderColor: '#28a745',
-        tension: 0.1,
-        fill: false
-      }]
-    },
-    options: CHART_BASE_OPTIONS
   });
 
   // Helper will update this chart once data is loaded
@@ -288,6 +321,10 @@ function loadDashboardData(token) {
   })
     .then(response => response.json())
     .then(data => {
+      // Kept so the Analytics charts can be populated when they are built on
+      // first view of that section.
+      lastAnalyticsData = data;
+
       document.getElementById('active-chats-count').textContent = data.activeChats || '0';
       document.getElementById('total-chats-today').textContent = data.totalChatsToday || '0';
       document.getElementById('avg-response-time').textContent = data.avgResponseTime ? `${data.avgResponseTime}s` : '0s';

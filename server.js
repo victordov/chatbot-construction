@@ -14,6 +14,7 @@ const config = require('./config/env');
 const setupWebSockets = require('./websockets');
 const socketManager = require('./socketManager');
 const tenantService = require('./services/tenant');
+const assetManifest = require('./services/asset-manifest');
 const sessionRoutes = require('./routes/session');
 const chatRoutes = require('./routes/chat');
 const adminRoutes = require('./routes/admin');
@@ -203,6 +204,32 @@ if (!fs.existsSync(publicDir)) {
   fs.mkdirSync(publicDir);
 }
 
+// Content-hashed widget assets. Built once at startup; see
+// services/asset-manifest.js for why the loader itself is not hashed.
+assetManifest.build();
+
+/**
+ * Serve `widget/js/widget.<hash>.js` from `widget/js/widget.js`.
+ *
+ * Any hash resolves to the current file, so a page that loaded just before a
+ * deploy still gets a working widget instead of a 404 mid-conversation.
+ */
+app.get(/^\/widget\/.+\.[a-f0-9]{8}\.(js|css)$/, (req, res, next) => {
+  const resolved = assetManifest.resolveHashedPath(req.path);
+
+  if (!resolved) {
+    return next();
+  }
+
+  // The URL changes whenever the content does, so this can be cached hard.
+  res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+  res.sendFile(path.join(publicDir, resolved), error => {
+    if (error) {
+      next(error);
+    }
+  });
+});
+
 app.use(express.static(publicDir, {
   etag: true,
   lastModified: true,
@@ -214,13 +241,10 @@ app.use(express.static(publicDir, {
       return;
     }
 
-    // Everything else - including the widget - uses `no-cache`. That still
-    // revalidates cheaply via ETag and returns a 304, but guarantees a deploy
-    // reaches users on their next request.
-    //
-    // The widget in particular must not be cached by max-age: its URL carries
-    // no version or content hash, so a long TTL would pin visitors to a stale
-    // (possibly broken) widget with no way to invalidate it.
+    // Everything else uses `no-cache`: it still revalidates cheaply via ETag
+    // and returns a 304, but guarantees a deploy reaches users on their next
+    // request. This covers the widget loader, whose URL is pasted into
+    // customer sites and can never change, and the dashboard.
     res.setHeader('Cache-Control', 'no-cache');
   }
 }));

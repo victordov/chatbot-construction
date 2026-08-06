@@ -10,6 +10,7 @@
 const express = require('express');
 const router = express.Router();
 const tenantService = require('../services/tenant');
+const assetManifest = require('../services/asset-manifest');
 const { logger } = require('../services/logging');
 
 const DEFAULT_SETTINGS = {
@@ -27,23 +28,29 @@ router.get('/config', async (req, res) => {
 
     const company = await tenantService.resolveCompany({ widgetKey, origin });
 
+    // Content-hashed URLs, so the loader fetches an immutable, hard-cacheable
+    // build rather than revalidating the widget on every page view.
+    const assets = assetManifest.all();
+
     if (!company) {
       // Unknown tenant: still return a usable default so a misconfigured
       // snippet degrades to a working generic widget rather than a blank page.
       return res.json({
         recognised: false,
-        settings: DEFAULT_SETTINGS
+        settings: DEFAULT_SETTINGS,
+        assets
       });
     }
 
     res.json({
       recognised: true,
       companyName: company.name,
-      settings: { ...DEFAULT_SETTINGS, ...(company.widgetSettings || {}) }
+      settings: { ...DEFAULT_SETTINGS, ...(company.widgetSettings || {}) },
+      assets
     });
   } catch (error) {
     logger.error('Error serving widget config', { error });
-    res.json({ recognised: false, settings: DEFAULT_SETTINGS });
+    res.json({ recognised: false, settings: DEFAULT_SETTINGS, assets: assetManifest.all() });
   }
 });
 
