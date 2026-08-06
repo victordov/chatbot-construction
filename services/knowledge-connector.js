@@ -8,6 +8,10 @@ const axios = require('axios');
 const fs = require('fs').promises;
 const path = require('path');
 const { logger } = require('./logging');
+const { getVectorStore } = require('./vector-store');
+
+// PDFs are downloaded into memory before parsing, so cap the size.
+const MAX_PDF_BYTES = parseInt(process.env.MAX_PDF_BYTES, 10) || 25 * 1024 * 1024;
 
 class KnowledgeConnectorService {
   constructor() {
@@ -104,7 +108,7 @@ class KnowledgeConnectorService {
 
       if (url.endsWith('.pdf')) {
         // Handle PDF documents
-        content = await this.extractPdfContent(url, tenantId);
+        content = await this.extractPdfContent(url);
         filename = path.basename(url);
       } else {
         // Handle web URLs
@@ -135,21 +139,53 @@ class KnowledgeConnectorService {
   }
 
   /**
-   * Extract PDF content (placeholder - would use PyPDF or similar)
+   * Extract the text of a PDF.
+   *
+   * This previously downloaded the file and then returned the literal string
+   * "PDF content from <url> - would be extracted using pdf-parse or similar
+   * library", which was then chunked, embedded and served to visitors as
+   * knowledge.
    */
-  async extractPdfContent(url, tenantId) {
-    // This is a placeholder. In a real implementation, you'd use:
-    // - pdf-parse library for Node.js
-    // - or call a Python service with PyPDF2/pdfplumber
-    // - or use a cloud service like AWS Textract
+  async extractPdfContent(url) {
+    let buffer;
 
     try {
-      const response = await axios.get(url, { responseType: 'arraybuffer' });
-
-      // For now, return a placeholder. In production, use proper PDF parsing
-      return `PDF content from ${url} - would be extracted using pdf-parse or similar library`;
+      const response = await axios.get(url, {
+        responseType: 'arraybuffer',
+        timeout: 60000,
+        maxContentLength: MAX_PDF_BYTES,
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; ChatbotKnowledgeBot/1.0)' }
+      });
+      buffer = Buffer.from(response.data);
     } catch (error) {
       throw new Error(`Failed to download PDF: ${error.message}`);
+    }
+
+    if (buffer.length > MAX_PDF_BYTES) {
+      throw new Error(`PDF is larger than the ${Math.round(MAX_PDF_BYTES / 1024 / 1024)}MB limit`);
+    }
+
+    try {
+      // Required lazily: pdf-parse reads a sample file at require time in some
+      // versions, and it is only needed on this path.
+      const pdfParse = require('pdf-parse');
+      const parsed = await pdfParse(buffer);
+
+      const text = String(parsed.text || '')
+        // PDF extraction leaves ragged whitespace and hyphenated line breaks.
+        .replace(/-\n\s*/g, '')
+        .replace(/\s*\n\s*/g, '\n')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+
+      if (!text) {
+        throw new Error('No extractable text found. The PDF may be a scan; OCR is not supported.');
+      }
+
+      logger.info('Extracted PDF text', { url, pages: parsed.numpages, characters: text.length });
+      return text;
+    } catch (error) {
+      throw new Error(`Failed to read PDF: ${error.message}`);
     }
   }
 
@@ -213,44 +249,33 @@ class KnowledgeConnectorService {
    * Vector Store Integration with Qdrant
    * One collection per environment, tenant isolation via payload filtering
    */
-  async storeInVectorDB(documents, collectionName = 'knowledge_base') {
-    try {
-      // This would integrate with Qdrant client
-      // For now, return a placeholder
+  async storeInVectorDB(documents, collectionName = 'knowledge_base', options = {}) {
+    // This used to report `{stored: true}` for every document without writing
+    // anything anywhere, so ingestion always "succeeded" and retrieval always
+    // came back empty.
+    const { companyId, sourceId, sourceType } = options;
 
-      const results = documents.map(doc => ({
-        id: doc.id,
-        stored: true,
-        collection: collectionName,
-        vector_id: `vec_${doc.id}`
-      }));
-
-      return results;
-    } catch (error) {
-      console.error('Error storing in vector DB:', error);
-      throw new Error(`Failed to store in vector database: ${error.message}`);
-    }
+    return getVectorStore().store(documents, {
+      companyId,
+      sourceId: sourceId || `source_${collectionName}`,
+      sourceType,
+      collectionName
+    });
   }
 
   /**
    * Search vector store with tenant filtering
    */
   async searchVectorStore(query, tenantId, collectionName = 'knowledge_base', limit = 5) {
-    try {
-      // This would integrate with Qdrant client for vector search
-      // with tenant filtering
+    // Previously returned an empty array unconditionally, which is why every
+    // knowledge node in every workflow contributed no context.
+    const results = await getVectorStore().search(query, {
+      companyId: tenantId,
+      collectionName,
+      limit
+    });
 
-      // Placeholder implementation
-      return {
-        results: [],
-        query,
-        tenantId,
-        collection: collectionName
-      };
-    } catch (error) {
-      console.error('Error searching vector store:', error);
-      throw new Error(`Failed to search vector store: ${error.message}`);
-    }
+    return { results, query, tenantId, collection: collectionName };
   }
 
   /**
@@ -275,16 +300,27 @@ class KnowledgeConnectorService {
         throw new Error(`Unsupported source type: ${sourceConfig.sourceType}`);
       }
 
-      // Store in vector database
-      const collectionName = `tenant_${tenantId}_knowledge`;
-      const vectorResults = await this.storeInVectorDB(documents, collectionName);
+      // Store in the vector database, scoped to the tenant and to this source
+      // so a re-import replaces exactly its own chunks.
+      const collectionName = sourceConfig.collectionName || 'knowledge_base';
+      const sourceId = sourceConfig.sourceId ||
+        `${sourceConfig.sourceType}:${sourceConfig.config?.sheetId || sourceConfig.config?.url || 'default'}`;
+
+      const vectorResults = await this.storeInVectorDB(documents, collectionName, {
+        companyId: tenantId,
+        sourceId,
+        sourceType: sourceConfig.sourceType === 'google_sheets' ? 'google_sheets'
+          : sourceConfig.sourceType === 'vector_store' ? 'manual'
+            : sourceConfig.sourceType
+      });
 
       return {
         success: true,
         type: sourceConfig.sourceType,
         documentsProcessed: documents.length,
         vectorResults,
-        collectionName
+        collectionName,
+        sourceId
       };
     } catch (error) {
       logger.error('Error processing knowledge source', { error: error.message });
@@ -295,36 +331,54 @@ class KnowledgeConnectorService {
   /**
    * Get knowledge for a query (used by workflow execution)
    */
-  async getKnowledge(query, knowledgeNodes, tenantId) {
+  async getKnowledge(query, knowledgeNodes = [], tenantId, options = {}) {
     try {
-      const knowledgeResults = [];
-
-      for (const node of knowledgeNodes) {
-        // Accept both the raw editor node ({ data: { sourceType, config } })
-        // and the compiled source ({ type, config }) the compiler produces.
-        const sourceType = node.sourceType || node.type || node.data?.sourceType || node.data?.type;
-        const config = node.config || node.data?.config || {};
-
-        if (sourceType === 'vector_store' || sourceType === 'vector-store') {
-          // Search vector store
-          const results = await this.searchVectorStore(
-            query,
-            tenantId,
-            config.collectionName || `tenant_${tenantId}_knowledge`
-          );
-          knowledgeResults.push(...results.results);
-        } else {
-          // For other types, we would have already processed them into vector store
-          const results = await this.searchVectorStore(
-            query,
-            tenantId,
-            `tenant_${tenantId}_knowledge`
-          );
-          knowledgeResults.push(...results.results);
-        }
+      if (!tenantId || knowledgeNodes.length === 0) {
+        return [];
       }
 
-      return knowledgeResults;
+      // Every node used to trigger its own search against a
+      // `tenant_<id>_knowledge` collection that ingestion never wrote to, and
+      // identical results were then concatenated once per node. Search each
+      // distinct collection once instead, and let the tenant filter do the
+      // isolation work.
+      const collections = [...new Set(
+        knowledgeNodes.map(node => {
+          const config = node.config || node.data?.config || {};
+          return config.collectionName || config.collection || 'knowledge_base';
+        })
+      )];
+
+      const limit = options.limit || 5;
+      const perCollection = await Promise.all(
+        collections.map(collectionName =>
+          this.searchVectorStore(query, tenantId, collectionName, limit)
+            .then(result => result.results)
+            .catch(error => {
+              // One bad source must not remove the context from the others.
+              logger.warn('Knowledge search failed for a collection', {
+                collectionName,
+                error: error.message
+              });
+              return [];
+            })
+        )
+      );
+
+      // Merge, drop duplicates, and keep the best-scoring chunks overall.
+      const seen = new Set();
+      return perCollection
+        .flat()
+        .filter(result => {
+          const key = result.content;
+          if (seen.has(key)) {
+            return false;
+          }
+          seen.add(key);
+          return true;
+        })
+        .sort((a, b) => b.score - a.score)
+        .slice(0, limit);
     } catch (error) {
       logger.error('Error getting knowledge', { error: error.message });
       return [];
@@ -332,12 +386,12 @@ class KnowledgeConnectorService {
   }
 
   /**
-   * Query a single knowledge source directly.
+   * Query a single knowledge source directly, without going through the
+   * ingest-then-search path.
    *
-   * This is the entry point the workflow editor's "test source" action and the
-   * integration tests use: given a source config, fetch matching content
-   * without needing the source to have been ingested into the vector store
-   * first.
+   * This is what the workflow editor's "test this source" action uses: an
+   * author configuring a knowledge node wants to see whether their credentials
+   * and IDs are right before committing to a full import.
    *
    * @param {object} config  `{ type, ... }` describing the source
    * @param {string} query   the user's question
@@ -353,7 +407,7 @@ class KnowledgeConnectorService {
       if (!config.spreadsheetId && !config.sheetId) {
         throw new Error('Google Sheets service not configured: spreadsheetId is required');
       }
-      if (!process.env.GOOGLE_CLIENT_EMAIL && !config.credentialsPath) {
+      if (!process.env.GOOGLE_CLIENT_EMAIL && !process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL && !config.credentialsPath) {
         throw new Error('Google Sheets service not configured: no service account credentials');
       }
       const documents = await this.loadGoogleSheets(
@@ -381,13 +435,17 @@ class KnowledgeConnectorService {
 
     case 'vector-store':
     case 'vector_store': {
-      if (!process.env.QDRANT_URL && !this.vectorStore) {
-        throw new Error('Vector store not configured: set QDRANT_URL');
+      // Only a *dedicated* vector database counts as "configured" here. The
+      // in-process MongoDB backend is queried through searchVectorStore, which
+      // this method deliberately does not stand in for: a vector-store node
+      // points at an external index the author must set up.
+      if (!process.env.QDRANT_URL && !process.env.MONGODB_VECTOR_INDEX) {
+        throw new Error('Vector store not configured: set QDRANT_URL or MONGODB_VECTOR_INDEX');
       }
       const results = await this.searchVectorStore(
         query,
         tenantId,
-        config.collection || config.collectionName || `tenant_${tenantId}_knowledge`
+        config.collection || config.collectionName || 'knowledge_base'
       );
       return { source: 'vector-store', results: results.results || [] };
     }

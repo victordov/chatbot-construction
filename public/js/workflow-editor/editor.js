@@ -135,6 +135,37 @@
     'operator-handoff': { label: 'Human Handoff', message: 'Let me connect you with a colleague.' }
   };
 
+  /**
+   * Router condition types. `intent` matches semantically, so it catches
+   * phrasings the author did not list - "money back" reaching a refund intent
+   * whose examples only say "refund".
+   */
+  const CONDITION_TYPES = [
+    { value: 'intent', label: 'Intent (meaning)' },
+    { value: 'keyword', label: 'Keyword' },
+    { value: 'contains', label: 'Contains text' },
+    { value: 'regex', label: 'Regex' }
+  ];
+
+  const CONDITION_HELP = {
+    intent: {
+      placeholder: 'I want a refund, cancel my order, money back',
+      help: 'Example phrases, comma separated. Matches similar meaning, not exact words.'
+    },
+    keyword: {
+      placeholder: 'refund, cancel, return',
+      help: 'Matches if the message contains any of these words.'
+    },
+    contains: {
+      placeholder: 'order number',
+      help: 'Matches if the message contains this exact text.'
+    },
+    regex: {
+      placeholder: '^order\\s+#?\\d+',
+      help: 'Matches if this regular expression matches the message.'
+    }
+  };
+
   const escapeHtml = value => String(value === undefined || value === null ? '' : value)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
@@ -992,15 +1023,17 @@
           ${conditions.map((c, i) => `
             <div class="wf-condition" data-condition-index="${i}">
               <select class="form-select form-select-sm" data-condition-field="type">
-                ${['contains', 'keyword', 'regex'].map(t =>
-    `<option value="${t}" ${t === c.type ? 'selected' : ''}>${t}</option>`).join('')}
+                ${CONDITION_TYPES.map(t =>
+    `<option value="${t.value}" ${t.value === c.type ? 'selected' : ''}>${escapeHtml(t.label)}</option>`).join('')}
               </select>
               <input class="form-control form-control-sm" data-condition-field="value"
-                     value="${escapeHtml(c.value || '')}" placeholder="refund, cancel">
+                     value="${escapeHtml(c.value || '')}"
+                     placeholder="${escapeHtml(CONDITION_HELP[c.type]?.placeholder || 'refund, cancel')}">
               <button class="btn btn-sm btn-outline-danger" data-remove-condition="${i}" title="Remove">
                 <i data-feather="x"></i>
               </button>
-            </div>`).join('')}
+            </div>
+            <div class="wf-condition-help">${escapeHtml(CONDITION_HELP[c.type]?.help || '')}</div>`).join('')}
           <button class="btn btn-sm btn-outline-secondary w-100 mt-2" id="wf-add-condition">
             <i data-feather="plus"></i> Add rule
           </button>
@@ -1043,7 +1076,7 @@
 
       this.el.properties.querySelector('#wf-add-condition')?.addEventListener('click', () => {
         node.data.conditions = node.data.conditions || [];
-        node.data.conditions.push({ id: this.uid('cond'), type: 'contains', value: '' });
+        node.data.conditions.push({ id: this.uid('cond'), type: 'intent', value: '' });
         this.markDirty();
         this.pushHistory();
         this.render();
@@ -1068,9 +1101,16 @@
         const index = parseInt(row.dataset.conditionIndex, 10);
         row.querySelectorAll('[data-condition-field]').forEach(input => {
           input.addEventListener('input', e => {
-            node.data.conditions[index][e.target.dataset.conditionField] = e.target.value;
+            const field = e.target.dataset.conditionField;
+            node.data.conditions[index][field] = e.target.value;
             this.markDirty();
             this.renderNodes();
+
+            // Switching type changes the placeholder and the guidance, so the
+            // panel has to be redrawn.
+            if (field === 'type') {
+              this.renderProperties();
+            }
           });
         });
       });

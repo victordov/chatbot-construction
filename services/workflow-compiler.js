@@ -20,6 +20,7 @@
 const { OpenAI } = require('openai');
 const KnowledgeConnectorService = require('./knowledge-connector');
 const { logger } = require('./logging');
+const { getIntentClassifier } = require('./intent-classifier');
 
 const CONFIGURATION_NODES = new Set(['persona', 'moderation']);
 
@@ -566,7 +567,10 @@ class WorkflowCompilerService {
         break;
 
       case 'router': {
-        const match = this.evaluateRouting(userMessage, {
+        // Must be awaited: intent conditions resolve asynchronously, and a
+        // pending Promise here would look like "no match" to
+        // resolveRouterTarget and silently take the default branch.
+        const match = await this.evaluateRouting(userMessage, {
           conditions: step.data.conditions || [],
           fallback: routing.fallback
         });
@@ -683,8 +687,11 @@ class WorkflowCompilerService {
   resolveRouterTarget(step, match) {
     const edges = step.next || [];
 
+    // The editor gives a router one output per condition plus an "Otherwise"
+    // output on the `default` handle.
+    const defaultEdge = edges.find(e => e.handle === 'default');
+
     if (match.type === 'matched' && match.condition) {
-      // Prefer an edge whose handle or label names the matched condition.
       const named = edges.find(e =>
         e.handle === match.condition.id ||
         e.handle === match.condition.route ||
@@ -696,13 +703,35 @@ class WorkflowCompilerService {
       if (match.condition.route) {
         return match.condition.route;
       }
+    } else if (defaultEdge) {
+      // Nothing matched, so take the "Otherwise" branch.
+      //
+      // This used to fall through to `edges[0]`, which is whichever condition
+      // happened to be wired first - so an unmatched message was routed as if
+      // it had matched the first rule. A visitor asking about opening hours
+      // would be handed to the refunds team.
+      return defaultEdge.target;
     }
 
     if (step.data.defaultRoute) {
       return step.data.defaultRoute;
     }
 
-    return edges[0] ? edges[0].target : null;
+    if (defaultEdge) {
+      return defaultEdge.target;
+    }
+
+    // No default branch was drawn. Only fall back to the first edge when the
+    // router has exactly one output, where there is no ambiguity about intent.
+    if (edges.length === 1) {
+      return edges[0].target;
+    }
+
+    logger.warn('Router had no matching condition and no default branch; ending the walk', {
+      node: step.data?.label || 'router',
+      outputs: edges.length
+    });
+    return null;
   }
 
   /**
@@ -723,11 +752,17 @@ class WorkflowCompilerService {
   }
 
   /**
-   * Evaluate routing conditions
+   * Evaluate routing conditions.
+   *
+   * Async because `intent` conditions need an embedding of the message. The
+   * other condition types resolve without any I/O, and are evaluated first so
+   * a workflow that uses only those never pays for a network round trip.
    */
-  evaluateRouting(userMessage, routing) {
+  async evaluateRouting(userMessage, routing) {
     const { conditions = [] } = routing;
     const message = String(userMessage || '').toLowerCase();
+
+    const intentConditions = [];
 
     for (const condition of conditions) {
       const { type, value } = condition;
@@ -752,7 +787,11 @@ class WorkflowCompilerService {
 
       case 'regex':
         try {
-          if (new RegExp(value, 'i').test(userMessage)) {
+          // The pattern is authored by a tenant admin, not a visitor, but a
+          // catastrophically backtracking pattern would still hang the
+          // request for every conversation. Cap the input length so the
+          // worst case stays bounded.
+          if (new RegExp(value, 'i').test(message.slice(0, 2000))) {
             return { type: 'matched', condition };
           }
         } catch {
@@ -761,13 +800,24 @@ class WorkflowCompilerService {
         break;
 
       case 'intent':
-        // Intent classification is not implemented; treated as no match so a
-        // router with only intent conditions falls through to its default.
+        // Deferred: literal matches are cheaper and should win outright.
+        intentConditions.push(condition);
         break;
 
       default:
         break;
       }
+    }
+
+    // No literal rule matched, so fall back to semantic intent matching.
+    if (intentConditions.length > 0) {
+      const result = await getIntentClassifier().classify(userMessage, intentConditions);
+
+      if (result.matched) {
+        return { type: 'matched', condition: result.intent, score: result.score, scores: result.scores };
+      }
+
+      return { type: 'default', shouldFallback: true, scores: result.scores };
     }
 
     return {

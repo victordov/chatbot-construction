@@ -482,3 +482,12 @@ body {
   .wf-toolbar-left, .wf-toolbar-right { flex-wrap: wrap; }
   .wf-title-button { max-width: 12rem; }
 }
+
+/* Per-condition guidance sits under its row, so an author knows what to type
+   without leaving the panel. */
+.wf-condition-help {
+  font-size: 0.68rem;
+  color: var(--wf-text-muted);
+  margin: -0.15rem 0 0.5rem;
+  line-height: 1.3;
+}
