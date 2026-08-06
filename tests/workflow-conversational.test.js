@@ -295,3 +295,130 @@ describe('the shipped templates', () => {
     });
   });
 });
+
+describe('checking several values at once', () => {
+  // The deliberate answer to "do we need scripting": most real conditions are
+  // two or three comparisons combined, and a clause list covers that without
+  // evaluating tenant-supplied code.
+  const clauseChain = (clauses, match) => chain({
+    check: {
+      type: 'condition',
+      data: { clauses, match },
+      next: [{ target: 'yes', handle: 'true' }, { target: 'no', handle: 'false' }]
+    },
+    yes: { type: 'response', data: { template: 'Yes.' }, next: [] },
+    no: { type: 'response', data: { template: 'No.' }, next: [] }
+  });
+
+  test('all clauses must hold by default', async () => {
+    const result = await compiler.executeWorkflow(
+      clauseChain([
+        { left: '{{status}}', operator: 'equals', right: 'shipped' },
+        { left: '{{days_late}}', operator: 'greater_than', right: '3' }
+      ]),
+      'hi', [], { variables: { status: 'shipped', days_late: '5' } }
+    );
+    expect(result.response).toBe('Yes.');
+  });
+
+  test('one failing clause fails the lot', async () => {
+    const result = await compiler.executeWorkflow(
+      clauseChain([
+        { left: '{{status}}', operator: 'equals', right: 'shipped' },
+        { left: '{{days_late}}', operator: 'greater_than', right: '3' }
+      ]),
+      'hi', [], { variables: { status: 'shipped', days_late: '1' } }
+    );
+    expect(result.response).toBe('No.');
+  });
+
+  test('any lets one clause carry it', async () => {
+    const result = await compiler.executeWorkflow(
+      clauseChain([
+        { left: '{{status}}', operator: 'equals', right: 'refunded' },
+        { left: '{{status}}', operator: 'equals', right: 'cancelled' }
+      ], 'any'),
+      'hi', [], { variables: { status: 'cancelled' } }
+    );
+    expect(result.response).toBe('Yes.');
+  });
+
+  test('the old single-comparison shape still works untouched', async () => {
+    // Workflows saved before clauses existed carry left/operator/right at the
+    // top level; a migration that broke them would break published bots.
+    const result = await compiler.executeWorkflow(chain({
+      check: {
+        type: 'condition',
+        data: { left: 'shipped', operator: 'equals', right: 'shipped' },
+        next: [{ target: 'yes', handle: 'true' }, { target: 'no', handle: 'false' }]
+      },
+      yes: { type: 'response', data: { template: 'Yes.' }, next: [] },
+      no: { type: 'response', data: { template: 'No.' }, next: [] }
+    }), 'hi');
+    expect(result.response).toBe('Yes.');
+  });
+
+  test('no usable clause takes the false branch rather than guessing', async () => {
+    const result = await compiler.executeWorkflow(clauseChain([]), 'hi');
+    expect(result.response).toBe('No.');
+  });
+});
+
+describe('emailing the team', () => {
+  const emailChannel = require('../services/email-channel');
+  const notifyChain = data => chain({
+    tell: { type: 'notify', data, next: [{ target: 'done', handle: null }] },
+    done: { type: 'response', data: { template: 'All done.' }, next: [] }
+  });
+
+  afterEach(() => jest.restoreAllMocks());
+
+  test('the email goes out with the placeholders filled in', async () => {
+    const sendMail = jest.fn().mockResolvedValue({});
+    jest.spyOn(emailChannel, 'buildTransport').mockReturnValue({ sendMail });
+
+    const result = await compiler.executeWorkflow(
+      notifyChain({ to: 'team@example.com', subject: 'Complaint from {{name}}', body: 'They said: {{complaint}}' }),
+      'hi', [], { variables: { name: 'Priya', complaint: 'the wheel fell off' } }
+    );
+
+    expect(result.response).toBe('All done.');
+    expect(sendMail).toHaveBeenCalledWith(expect.objectContaining({
+      to: 'team@example.com',
+      subject: 'Complaint from Priya',
+      text: 'They said: the wheel fell off'
+    }));
+  });
+
+  test('no SMTP means the flow carries on, not that it breaks', async () => {
+    // The tag/task nodes are the durable record; the email is the courtesy
+    // copy. A visitor's conversation must never stall on a mail server.
+    jest.spyOn(emailChannel, 'buildTransport').mockReturnValue(null);
+
+    const result = await compiler.executeWorkflow(
+      notifyChain({ to: 'team@example.com', subject: 'x', body: 'y' }), 'hi'
+    );
+    expect(result.response).toBe('All done.');
+  });
+
+  test('a failing send is swallowed loudly, not thrown', async () => {
+    jest.spyOn(emailChannel, 'buildTransport').mockReturnValue({
+      sendMail: jest.fn().mockRejectedValue(new Error('SMTP said no'))
+    });
+
+    const result = await compiler.executeWorkflow(
+      notifyChain({ to: 'team@example.com', subject: 'x', body: 'y' }), 'hi'
+    );
+    expect(result.response).toBe('All done.');
+  });
+
+  test('a rendered recipient that is not an email is refused', async () => {
+    const sendMail = jest.fn();
+    jest.spyOn(emailChannel, 'buildTransport').mockReturnValue({ sendMail });
+
+    await compiler.executeWorkflow(
+      notifyChain({ to: '{{missing_variable}}', subject: 'x', body: 'y' }), 'hi'
+    );
+    expect(sendMail).not.toHaveBeenCalled();
+  });
+});

@@ -455,6 +455,138 @@ const templates = [
       { id: 'e4', source: 'lookup', target: 'answer', sourceHandle: 'success' },
       { id: 'e5', source: 'lookup', target: 'lookup-failed', sourceHandle: 'error' }
     ]
+  },
+
+  {
+    id: 'cancellation-save',
+    name: 'Cancel my subscription',
+    industry: 'SaaS and subscriptions',
+    summary: 'Finds out why they are leaving, routes a fixable reason to the team the same day, and never makes cancelling feel like a trap.',
+    requires: 'Nothing. The save attempt lands in Tasks with the reason attached.',
+    nodes: [
+      { id: 'persona', type: 'persona', position: { x: 40, y: 40 }, data: {
+        label: 'Persona',
+        prompt: 'You handle cancellations. Never argue with the decision or hide the way out; your job is to learn the reason and route it.',
+        tone: 'empathetic', personality: 'concise'
+      } },
+      { id: 'start', type: 'start', position: { x: 40, y: 220 }, data: { label: 'Start' } },
+      { id: 'why', type: 'buttons', position: { x: 280, y: 220 }, data: {
+        label: 'Why are they leaving?',
+        question: 'Sorry to see you go — I can sort that. So we route this right, what is the main reason?',
+        variable: 'cancel_reason',
+        choices: [
+          { id: 'price', label: 'It costs too much', value: 'price' },
+          { id: 'feature', label: 'It is missing something I need', value: 'missing feature' },
+          { id: 'unused', label: 'We are not using it enough', value: 'not using it' }
+        ]
+      } },
+      { id: 'which-feature', type: 'ask', position: { x: 540, y: 380 }, data: {
+        label: 'Which feature?',
+        question: 'That is useful to know — what is the thing you needed it to do?',
+        variable: 'missing_feature', validate: 'any', maxAttempts: '2'
+      } },
+      { id: 'tag-cxl', type: 'tag', position: { x: 800, y: 220 }, data: {
+        label: 'Tag it', tags: ['cancellation', '{{cancel_reason}}']
+      } },
+      { id: 'save-task', type: 'task', position: { x: 1040, y: 220 }, data: {
+        label: 'Raise the save attempt',
+        title: 'Cancellation: {{cancel_reason}}',
+        description: 'A customer asked to cancel. Reason: {{cancel_reason}}. {{missing_feature}}',
+        priority: 'high', dueInDays: '1'
+      } },
+      // The promise matters more than the pitch. "Someone will call to
+      // convince you" reads as a trap; "it is done unless you hear from us"
+      // keeps the trust the save attempt depends on.
+      { id: 'confirm', type: 'response', position: { x: 1300, y: 220 }, data: {
+        label: 'Confirm honestly',
+        template: 'Done — your cancellation is being processed and someone will confirm by email today. If the reason is something we can actually fix, they will mention it, but nothing is conditional on that.'
+      } },
+      { id: 'other-handoff', type: 'operator-handoff', position: { x: 540, y: 60 }, data: {
+        label: 'Something else',
+        message: 'Let me get a colleague — they can sort the cancellation and whatever else is going on.'
+      } }
+    ],
+    edges: [
+      { id: 'e1', source: 'start', target: 'why' },
+      { id: 'e2', source: 'why', target: 'tag-cxl', sourceHandle: 'price' },
+      { id: 'e3', source: 'why', target: 'which-feature', sourceHandle: 'feature' },
+      { id: 'e4', source: 'why', target: 'tag-cxl', sourceHandle: 'unused' },
+      { id: 'e5', source: 'why', target: 'other-handoff', sourceHandle: 'other' },
+      { id: 'e6', source: 'which-feature', target: 'tag-cxl', sourceHandle: 'next' },
+      { id: 'e7', source: 'which-feature', target: 'tag-cxl', sourceHandle: 'invalid' },
+      { id: 'e8', source: 'tag-cxl', target: 'save-task' },
+      { id: 'e9', source: 'save-task', target: 'confirm' }
+    ]
+  },
+
+  {
+    id: 'complaint',
+    name: 'Handle a complaint',
+    industry: 'Any',
+    summary: 'Hears the complaint in full, marks it urgent, gets a person if anyone is there — and if not, promises a reply and emails the team so it is not waiting for someone to open the dashboard.',
+    requires: 'Change the address on the "Email the team" node. Sending needs SMTP configured; without it the task is still raised.',
+    nodes: [
+      { id: 'persona', type: 'persona', position: { x: 40, y: 40 }, data: {
+        label: 'Persona',
+        prompt: 'You are the first person to hear a complaint. Acknowledge before you ask for anything, never defend the company, and never promise what you cannot do.',
+        tone: 'empathetic', personality: 'helpful'
+      } },
+      { id: 'start', type: 'start', position: { x: 40, y: 220 }, data: { label: 'Start' } },
+      { id: 'listen', type: 'ask', position: { x: 280, y: 220 }, data: {
+        label: 'Hear them out',
+        question: 'I am sorry something has gone wrong. Tell me what happened — I am listening, and it goes straight to the team.',
+        variable: 'complaint', validate: 'any', maxAttempts: '2'
+      } },
+      { id: 'reference', type: 'ask', position: { x: 540, y: 220 }, data: {
+        label: 'Get a reference',
+        question: 'Thank you for explaining. Do you have an order or account reference so we start in the right place? If not, just say no.',
+        variable: 'reference', validate: 'any', maxAttempts: '2'
+      } },
+      { id: 'tag-complaint', type: 'tag', position: { x: 800, y: 220 }, data: {
+        label: 'Mark it urgent', tags: ['complaint', 'urgent']
+      } },
+      { id: 'anyone-there', type: 'business-hours', position: { x: 1040, y: 220 }, data: {
+        label: 'Is anyone there?', requireOperator: 'an operator is online'
+      } },
+      { id: 'to-person', type: 'operator-handoff', position: { x: 1300, y: 120 }, data: {
+        label: 'Get a person now',
+        message: 'Thank you — I am passing you to a colleague right now so you do not have to repeat any of this. They can see everything you told me.'
+      } },
+      { id: 'log-it', type: 'task', position: { x: 1300, y: 320 }, data: {
+        label: 'Log the complaint',
+        title: 'Complaint{{reference}}',
+        description: 'Received while nobody was available. They said: {{complaint}}. Reference: {{reference}}.',
+        priority: 'urgent', dueInDays: '1'
+      } },
+      // The email is the courtesy copy for a team that lives in their inbox;
+      // the task above is the durable record if SMTP is not set up.
+      { id: 'email-team', type: 'notify', position: { x: 1560, y: 320 }, data: {
+        label: 'Email the team',
+        to: 'support@yourcompany.example',
+        subject: 'Complaint from {{contact_name}}',
+        body: 'They said: {{complaint}}\n\nReference: {{reference}}\n\nLogged as an urgent task.'
+      } },
+      { id: 'promise', type: 'response', position: { x: 1820, y: 320 }, data: {
+        label: 'Promise a reply',
+        template: 'Thank you — everything you told me has gone to the team marked urgent, and someone will come back to you within one working day. You will not have to explain it again.'
+      } },
+      { id: 'listen-failed', type: 'operator-handoff', position: { x: 280, y: 400 }, data: {
+        label: 'Straight to a person',
+        message: 'Let me get you straight to a colleague.'
+      } }
+    ],
+    edges: [
+      { id: 'e1', source: 'start', target: 'listen' },
+      { id: 'e2', source: 'listen', target: 'reference', sourceHandle: 'next' },
+      { id: 'e3', source: 'listen', target: 'listen-failed', sourceHandle: 'invalid' },
+      { id: 'e4', source: 'reference', target: 'tag-complaint', sourceHandle: 'next' },
+      { id: 'e5', source: 'reference', target: 'tag-complaint', sourceHandle: 'invalid' },
+      { id: 'e6', source: 'tag-complaint', target: 'anyone-there' },
+      { id: 'e7', source: 'anyone-there', target: 'to-person', sourceHandle: 'open' },
+      { id: 'e8', source: 'anyone-there', target: 'log-it', sourceHandle: 'closed' },
+      { id: 'e9', source: 'log-it', target: 'email-team' },
+      { id: 'e10', source: 'email-team', target: 'promise' }
+    ]
   }
 ];
 

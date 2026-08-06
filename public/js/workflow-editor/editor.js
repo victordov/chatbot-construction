@@ -144,14 +144,7 @@
       description: 'Branch on what you found out',
       inputs: 1, outputs: 2,
       fields: [
-        { key: 'left', label: 'Value', type: 'text', required: true,
-          placeholder: '{{order_status}}',
-          help: 'Usually something an earlier step collected.' },
-        { key: 'operator', label: 'Is', type: 'select',
-          options: ['equals', 'not_equals', 'contains', 'starts_with',
-            'greater_than', 'less_than', 'is_empty', 'is_not_empty', 'matches'] },
-        { key: 'right', label: 'Compared with', type: 'text', placeholder: 'shipped',
-          showWhen: d => !['is_empty', 'is_not_empty'].includes(d.operator) }
+        { key: 'clauses', label: 'Checks', type: 'clauses' }
       ]
     },
     set: {
@@ -195,11 +188,26 @@
         { key: 'dueInDays', label: 'Due in (days)', type: 'text', placeholder: '3' }
       ]
     },
+    notify: {
+      label: 'Email the Team', icon: 'mail', color: '#d63384',
+      description: 'Send an email when the flow gets here',
+      inputs: 1, outputs: 1,
+      fields: [
+        { key: 'to', label: 'Send to', type: 'text', required: true,
+          placeholder: 'support@yourcompany.com' },
+        { key: 'subject', label: 'Subject', type: 'text', required: true,
+          placeholder: 'Complaint from {{contact_name}}' },
+        { key: 'body', label: 'Message', type: 'textarea', rows: 4,
+          placeholder: 'They said: {{complaint}}',
+          help: 'Placeholders are filled in. Needs SMTP configured on the server.' }
+      ]
+    },
     action: {
       label: 'Call an API', icon: 'zap', color: '#e83e8c',
       description: 'Look something up in your own system',
       inputs: 1, outputs: 2,
       fields: [
+        { key: 'preset', label: 'Start from a service', type: 'preset' },
         { key: 'url', label: 'URL', type: 'text', required: true,
           placeholder: 'https://api.yourcompany.com/orders/{{order_id}}',
           help: 'Must be https. Placeholders are URL-encoded before being sent.' },
@@ -247,7 +255,11 @@
       label: 'Offer Choices', question: 'What can I help you with?',
       variable: 'choice', choices: []
     },
-    condition: { label: 'Check a Value', left: '', operator: 'equals', right: '' },
+    condition: {
+      label: 'Check a Value', match: 'all',
+      clauses: [{ left: '', operator: 'equals', right: '' }]
+    },
+    notify: { label: 'Email the Team', to: '', subject: '', body: '' },
     set: { label: 'Set a Value', assignments: [] },
     'business-hours': { label: 'Open or Closed', requireOperator: 'an operator is online' },
     tag: { label: 'Add a Tag', tags: [] },
@@ -265,6 +277,89 @@
     { value: 'keyword', label: 'Keyword' },
     { value: 'contains', label: 'Contains text' },
     { value: 'regex', label: 'Regex' }
+  ];
+
+  /**
+   * Recipes for the services standard customers already use.
+   *
+   * Each is only a prefilled Call an API node — no per-service code exists
+   * anywhere in the runtime, so there is nothing here to break when a vendor
+   * changes something other than the recipe itself. `note` tells the tenant
+   * where their credential comes from, which is the part they always get
+   * stuck on.
+   */
+  const ACTION_PRESETS = [
+    {
+      id: 'shopify-order',
+      label: 'Shopify — look up an order',
+      note: 'Create an Admin API access token (Settings → Apps and sales channels → Develop apps) and paste it as the credential.',
+      config: {
+        label: 'Shopify order lookup',
+        url: 'https://{{shop_domain}}.myshopify.com/admin/api/2024-07/orders/{{order_id}}.json',
+        method: 'GET',
+        auth: { type: 'header', header: 'X-Shopify-Access-Token' },
+        outputs: [
+          { variable: 'payment_status', path: 'order.financial_status' },
+          { variable: 'fulfillment_status', path: 'order.fulfillment_status' }
+        ]
+      }
+    },
+    {
+      id: 'stripe-subscription',
+      label: 'Stripe — check a subscription',
+      note: 'Use a restricted key with read access to subscriptions, not your live secret key.',
+      config: {
+        label: 'Stripe subscription',
+        url: 'https://api.stripe.com/v1/customers/{{customer_id}}/subscriptions',
+        method: 'GET',
+        auth: { type: 'bearer' },
+        outputs: [
+          { variable: 'subscription_status', path: 'data.0.status' },
+          { variable: 'current_period_end', path: 'data.0.current_period_end' }
+        ]
+      }
+    },
+    {
+      id: 'zendesk-ticket',
+      label: 'Zendesk — raise a ticket',
+      note: 'The credential is your agent email and API token joined as email/token:api_token — exactly in that form.',
+      config: {
+        label: 'Zendesk ticket',
+        url: 'https://{{subdomain}}.zendesk.com/api/v2/tickets.json',
+        method: 'POST',
+        auth: { type: 'basic' },
+        body: '{"ticket": {"subject": "Chat escalation", "comment": {"body": "{{user_input}}"}}}',
+        outputs: [{ variable: 'ticket_id', path: 'ticket.id' }]
+      }
+    },
+    {
+      id: 'slack-notify',
+      label: 'Slack — post to a channel',
+      note: 'Paste the full webhook URL over the placeholder. Note the URL itself is the secret — unlike the credential field, it is stored as written, so treat anyone who can edit this workflow as able to post to that channel.',
+      config: {
+        label: 'Slack message',
+        url: 'https://hooks.slack.com/services/{{webhook_path}}',
+        method: 'POST',
+        auth: { type: 'none' },
+        body: '{"text": "New conversation needs attention: {{user_input}}"}',
+        outputs: []
+      }
+    },
+    {
+      id: 'hubspot-contact',
+      label: 'HubSpot — look up a contact',
+      note: 'Use a private app token with crm.objects.contacts.read scope.',
+      config: {
+        label: 'HubSpot contact',
+        url: 'https://api.hubapi.com/crm/v3/objects/contacts/{{contact_email}}?idProperty=email',
+        method: 'GET',
+        auth: { type: 'bearer' },
+        outputs: [
+          { variable: 'crm_first_name', path: 'properties.firstname' },
+          { variable: 'crm_lifecycle_stage', path: 'properties.lifecyclestage' }
+        ]
+      }
+    }
   ];
 
   /** Host plus path, so a long URL still reads on a 190px node. */
@@ -648,7 +743,7 @@
         'Answering': ['knowledge', 'llm', 'response'],
         'Asking': ['ask', 'buttons'],
         'Control flow': ['router', 'condition', 'business-hours', 'fallback', 'operator-handoff'],
-        'Doing': ['action', 'set', 'tag', 'task'],
+        'Doing': ['action', 'set', 'tag', 'task', 'notify'],
         'Safety': ['moderation']
       };
 
@@ -1070,9 +1165,18 @@
       case 'action': return d.url ? `${d.method || 'GET'} ${shortUrl(d.url)}` : 'No URL set';
       case 'ask': return d.question ? `${d.question} → {{${d.variable || 'answer'}}}` : 'No question set';
       case 'buttons': return `${(d.choices || []).length} choice(s)`;
-      case 'condition': return d.left
-        ? `${d.left} ${(d.operator || 'equals').replace(/_/g, ' ')} ${d.right || ''}`.trim()
-        : 'Nothing to check';
+      case 'condition': {
+        const clauses = (d.clauses && d.clauses.length ? d.clauses : [d])
+          .filter(c => c && c.left);
+        if (!clauses.length) {
+          return 'Nothing to check';
+        }
+        const first = `${clauses[0].left} ${(clauses[0].operator || 'equals').replace(/_/g, ' ')} ${clauses[0].right || ''}`.trim();
+        return clauses.length > 1
+          ? `${first} +${clauses.length - 1} more (${d.match === 'any' ? 'any' : 'all'})`
+          : first;
+      }
+      case 'notify': return d.to || 'No recipient set';
       case 'set': return `${(d.assignments || []).length} value(s)`;
       case 'business-hours': return 'Branch on availability';
       case 'tag': return (d.tags || []).length ? d.tags.join(', ') : 'No tags set';
@@ -1259,6 +1363,12 @@
 
       case 'taglist':
         return this.renderTagList(node, field);
+
+      case 'clauses':
+        return this.renderClauses(node);
+
+      case 'preset':
+        return this.renderActionPresets(node);
 
       default:
         control = `<input class="form-control form-control-sm" id="${id}" data-field="${field.key}"
@@ -1468,6 +1578,91 @@
         </div>`;
     }
 
+    /**
+     * Checks combined with all/any.
+     *
+     * This is the deliberate answer to "do we need scripting": nearly every
+     * real condition is two or three comparisons AND-ed together, and a clause
+     * list covers that without evaluating tenant-supplied code.
+     */
+    renderClauses(node) {
+      // Workflows saved before clauses existed carry a single
+      // left/operator/right — seed the list from it so nothing is lost.
+      if ((!node.data.clauses || !node.data.clauses.length) && node.data.left !== undefined) {
+        node.data.clauses = [{
+          left: node.data.left || '',
+          operator: node.data.operator || 'equals',
+          right: node.data.right || ''
+        }];
+      }
+
+      const clauses = node.data.clauses || [];
+      const operators = ['equals', 'not_equals', 'contains', 'starts_with',
+        'greater_than', 'less_than', 'is_empty', 'is_not_empty', 'matches'];
+
+      return `
+        <div class="mb-3">
+          <label class="form-label">Checks</label>
+          ${clauses.length > 1 ? `
+            <select class="form-select form-select-sm mb-2" data-field="match"
+                    aria-label="How the checks combine">
+              <option value="all" ${node.data.match !== 'any' ? 'selected' : ''}>All must be true</option>
+              <option value="any" ${node.data.match === 'any' ? 'selected' : ''}>Any may be true</option>
+            </select>` : ''}
+          ${clauses.map((clause, i) => `
+            <div class="wf-clause" data-clause-index="${i}">
+              <input class="form-control form-control-sm" data-clause-field="left"
+                     value="${escapeHtml(clause.left || '')}" placeholder="{{order_status}}"
+                     aria-label="Value to check">
+              <div class="wf-clause-row">
+                <select class="form-select form-select-sm" data-clause-field="operator"
+                        aria-label="Comparison">
+                  ${operators.map(op => `
+                    <option value="${op}" ${op === (clause.operator || 'equals') ? 'selected' : ''}>
+                      ${op.replace(/_/g, ' ')}
+                    </option>`).join('')}
+                </select>
+                <input class="form-control form-control-sm" data-clause-field="right"
+                       value="${escapeHtml(clause.right || '')}" placeholder="shipped"
+                       aria-label="Compared with">
+                <button class="btn btn-sm btn-outline-danger" data-remove-clause="${i}" title="Remove">
+                  <i data-feather="x"></i>
+                </button>
+              </div>
+            </div>`).join('')}
+          <button class="btn btn-sm btn-outline-secondary w-100 mt-2" id="wf-add-clause">
+            <i data-feather="plus"></i> Add a check
+          </button>
+        </div>`;
+    }
+
+    /**
+     * Prefilled recipes for the services people actually use.
+     *
+     * The Call an API node already reaches any of these — what stops a tenant
+     * is knowing each API's shape. A preset fills in the URL, method, auth
+     * style and field mappings; they paste one credential and change the
+     * placeholders. This is the whole integration strategy: recipes over
+     * connectors, so five presets cover what would otherwise be five
+     * subsystems to build and maintain.
+     */
+    renderActionPresets(node) {
+      void node;
+      return `
+        <div class="mb-3">
+          <label class="form-label" for="wf-action-preset">Start from a service</label>
+          <select class="form-select form-select-sm" id="wf-action-preset">
+            <option value="">Custom — configure by hand</option>
+            ${ACTION_PRESETS.map(preset => `
+              <option value="${escapeHtml(preset.id)}">${escapeHtml(preset.label)}</option>`).join('')}
+          </select>
+          <div class="form-text">
+            Picking one fills in the fields below, replacing what is there. It
+            does not add a credential — that stays yours to paste.
+          </div>
+        </div>`;
+    }
+
     renderConditions(node) {
       const conditions = node.data.conditions || [];
       return `
@@ -1603,7 +1798,10 @@
           blank: () => ({ id: this.uid('choice'), label: '', value: '' }) },
         { add: 'wf-add-assignment', key: 'assignments', indexAttr: 'assignmentIndex',
           fieldAttr: 'assignmentField', removeAttr: 'removeAssignment',
-          blank: () => ({ variable: '', value: '' }) }
+          blank: () => ({ variable: '', value: '' }) },
+        { add: 'wf-add-clause', key: 'clauses', indexAttr: 'clauseIndex',
+          fieldAttr: 'clauseField', removeAttr: 'removeClause',
+          blank: () => ({ left: '', operator: 'equals', right: '' }) }
       ].forEach(group => {
         this.el.properties.querySelector(`#${group.add}`)?.addEventListener('click', () => {
           node.data[group.key] = node.data[group.key] || [];
@@ -1656,6 +1854,37 @@
           this.markDirty();
           this.renderNodes();
         });
+      });
+
+      this.el.properties.querySelector('#wf-action-preset')?.addEventListener('change', event => {
+        const preset = ACTION_PRESETS.find(entry => entry.id === event.target.value);
+
+        if (!preset) {
+          return;
+        }
+
+        // A deep copy, so editing the node never mutates the catalogue and a
+        // second use of the same preset starts clean. The credential is left
+        // alone: a preset must never wipe a key someone already pasted.
+        const config = JSON.parse(JSON.stringify(preset.config));
+        const keepAuthValue = node.data.auth && node.data.auth.value;
+
+        Object.assign(node.data, config);
+        if (keepAuthValue && node.data.auth) {
+          node.data.auth.value = keepAuthValue;
+        }
+
+        this.markDirty();
+        this.pushHistory();
+        this.render();
+        if (window.feather) {
+          window.feather.replace();
+        }
+
+        // Shown for longer than a normal toast: it says where the credential
+        // comes from, which is the step people get stuck on, and it is gone
+        // from the panel once the fields are filled.
+        this.toast(preset.note, 'info', 12000);
       });
 
       this.el.properties.querySelector('#wf-test-action')?.addEventListener('click', async () => {
@@ -2194,7 +2423,12 @@
       document.getElementById('wf-loading').style.display = busy ? 'flex' : 'none';
     }
 
-    toast(message, variant = 'info') {
+    /**
+     * @param {number} [delay] milliseconds. Longer for anything that tells the
+     *        author what to do next — a four-second toast carrying setup
+     *        instructions is a toast nobody finishes reading.
+     */
+    toast(message, variant = 'info', delay = 4000) {
       const container = document.querySelector('.toast-container');
       const el = document.createElement('div');
       el.className = `toast align-items-center text-bg-${variant} border-0`;
@@ -2204,7 +2438,7 @@
         <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
       </div>`;
       container.appendChild(el);
-      const toast = new bootstrap.Toast(el, { delay: 4000 });
+      const toast = new bootstrap.Toast(el, { delay });
       toast.show();
       el.addEventListener('hidden.bs.toast', () => el.remove());
     }

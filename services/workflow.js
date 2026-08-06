@@ -516,9 +516,26 @@ class WorkflowService {
       }
       break;
 
-    case 'condition':
-      if (!data.left || String(data.left).trim().length === 0) {
-        throw new Error(`Check node ${node.id} must have a value to check`);
+    case 'condition': {
+      // Either shape: a clause list, or the single left/operator/right a
+      // workflow saved before clauses existed.
+      const clauses = Array.isArray(data.clauses) && data.clauses.length > 0
+        ? data.clauses
+        : [data];
+      const usable = clauses.some(clause =>
+        clause && clause.left && String(clause.left).trim().length > 0);
+      if (!usable) {
+        throw new Error(`Check node ${node.id} must have at least one value to check`);
+      }
+      break;
+    }
+
+    case 'notify':
+      if (!data.to || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(data.to).trim())) {
+        throw new Error(`Notify node ${node.id} needs the email address to send to`);
+      }
+      if (!data.subject || String(data.subject).trim().length === 0) {
+        throw new Error(`Notify node ${node.id} needs a subject`);
       }
       break;
 

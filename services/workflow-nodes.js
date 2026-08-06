@@ -18,7 +18,9 @@
  */
 
 const Conversation = require('../models/conversation');
+const Company = require('../models/company');
 const Task = require('../models/task');
+const emailChannel = require('./email-channel');
 const availability = require('./availability');
 const assignmentService = require('./assignment');
 const { logger } = require('./logging');
@@ -207,17 +209,42 @@ const COMPARATORS = {
 
 function runCondition(step, context) {
   const data = step.data || {};
-  const left = context.render(data.left || '');
-  const right = context.render(data.right || '');
-  const comparator = COMPARATORS[data.operator] || COMPARATORS.equals;
 
-  let result;
-  try {
-    result = Boolean(comparator(String(left), String(right)));
-  } catch (error) {
-    logger.warn('Condition node failed to evaluate', { error: error.message });
-    result = false;
+  // Several checks in one node, combined with all/any. This is the answer to
+  // "do we need scripting": the overwhelming share of real conditions are
+  // two or three comparisons AND-ed together — "status is shipped and days
+  // late is greater than 3" — and a clause list covers that without an
+  // expression evaluator for tenant-supplied strings, which is where the
+  // security trouble starts.
+  //
+  // The single left/operator/right shape is still honoured, so workflows
+  // saved before clauses existed keep working untouched.
+  const clauses = (Array.isArray(data.clauses) && data.clauses.length > 0)
+    ? data.clauses
+    : (data.left !== undefined ? [data] : []);
+
+  const evaluate = clause => {
+    const left = context.render(clause.left || '');
+    const right = context.render(clause.right || '');
+    const comparator = COMPARATORS[clause.operator] || COMPARATORS.equals;
+
+    try {
+      return Boolean(comparator(String(left), String(right)));
+    } catch (error) {
+      logger.warn('Condition clause failed to evaluate', { error: error.message });
+      return false;
+    }
+  };
+
+  const usable = clauses.filter(clause => clause && clause.left !== undefined);
+
+  if (usable.length === 0) {
+    return { branch: 'false' };
   }
+
+  const result = data.match === 'any'
+    ? usable.some(evaluate)
+    : usable.every(evaluate);
 
   return { branch: result ? 'true' : 'false' };
 }
@@ -365,6 +392,57 @@ async function runTask(step, context) {
   }
 }
 
+/**
+ * Email the team when the flow gets here.
+ *
+ * The task node raises work inside the product; this is for the team that
+ * lives in their inbox — which, for the small businesses this covers, is most
+ * of them. A complaint captured at 2am that nobody sees until they open the
+ * dashboard was captured but not handled.
+ *
+ * Fire-and-forget by design: the visitor's conversation must never stall on an
+ * SMTP server, and a failed notification is logged loudly rather than breaking
+ * the flow that tried to send it.
+ */
+async function runNotify(step, context) {
+  const data = step.data || {};
+  const to = context.render(data.to || '').trim();
+
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) {
+    logger.warn('Notify node has no usable recipient', { to });
+    return {};
+  }
+
+  const transport = emailChannel.buildTransport();
+
+  if (!transport) {
+    // No SMTP configured. The flow carries on — the tag/task nodes are the
+    // durable record; this is the courtesy copy.
+    logger.warn('Notify node skipped: no SMTP transport configured');
+    return {};
+  }
+
+  try {
+    const company = context.companyId
+      ? await Company.findById(context.companyId).select('name emailChannel').lean()
+      : null;
+
+    const from = company?.emailChannel?.fromAddress ||
+      process.env.EMAIL_FROM || process.env.EMAIL_USER;
+
+    await transport.sendMail({
+      from: company?.name ? `"${company.name} bot" <${from}>` : from,
+      to,
+      subject: context.render(data.subject || 'A conversation needs attention').slice(0, 200),
+      text: context.render(data.body || '')
+    });
+  } catch (error) {
+    logger.error('Notify node failed to send', { error: error.message });
+  }
+
+  return {};
+}
+
 module.exports = {
   runAsk,
   runButtons,
@@ -373,6 +451,7 @@ module.exports = {
   runBusinessHours,
   runTag,
   runTask,
+  runNotify,
   matchChoice,
   validateAnswer,
   COMPARATORS,

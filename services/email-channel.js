@@ -392,6 +392,9 @@ module.exports = {
   sendReply,
   findThread,
   verifyInboundSecret,
+  // The workflow notify node sends through the same transport, so the two
+  // channels cannot drift apart in configuration.
+  buildTransport,
   // Exported for tests: these carry most of the risk.
   extractAddress,
   cleanBody,

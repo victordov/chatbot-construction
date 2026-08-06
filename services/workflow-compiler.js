@@ -31,7 +31,7 @@ const FLOW_NODES = new Set([
   'start', 'knowledge', 'knowledge-source', 'llm',
   'response', 'router', 'fallback', 'operator-handoff', 'action',
   // Nodes that make a workflow a conversation rather than a single reply.
-  'ask', 'buttons', 'condition', 'set', 'business-hours', 'tag', 'task'
+  'ask', 'buttons', 'condition', 'set', 'business-hours', 'tag', 'task', 'notify'
 ]);
 
 /** Nodes that stop the walk and wait for the visitor to answer. */
@@ -807,7 +807,8 @@ class WorkflowCompilerService {
       case 'set':
       case 'business-hours':
       case 'tag':
-      case 'task': {
+      case 'task':
+      case 'notify': {
         const outcome = await this.runNode(step.type, step, {
           currentId,
           variables,
@@ -936,7 +937,8 @@ class WorkflowCompilerService {
       set: nodes.runSet,
       'business-hours': nodes.runBusinessHours,
       tag: nodes.runTag,
-      task: nodes.runTask
+      task: nodes.runTask,
+      notify: nodes.runNotify
     };
 
     const handler = handlers[type];

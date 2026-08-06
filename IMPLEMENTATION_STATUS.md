@@ -43,16 +43,25 @@ path rather than trapping somebody in a loop. Choice nodes render as buttons in
 the widget and are matched tolerantly — the tap, the label, or the number all
 work. Beyond that: branch on a value rather than on what the visitor said,
 compute a value, branch on whether anyone is actually available, tag the
-conversation, and raise a task carrying everything the flow collected. There is
-deliberately no code node: running tenant-supplied JavaScript in this process
-would need a sandbox that does not exist here.
+conversation, raise a task carrying everything the flow collected, and email the
+team. A check node takes several comparisons combined with all/any, which is
+what nearly every real condition turns out to be. There is deliberately no code
+node: running tenant-supplied JavaScript in this process would need a sandbox
+that does not exist here, and clauses cover what people reach for it for.
 
-**Workflow templates.** Six complete flows a tenant can start from — order
-status, returns, front-desk triage, lead qualification, appointment booking and
-verified account lookup — rather than a blank canvas. Each says up front what it
-needs before it will work, every one checks whether a person is available before
-promising one, and every one has a way out to a human. There is a test that they
-all still validate.
+**Workflow templates.** Eight complete flows a tenant can start from — order
+status, returns, front-desk triage, lead qualification, appointment booking,
+verified account lookup, cancellation, and complaint handling — rather than a
+blank canvas. Each says up front what it needs before it will work, every one
+checks whether a person is available before promising one, and every one has a
+way out to a human. There is a test that they all still validate.
+
+**Integrations by recipe, not by connector.** The Call an API node already
+reaches any HTTP service; what stops a tenant is knowing each API's shape. Five
+presets — Shopify, Stripe, Zendesk, Slack and HubSpot — fill in the URL, method,
+authentication style and field mappings, and say where the credential comes
+from. No per-service code exists in the runtime, so there is nothing to break
+when a vendor changes anything other than the recipe.
 
 **Knowledge retrieval.** `services/embeddings.js` + `services/vector-store.js`.
 Backend is chosen automatically: Qdrant (`QDRANT_URL`), Atlas `$vectorSearch`
@@ -186,7 +195,7 @@ content-hashed widget assets cached for a year with the loader on `no-cache`.
 
 ## Test suite
 
-`npm test` — 488 tests across 27 suites. An in-memory MongoDB starts
+`npm test` — 503 tests across 27 suites. An in-memory MongoDB starts
 automatically (`tests/globalSetup.js`), so no local `mongod` is needed.
 `tests/setup.js` blanks `OPENAI_API_KEY` so the suite never makes a real model
 call; the embedding and intent tests therefore assert on ranking and plumbing
