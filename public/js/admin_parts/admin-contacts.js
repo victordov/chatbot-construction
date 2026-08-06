@@ -374,4 +374,6 @@
   }
 
   window.setupContacts = setupContacts;
+  // Lets the conversation panel jump straight to this person's history.
+  window.openContactById = openContact;
 })();

@@ -568,6 +568,7 @@ function addChatToList(chat) {
     <div class="d-flex w-100 justify-content-between align-items-start">
       <h6 class="mb-1 text-truncate">
         <span class="status-indicator ${statusClass}"></span>
+        ${chat.channel === 'email' ? '<span class="channel-badge" title="Email">✉</span>' : ''}
         ${userName ? escapeHtml(userName) : `Session ${escapeHtml(chat.sessionId.substring(0, 8))}…`}
       </h6>
       <small class="text-muted text-nowrap ms-2" title="${escapeHtml(new Date(chat.startedAt || Date.now()).toLocaleString())}">${escapeHtml(startTime)}</small>
@@ -575,7 +576,7 @@ function addChatToList(chat) {
     <div class="small text-muted d-flex gap-2 flex-wrap">
       <span>${messageCount} message${messageCount === 1 ? '' : 's'}</span>
       <span>·</span>
-      <span class="text-truncate">${escapeHtml(chat.domain || 'Unknown source')}</span>
+      <span class="text-truncate">${escapeHtml(chat.subject || chat.domain || 'Unknown source')}</span>
     </div>
     <div class="user-name small text-muted"></div>
     <div class="operator-name small text-muted mt-1">${hasOperator && chat.operatorName ? `Operator: ${escapeHtml(chat.operatorName)}` : ''}</div>
@@ -727,48 +728,61 @@ function loadChatMessages(sessionId) {
 }
 
 // Display user contact information
+//
+// Sources differ by channel: a chat visitor fills in the pre-chat form, which
+// lands in `metadata`, while an email thread has only the sender address. This
+// used to read `metadata` alone, so every email conversation showed "Not
+// provided" for a customer whose address we plainly knew.
 function displayUserContactInfo(conversation) {
   const contactInfoDiv = document.getElementById('user-contact-info');
   const nameSpan = document.getElementById('user-name');
   const emailSpan = document.getElementById('user-email');
   const phoneSpan = document.getElementById('user-phone');
 
-  // Check if metadata exists and contains contact information
-  if (conversation.metadata) {
-    // Show the contact info section
-    contactInfoDiv.style.display = 'block';
+  contactInfoDiv.style.display = 'block';
 
-    // Check if metadata is a Map or a plain object
-    if (conversation.metadata instanceof Map) {
-      // Update the contact info fields
-      nameSpan.textContent = conversation.metadata.get('name') || 'Not provided';
-      emailSpan.textContent = conversation.metadata.get('email') || 'Not provided';
-      phoneSpan.textContent = conversation.metadata.get('phone') || 'Not provided';
+  const metadata = conversation.metadata instanceof Map
+    ? Object.fromEntries(conversation.metadata)
+    : (conversation.metadata || {});
 
-      // Apply styling for missing information
-      nameSpan.className = conversation.metadata.get('name') ? '' : 'text-danger';
-      emailSpan.className = conversation.metadata.get('email') ? '' : 'text-danger';
-      phoneSpan.className = conversation.metadata.get('phone') ? '' : 'text-danger';
-    } else {
-      // Update the contact info fields
-      nameSpan.textContent = conversation.metadata.name || 'Not provided';
-      emailSpan.textContent = conversation.metadata.email || 'Not provided';
-      phoneSpan.textContent = conversation.metadata.phone || 'Not provided';
+  const details = {
+    name: metadata.name || '',
+    email: metadata.email || (conversation.email && conversation.email.from) || '',
+    phone: metadata.phone || ''
+  };
 
-      // Apply styling for missing information
-      nameSpan.className = conversation.metadata.name ? '' : 'text-danger';
-      emailSpan.className = conversation.metadata.email ? '' : 'text-danger';
-      phoneSpan.className = conversation.metadata.phone ? '' : 'text-danger';
-    }
-  } else {
-    // Show the contact info section with default values
-    contactInfoDiv.style.display = 'block';
-    nameSpan.textContent = 'Not provided';
-    emailSpan.textContent = 'Not provided';
-    phoneSpan.textContent = 'Not provided';
-    nameSpan.className = 'text-danger';
-    emailSpan.className = 'text-danger';
-    phoneSpan.className = 'text-danger';
+  const set = (element, value) => {
+    element.textContent = value || 'Not provided';
+    // Red is a prompt to go and ask, so it only applies to what is missing.
+    element.className = value ? '' : 'text-danger';
+  };
+
+  set(nameSpan, details.name);
+  set(emailSpan, details.email);
+  set(phoneSpan, details.phone);
+
+  // A link through to everything this person has asked before, which only
+  // exists once a conversation has been attached to a contact.
+  const existingLink = document.getElementById('contact-profile-link');
+  if (existingLink) {
+    existingLink.remove();
+  }
+
+  if (conversation.contact) {
+    const link = document.createElement('button');
+    link.id = 'contact-profile-link';
+    link.className = 'btn btn-sm btn-link p-0 ms-2';
+    link.textContent = 'View history';
+    link.addEventListener('click', () => {
+      const navLink = document.querySelector('#sidebar .nav-link[data-section="contacts"]');
+      if (navLink) {
+        navLink.click();
+      }
+      if (typeof openContactById === 'function') {
+        openContactById(conversation.contact);
+      }
+    });
+    emailSpan.parentElement.appendChild(link);
   }
 }
 

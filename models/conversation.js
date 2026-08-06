@@ -37,6 +37,10 @@ const MessageSchema = new mongoose.Schema({
   operatorName: {
     type: String
   },
+  /** The RFC Message-ID this message was delivered as, for email threading. */
+  emailMessageId: {
+    type: String
+  },
   attachments: [{
     filename: String,
     url: String,
@@ -53,6 +57,32 @@ const ConversationSchema = new mongoose.Schema({
     type: String,
     required: true,
     unique: true
+  },
+  /**
+   * How this conversation reaches the customer.
+   *
+   * Chat and email land in the same queue and are answered from the same
+   * composer; the difference is only in delivery. An operator should not have
+   * to think about which one they are in.
+   */
+  channel: {
+    type: String,
+    enum: ['chat', 'email'],
+    default: 'chat'
+  },
+  /**
+   * Threading state for email conversations.
+   *
+   * `messageIds` is every Message-ID we have seen or sent on this thread.
+   * Mail clients reply with `In-Reply-To` pointing at any of them, so matching
+   * against the whole set is what keeps a long thread together.
+   */
+  email: {
+    subject: { type: String },
+    from: { type: String, lowercase: true, trim: true },
+    to: { type: String, lowercase: true, trim: true },
+    messageIds: [{ type: String }],
+    lastMessageId: { type: String }
   },
   userId: {
     type: String
@@ -150,6 +180,10 @@ ConversationSchema.index({ company: 1, startedAt: -1 });
 ConversationSchema.index({ status: 1, lastActivity: -1 });
 // A contact's history, newest first.
 ConversationSchema.index({ contact: 1, startedAt: -1 });
+// Email threading: an inbound reply is matched against every Message-ID we
+// have seen on the thread.
+ConversationSchema.index({ 'email.messageIds': 1 });
+ConversationSchema.index({ company: 1, channel: 1, status: 1 });
 
 const Conversation = mongoose.model('Conversation', ConversationSchema);
 

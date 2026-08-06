@@ -69,6 +69,9 @@ router.get('/active-chats', async (req, res) => {
           operatorName: 1,
           metadata: 1,
           company: 1,
+          channel: 1,
+          email: 1,
+          contact: 1,
           messageCount: { $size: { $ifNull: ['$messages', []] } },
           lastMessage: { $last: '$messages.content' }
         }
@@ -84,7 +87,12 @@ router.get('/active-chats', async (req, res) => {
       domain: chat.domain,
       hasOperator: chat.hasOperator,
       operatorName: chat.operatorName,
-      userName: chat.metadata && chat.metadata.name,
+      // An email thread has no pre-chat form, so the sender address is the
+      // best name we have.
+      userName: (chat.metadata && chat.metadata.name) || (chat.email && chat.email.from),
+      channel: chat.channel || 'chat',
+      subject: chat.email && chat.email.subject,
+      contactId: chat.contact,
       // A preview lets an operator triage the queue without opening each chat.
       lastMessage: chat.lastMessage,
       company: chat.company ? {

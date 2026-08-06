@@ -71,6 +71,7 @@ module.exports = {
         setupAssistantSection: 'readonly',
         setupOperatorTools: 'readonly',
         setupContacts: 'readonly',
+        openContactById: 'readonly',
         setConversationNotes: 'readonly',
         applyChatFilter: 'readonly',
         resizeChartsIn: 'readonly',

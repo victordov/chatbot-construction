@@ -1119,6 +1119,71 @@
 
                     <div class="card mb-4">
                         <div class="card-header">
+                            <h5 class="mb-0">Email channel</h5>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted">
+                                Emails to your support address land in the same queue as chat and are
+                                answered from the same composer. Replies thread properly in the
+                                customer's inbox.
+                            </p>
+
+                            <div class="form-check form-switch mb-3">
+                                <input class="form-check-input" type="checkbox" id="email-enabled">
+                                <label class="form-check-label" for="email-enabled">Enable the email channel</label>
+                            </div>
+
+                            <div class="row g-3 mb-3">
+                                <div class="col-md-6">
+                                    <label for="email-inbound-address" class="form-label">Support address</label>
+                                    <input type="email" class="form-control" id="email-inbound-address"
+                                           placeholder="support@yourcompany.com">
+                                    <div class="form-text">Where your customers write.</div>
+                                </div>
+                                <div class="col-md-3">
+                                    <label for="email-from-name" class="form-label">Reply as</label>
+                                    <input type="text" class="form-control" id="email-from-name"
+                                           placeholder="Acme Support">
+                                </div>
+                                <div class="col-md-3">
+                                    <label for="email-from-address" class="form-label">From address</label>
+                                    <input type="email" class="form-control" id="email-from-address"
+                                           placeholder="support@yourcompany.com">
+                                </div>
+                                <div class="col-12">
+                                    <label for="email-signature" class="form-label">Signature</label>
+                                    <textarea class="form-control" id="email-signature" rows="2"
+                                              placeholder="Acme Support · acme.example"></textarea>
+                                </div>
+                            </div>
+
+                            <div id="email-inbound-url-block" class="mb-3 d-none">
+                                <label class="form-label">Point your mail provider here</label>
+                                <div class="position-relative">
+                                    <pre class="embed-snippet" id="email-inbound-url"></pre>
+                                    <button class="btn btn-sm btn-outline-secondary copy-snippet-btn"
+                                            id="copy-inbound-url-btn">Copy</button>
+                                </div>
+                                <div class="form-text">
+                                    Works with SendGrid Inbound Parse, Mailgun Routes, Postmark and anything
+                                    that can POST a message. Swap <code>/generic</code> for
+                                    <code>/sendgrid</code>, <code>/mailgun</code> or <code>/postmark</code> to
+                                    use that provider's own payload format.
+                                    <strong>The URL contains a secret — treat it as a credential.</strong>
+                                </div>
+                            </div>
+
+                            <div id="email-smtp-warning" class="alert alert-warning py-2 px-3 small d-none">
+                                No SMTP is configured on this server, so inbound email will work but replies
+                                cannot be sent. Set <code>EMAIL_HOST</code> to enable sending.
+                            </div>
+
+                            <button type="button" class="btn btn-primary" id="save-email-btn">Save email settings</button>
+                        </div>
+                    </div>
+
+                    <div class="card mb-4">
+                        <div class="card-header">
                             <h5 class="mb-0">Identity verification</h5>
                         </div>
                         <div class="card-body">

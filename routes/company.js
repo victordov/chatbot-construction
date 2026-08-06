@@ -216,6 +216,90 @@ router.put('/me/hours', requireOwnCompany, async (req, res) => {
   }
 });
 
+/**
+ * Email channel settings, including the inbound webhook URL a tenant points
+ * their mail provider at.
+ */
+router.get('/me/email', requireOwnCompany, async (req, res) => {
+  try {
+    const company = await Company.findById(req.user.company.id)
+      .select('+emailChannel.inboundSecret')
+      .lean();
+
+    const settings = company?.emailChannel || {};
+    const base = process.env.PUBLIC_URL || `${req.protocol}://${req.get('host')}`;
+
+    res.json({
+      enabled: Boolean(settings.enabled),
+      inboundAddress: settings.inboundAddress || '',
+      fromName: settings.fromName || '',
+      fromAddress: settings.fromAddress || '',
+      signature: settings.signature || '',
+      // Built here rather than in the browser so it always matches what the
+      // route actually expects.
+      inboundUrl: settings.enabled && settings.inboundSecret
+        ? `${base}/api/email/inbound/${company._id}/generic?secret=${settings.inboundSecret}`
+        : null,
+      smtpConfigured: Boolean(process.env.EMAIL_HOST)
+    });
+  } catch (error) {
+    console.error('Error loading email settings:', error);
+    res.status(500).json({ error: 'Failed to load email settings' });
+  }
+});
+
+router.put('/me/email', requireOwnCompany, async (req, res) => {
+  try {
+    const { enabled, inboundAddress, fromName, fromAddress, signature } = req.body;
+    const company = await Company.findById(req.user.company.id).select('+emailChannel.inboundSecret');
+
+    if (!company) {
+      return res.status(404).json({ error: 'Company not found' });
+    }
+
+    const isEmail = value => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value));
+
+    if (inboundAddress && !isEmail(inboundAddress)) {
+      return res.status(400).json({ error: 'Inbound address must be a valid email address' });
+    }
+    if (fromAddress && !isEmail(fromAddress)) {
+      return res.status(400).json({ error: 'From address must be a valid email address' });
+    }
+
+    if (enabled && !inboundAddress) {
+      return res.status(400).json({
+        error: 'An inbound address is required before the email channel can be turned on'
+      });
+    }
+
+    company.emailChannel = {
+      ...(company.emailChannel ? company.emailChannel.toObject() : {}),
+      enabled: Boolean(enabled),
+      inboundAddress: inboundAddress ? String(inboundAddress).trim().toLowerCase() : undefined,
+      fromName: fromName ? String(fromName).trim() : undefined,
+      fromAddress: fromAddress ? String(fromAddress).trim().toLowerCase() : undefined,
+      signature: signature !== undefined ? String(signature).trim() : company.emailChannel?.signature
+    };
+
+    // The pre-save hook mints the inbound secret the first time the channel is
+    // switched on.
+    await company.save();
+
+    const refreshed = await Company.findById(company._id).select('+emailChannel.inboundSecret').lean();
+    const base = process.env.PUBLIC_URL || `${req.protocol}://${req.get('host')}`;
+
+    res.json({
+      success: true,
+      inboundUrl: refreshed.emailChannel.enabled && refreshed.emailChannel.inboundSecret
+        ? `${base}/api/email/inbound/${company._id}/generic?secret=${refreshed.emailChannel.inboundSecret}`
+        : null
+    });
+  } catch (error) {
+    console.error('Error saving email settings:', error);
+    res.status(500).json({ error: 'Failed to save email settings' });
+  }
+});
+
 router.post('/me/widget/rotate-key', requireOwnCompany, async (req, res) => {
   try {
     const company = await Company.findById(req.user.company.id);

@@ -61,6 +61,23 @@ const CompanySchema = new mongoose.Schema({
   },
 
   /**
+   * Email channel.
+   *
+   * `inboundAddress` is where customers write. `inboundSecret` authenticates
+   * the provider webhook - without it anyone who found the URL could inject
+   * messages into this tenant's queue.
+   */
+  emailChannel: {
+    enabled: { type: Boolean, default: false },
+    inboundAddress: { type: String, trim: true, lowercase: true },
+    fromName: { type: String, trim: true },
+    fromAddress: { type: String, trim: true, lowercase: true },
+    inboundSecret: { type: String, select: false },
+    /** Appended to every outbound reply. */
+    signature: { type: String, trim: true }
+  },
+
+  /**
    * When operators are actually available.
    *
    * Without this the widget always implies someone is about to answer, which
@@ -126,6 +143,9 @@ CompanySchema.pre('save', function(next) {
   // a migration, and so it never has to be generated on a hot path.
   if (!this.identitySecret) {
     this.identitySecret = crypto.randomBytes(32).toString('hex');
+  }
+  if (this.emailChannel && this.emailChannel.enabled && !this.emailChannel.inboundSecret) {
+    this.emailChannel.inboundSecret = crypto.randomBytes(24).toString('hex');
   }
   next();
 });

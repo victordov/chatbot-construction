@@ -64,6 +64,16 @@ three strengths - anonymous, self-reported (they typed an email) and verified
 (the tenant signed their user id with an HMAC). Only the last is safe to
 discuss account data against, and the dashboard shows which is which.
 
+**Email as a second channel.** A mail provider posts to a per-tenant webhook and
+the message lands in the same queue, answered from the same composer, attached
+to the same Contact — only delivery differs. Replies thread by `In-Reply-To` /
+`References` against Message-IDs we have sent, falling back to sender plus
+normalised subject for clients that drop the headers on a forward. Quoted
+history is stripped so an operator does not read the thread five times. The
+inbound URL is public, so every request must carry the company's inbound
+secret; an unknown company and a disabled channel return the same 404 so the
+endpoint cannot enumerate tenants.
+
 **Operator tools.** Saved replies inserted from the composer with `/`, internal
 notes that never reach the visitor or the model, conversation transfer with a
 handover note, and a queue filtered by All / Mine / Waiting so several chats
@@ -105,7 +115,7 @@ content-hashed widget assets cached for a year with the loader on `no-cache`.
 
 ## Test suite
 
-`npm test` — 234 tests across 20 suites. An in-memory MongoDB starts
+`npm test` — 260 tests across 21 suites. An in-memory MongoDB starts
 automatically (`tests/globalSetup.js`), so no local `mongod` is needed.
 `tests/setup.js` blanks `OPENAI_API_KEY` so the suite never makes a real model
 call; the embedding and intent tests therefore assert on ranking and plumbing

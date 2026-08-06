@@ -663,3 +663,12 @@ th .col-resizer {
   color: #6c757d;
   margin-top: 0.15rem;
 }
+
+/* Channel marker in the queue. Chat is the default and unmarked; email is the
+   exception and gets the glyph, so the common case stays visually quiet. */
+.channel-badge {
+  display: inline-block;
+  font-size: 0.85em;
+  color: #6f42c1;
+  margin-right: 0.15rem;
+}

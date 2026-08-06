@@ -7,6 +7,7 @@ const EncryptionService = require('./services/encryption');
 const tenantService = require('./services/tenant');
 const usageService = require('./services/usage');
 const contactService = require('./services/contacts');
+const emailChannel = require('./services/email-channel');
 const { operatorRoom, GLOBAL_OPERATOR_ROOM } = require('./socketManager');
 const { logger } = require('./services/logging');
 
@@ -893,23 +894,47 @@ function setupWebSockets(server) {
         // Save to database
         const conversation = await Conversation.findOne({ sessionId });
         if (conversation) {
+          const operatorName = socket.user.displayName || socket.user.username;
+
+          // An email thread is answered from the same composer; only delivery
+          // differs. Sent before persisting so a failure can be reported to
+          // the operator rather than leaving a message that never went out.
+          let delivery = { sent: true };
+
+          if (conversation.channel === 'email') {
+            delivery = await emailChannel.sendReply(conversation, message, operatorName);
+
+            if (!delivery.sent) {
+              socket.emit('error', {
+                message: `Could not send that email: ${delivery.reason}`
+              });
+              return;
+            }
+          }
+
           conversation.messages.push({
             content: message,
             sender: 'operator',
             operatorId: socket.user.id,
-            operatorName: socket.user.displayName || socket.user.username,
+            operatorName,
+            emailMessageId: delivery.messageId,
             timestamp: new Date()
           });
 
           conversation.lastActivity = new Date();
           await conversation.save();
 
-          // Send to user
-          io.to(sessionId).emit('operator-message', {
-            text: message,
-            senderName: socket.user.displayName || socket.user.username,
-            timestamp: new Date()
-          });
+          usageService.record(conversation.company, { operatorMessages: 1, messages: 1 });
+
+          // Chat visitors get it over the socket. Email visitors already have
+          // it in their inbox.
+          if (conversation.channel !== 'email') {
+            io.to(sessionId).emit('operator-message', {
+              text: message,
+              senderName: operatorName,
+              timestamp: new Date()
+            });
+          }
         }
       } catch (error) {
         logger.error('Error handling operator message:', { error });
