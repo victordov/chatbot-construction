@@ -330,7 +330,7 @@ function setupWebSockets(server) {
           if (message.fileId) {
             messageData.fileId = message.fileId;
             messageData.fileName = message.fileName;
-            messageData.fileUrl = `/api/download/${message.fileId}`;
+            messageData.fileUrl = `/api/upload/${message.fileId}`;
           }
 
           // Encrypt message content if encryption is enabled
@@ -625,57 +625,47 @@ function setupWebSockets(server) {
       const { sessionId, fileId, fileName, timestamp } = data;
 
       try {
-        // Find conversation
         const conversation = await getOrCreateConversation(sessionId, data);
 
-        // Add file message
-        conversation.messages.push({
-          content: `[File uploaded: ${fileName}]`,
-          sender: 'user',
-          fileId,
-          fileName,
-          timestamp: new Date(timestamp)
-        });
+        // POST /api/upload already recorded the message. This event is the
+        // widget telling us the upload finished, so only append when the
+        // message is missing - otherwise every attachment appears twice.
+        const alreadyRecorded = fileId &&
+          conversation.messages.some(message => message.fileId === fileId);
 
-        // Update last activity
+        if (!alreadyRecorded) {
+          conversation.messages.push({
+            content: `[File uploaded: ${fileName}]`,
+            sender: 'user',
+            fileId,
+            fileName,
+            timestamp: timestamp ? new Date(timestamp) : new Date()
+          });
+        }
+
         conversation.lastActivity = new Date();
-
         await conversation.save();
 
-        // Show typing indicator
-        socket.emit('bot-typing');
+        // Tell the operators, so an attachment shows up in their queue.
+        // The previous handler instead waited two seconds and sent a canned
+        // "I've received your file" from the bot, which was a placeholder for
+        // file analysis that does not exist - and it fired even when a human
+        // operator was already handling the conversation.
+        toOperators(clientCompanyId, 'new-message', {
+          sessionId,
+          message: `[File uploaded: ${fileName}]`,
+          sender: 'user',
+          timestamp: new Date(),
+          fileInfo: { fileName, fileId, url: `/api/upload/${fileId}` }
+        });
 
-        // Process file with AI (placeholder)
-        setTimeout(() => {
-          const response = `I've received your file "${fileName}". Let me know if you have any questions about it.`;
-
-          // Save bot response
-          conversation.messages.push({
-            content: response,
-            sender: 'bot',
-            timestamp: new Date()
-          });
-          conversation.save();
-
-          // Send bot response to client
-          socket.emit('bot-message', {
-            text: response,
-            timestamp: new Date()
-          });
-
-          // Send to operators
-          toOperators(clientCompanyId, 'new-message', {
-            sessionId,
-            message: response,
-            sender: 'bot',
-            timestamp: new Date(),
-            fileInfo: { fileName, fileId }
-          });
-        }, 2000);
+        socket.emit('message-read', { messageId: fileId, timestamp: new Date() });
       } catch (error) {
         logger.error('Error handling file upload:', { error });
       }
-    });    // Handle typing indicators from users
+    });
+
+    // Handle typing indicators from users
     socket.on('user-typing', (data) => {
       const { sessionId, isTyping } = data;
 

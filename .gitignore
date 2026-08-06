@@ -450,3 +450,4 @@ security-reports/
 load-test-results/
 backups/
 .idea/!/security-reports/
+uploads/

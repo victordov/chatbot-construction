@@ -32,6 +32,11 @@ a restart does not take every bot offline.
 with comments/activity/follow-ups, notifications, analytics, operator and
 company management, widget installation.
 
+**File uploads.** `POST /api/upload` accepts an attachment against an existing
+chat session (allowlisted MIME types, 10 MB default cap, random storage id).
+`GET /api/upload/:fileId` serves it back to the uploading visitor or an
+operator of the owning company, always as an attachment with `nosniff`.
+
 **Operations.** `/health` and `/ready`, Prometheus metrics at `/metrics`,
 graceful shutdown, MongoDB-backed sessions, helmet + CSP, rate limiting.
 
@@ -49,15 +54,13 @@ graceful shutdown, MongoDB-backed sessions, helmet + CSP, rate limiting.
   analytics in `todo.md` (conversion, segmentation, predictive) are not built.
 - **Billing and subscription tiers** from `todo.md` are not built. There is no
   usage metering or plan enforcement.
-- **File uploads** post to `/api/upload`, which does not exist as a route. The
-  widget's attachment button will fail.
 - **Widget versioning**: `services/widgetUpdate.js` manages versions under
   `widget-versions/`, but the served path `/widget/js/widget.js` is not
   version-stamped, so it is served with `no-cache` rather than a long TTL.
 
 ## Test suite
 
-`npm test` — 88 tests across 12 suites. An in-memory MongoDB starts
+`npm test` — 109 tests across 14 suites. An in-memory MongoDB starts
 automatically (`tests/globalSetup.js`), so no local `mongod` is needed.
 `tests/setup.js` blanks `OPENAI_API_KEY` so the suite never makes a real model
 call.
