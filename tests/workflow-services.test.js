@@ -16,7 +16,7 @@ const mockSocketManager = {
 };
 
 describe('Workflow Services', () => {
-  
+
   describe('WorkflowCompilerService', () => {
     let compiler;
 
@@ -30,7 +30,7 @@ describe('Workflow Services', () => {
           {
             id: 'persona',
             type: 'customNode',
-            data: { 
+            data: {
               type: 'persona',
               label: 'Assistant',
               prompt: 'You are a helpful assistant',
@@ -46,7 +46,7 @@ describe('Workflow Services', () => {
           {
             id: 'response',
             type: 'customNode',
-            data: { 
+            data: {
               type: 'response',
               label: 'Response',
               template: 'Hello! How can I help you?',
@@ -64,7 +64,7 @@ describe('Workflow Services', () => {
       };
 
       const result = await compiler.compileWorkflow(workflow.nodes, workflow.edges, 'test-tenant');
-      
+
       expect(result).toBeDefined();
       expect(result.success).toBe(true);
       expect(result.executionPlan).toBeDefined();
@@ -91,7 +91,7 @@ describe('Workflow Services', () => {
           {
             id: 'persona',
             type: 'customNode',
-            data: { 
+            data: {
               type: 'persona',
               label: 'Assistant',
               prompt: 'You are a helpful assistant',
@@ -107,7 +107,7 @@ describe('Workflow Services', () => {
           {
             id: 'knowledge',
             type: 'customNode',
-            data: { 
+            data: {
               type: 'knowledge-source',
               label: 'Google Sheets',
               sourceType: 'google-sheets',
@@ -120,7 +120,7 @@ describe('Workflow Services', () => {
           {
             id: 'response',
             type: 'customNode',
-            data: { 
+            data: {
               type: 'response',
               label: 'Response',
               template: 'Based on the knowledge: {{knowledge_result}}',
@@ -143,7 +143,7 @@ describe('Workflow Services', () => {
       };
 
       const result = await compiler.compileWorkflow(workflow.nodes, workflow.edges, 'test-tenant');
-      
+
       expect(result).toBeDefined();
       expect(result.success).toBe(true);
       expect(result.executionPlan.nodes).toHaveLength(4);
@@ -155,7 +155,7 @@ describe('Workflow Services', () => {
           {
             id: 'persona',
             type: 'customNode',
-            data: { 
+            data: {
               type: 'persona',
               label: 'Assistant',
               prompt: 'You are a helpful assistant',
@@ -171,7 +171,7 @@ describe('Workflow Services', () => {
           {
             id: 'llm',
             type: 'customNode',
-            data: { 
+            data: {
               type: 'llm',
               label: 'LLM Call',
               model: 'gpt-3.5-turbo',
@@ -189,10 +189,10 @@ describe('Workflow Services', () => {
       };
 
       const result = await compiler.compileWorkflow(workflow.nodes, workflow.edges, 'test-tenant');
-      
+
       expect(result).toBeDefined();
       expect(result.success).toBe(true);
-      
+
       // Check that safety prompts are added
       const llmNode = result.executionPlan.nodes.find(n => n.type === 'llm');
       expect(llmNode).toBeDefined();
@@ -217,7 +217,7 @@ describe('Workflow Services', () => {
           {
             id: 'persona',
             type: 'customNode',
-            data: { 
+            data: {
               type: 'persona',
               label: 'Assistant',
               prompt: 'You are a helpful assistant',
@@ -235,7 +235,7 @@ describe('Workflow Services', () => {
       };
 
       const result = await runtime.loadWorkflow('test-tenant', workflow);
-      
+
       expect(result.success).toBe(true);
       expect(runtime.getWorkflowStatus('test-tenant')).toBeDefined();
     });
@@ -249,7 +249,7 @@ describe('Workflow Services', () => {
           {
             id: 'persona',
             type: 'customNode',
-            data: { 
+            data: {
               type: 'persona',
               label: 'Assistant',
               prompt: 'You are a helpful assistant',
@@ -265,7 +265,7 @@ describe('Workflow Services', () => {
           {
             id: 'response',
             type: 'customNode',
-            data: { 
+            data: {
               type: 'response',
               label: 'Response',
               template: 'Hello! How can I help you?',
@@ -283,9 +283,9 @@ describe('Workflow Services', () => {
       };
 
       await runtime.loadWorkflow('test-tenant', workflow);
-      
+
       const result = await runtime.executeWorkflow('test-tenant', 'Hello', []);
-      
+
       expect(result).toBeDefined();
       expect(result.response).toContain('Hello! How can I help you?');
     });
@@ -299,7 +299,7 @@ describe('Workflow Services', () => {
           {
             id: 'persona',
             type: 'customNode',
-            data: { 
+            data: {
               type: 'persona',
               label: 'Assistant',
               prompt: 'You are a helpful assistant',
@@ -324,7 +324,7 @@ describe('Workflow Services', () => {
           {
             id: 'persona',
             type: 'customNode',
-            data: { 
+            data: {
               type: 'persona',
               label: 'Assistant',
               prompt: 'You are a helpful assistant',
@@ -340,7 +340,7 @@ describe('Workflow Services', () => {
           {
             id: 'response',
             type: 'customNode',
-            data: { 
+            data: {
               type: 'response',
               label: 'New Response',
               template: 'Updated response!',
@@ -359,7 +359,7 @@ describe('Workflow Services', () => {
 
       await runtime.loadWorkflow('test-tenant', originalWorkflow);
       const hotSwapResult = await runtime.hotSwapWorkflow('test-tenant', newWorkflow);
-      
+
       expect(hotSwapResult.success).toBe(true);
     });
   });
@@ -373,7 +373,7 @@ describe('Workflow Services', () => {
 
     test('should handle operator join', () => {
       const result = operatorAssist.joinSession('session-1', 'operator-1', 'John Doe');
-      
+
       expect(result.success).toBe(true);
       expect(operatorAssist.getActiveOperators('session-1')).toHaveLength(1);
     });
@@ -381,7 +381,7 @@ describe('Workflow Services', () => {
     test('should handle operator leave', () => {
       operatorAssist.joinSession('session-1', 'operator-1', 'John Doe');
       const result = operatorAssist.leaveSession('session-1', 'operator-1');
-      
+
       expect(result.success).toBe(true);
       expect(operatorAssist.getActiveOperators('session-1')).toHaveLength(0);
     });
@@ -394,7 +394,7 @@ describe('Workflow Services', () => {
       ];
 
       const suggestions = await operatorAssist.generateSuggestedReplies(chatHistory);
-      
+
       expect(suggestions).toBeDefined();
       expect(Array.isArray(suggestions)).toBe(true);
       expect(suggestions.length).toBeGreaterThan(0);

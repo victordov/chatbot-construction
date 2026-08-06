@@ -20,11 +20,11 @@ class UserGoogleDrive {
       const auth = await this.authService.getOAuthClient(userId);
       const drive = google.drive({ version: 'v3', auth });
 
-      const queryParts = ["mimeType='application/vnd.google-apps.spreadsheet'", 'trashed=false'];
+      const queryParts = ['mimeType=\'application/vnd.google-apps.spreadsheet\'', 'trashed=false'];
 
       if (query) {
         // DEFECT FIX #3: More robustly escape backslashes and single quotes.
-        const escapedQuery = query.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+        const escapedQuery = query.replace(/\\/g, '\\\\').replace(/'/g, '\\\'');
         queryParts.push(`name contains '${escapedQuery}'`);
       }
       const q = queryParts.join(' and ');

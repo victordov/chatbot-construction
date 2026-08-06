@@ -398,9 +398,7 @@ function loadChatHistory(token, search = chatHistoryState.search, page = 1) {
 
       records.forEach(record => {
         const row = document.createElement('tr');
-        const messageCount = record.messages
-          ? record.messages.length
-          : (record['messages.length'] || 0);
+        const messageCount = record.messageCount ?? (record.messages ? record.messages.length : 0);
 
         row.innerHTML = `
           <td>
@@ -525,7 +523,7 @@ function addChatToList(chat) {
     (chat.metadata &&
       (chat.metadata.name || (chat.metadata.get && chat.metadata.get('name'))));
 
-  const messageCount = chat.messages ? chat.messages.length : (chat['messages.length'] || 0);
+  const messageCount = chat.messageCount ?? (chat.messages ? chat.messages.length : 0);
 
   // The visitor's name, domain and operator name all originate from untrusted
   // input, so every interpolation is escaped.

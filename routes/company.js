@@ -160,7 +160,7 @@ router.get('/:id', async (req, res) => {
     }
 
     // Check if user has access to this company
-    if (req.user.role !== 'superadmin' && 
+    if (req.user.role !== 'superadmin' &&
         (!req.user.company || req.user.company.id.toString() !== id)) {
       return res.status(403).json({ error: 'Access denied: You can only view your own company' });
     }
@@ -253,7 +253,7 @@ router.put('/:id', async (req, res) => {
     }
 
     // Check if user has access to update this company
-    if (req.user.role !== 'superadmin' && 
+    if (req.user.role !== 'superadmin' &&
         (!req.user.company || req.user.company.id.toString() !== id || req.user.role !== 'company_admin')) {
       return res.status(403).json({ error: 'Access denied: Only superadmins or company admins can update their own company' });
     }
@@ -267,9 +267,15 @@ router.put('/:id', async (req, res) => {
     }
 
     // Update company fields
-    if (name) company.name = name;
-    if (description !== undefined) company.description = description;
-    if (website !== undefined) company.website = website;
+    if (name) {
+      company.name = name;
+    }
+    if (description !== undefined) {
+      company.description = description;
+    }
+    if (website !== undefined) {
+      company.website = website;
+    }
 
     // Only superadmin can change active status
     if (isActive !== undefined && req.user.role === 'superadmin') {
@@ -302,7 +308,7 @@ router.delete('/:id', superadmin, async (req, res) => {
     // Check if company has users
     const usersCount = await User.countDocuments({ company: id });
     if (usersCount > 0) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         error: 'Cannot delete company with users. Please delete or reassign users first.',
         usersCount
       });
@@ -332,7 +338,7 @@ router.get('/:id/users', async (req, res) => {
     }
 
     // Check if user has access to this company
-    if (req.user.role !== 'superadmin' && 
+    if (req.user.role !== 'superadmin' &&
         (!req.user.company || req.user.company.id.toString() !== id)) {
       return res.status(403).json({ error: 'Access denied: You can only view users from your own company' });
     }
@@ -362,7 +368,7 @@ router.get('/:id/admin', superadmin, async (req, res) => {
     }
 
     // Find the company admin
-    const admin = await User.findOne({ 
+    const admin = await User.findOne({
       company: id,
       role: 'company_admin'
     });
@@ -400,7 +406,7 @@ router.put('/:id/admin', superadmin, async (req, res) => {
     }
 
     // Find the company admin
-    const admin = await User.findOne({ 
+    const admin = await User.findOne({
       company: id,
       role: 'company_admin'
     });
@@ -429,10 +435,18 @@ router.put('/:id/admin', superadmin, async (req, res) => {
     }
 
     // Update admin details
-    if (username) admin.username = username;
-    if (email) admin.email = email;
-    if (displayName) admin.displayName = displayName;
-    if (password) admin.password = password;
+    if (username) {
+      admin.username = username;
+    }
+    if (email) {
+      admin.email = email;
+    }
+    if (displayName) {
+      admin.displayName = displayName;
+    }
+    if (password) {
+      admin.password = password;
+    }
 
     await admin.save();
 
@@ -465,7 +479,7 @@ router.post('/:id/admin/reset-password', superadmin, async (req, res) => {
     }
 
     // Find the company admin
-    const admin = await User.findOne({ 
+    const admin = await User.findOne({
       company: id,
       role: 'company_admin'
     });
@@ -518,7 +532,7 @@ router.put('/:id/users/:userId', superadmin, async (req, res) => {
     }
 
     // Find the user
-    const user = await User.findOne({ 
+    const user = await User.findOne({
       _id: userId,
       company: id
     });
@@ -558,11 +572,19 @@ router.put('/:id/users/:userId', superadmin, async (req, res) => {
 
     // Update user details
     user.username = username;
-    if (name !== undefined) user.name = name;
-    if (displayName !== undefined) user.displayName = displayName;
+    if (name !== undefined) {
+      user.name = name;
+    }
+    if (displayName !== undefined) {
+      user.displayName = displayName;
+    }
     user.email = email;
-    if (role) user.role = role;
-    if (password) user.password = password;
+    if (role) {
+      user.role = role;
+    }
+    if (password) {
+      user.password = password;
+    }
 
     await user.save();
 
@@ -668,7 +690,7 @@ router.post('/:id/users/:userId/reset-password', superadmin, async (req, res) =>
     }
 
     // Find the user
-    const user = await User.findOne({ 
+    const user = await User.findOne({
       _id: userId,
       company: id
     });
@@ -721,7 +743,7 @@ router.get('/:id/users/:userId', superadmin, async (req, res) => {
     }
 
     // Find the user
-    const user = await User.findOne({ 
+    const user = await User.findOne({
       _id: userId,
       company: id
     });
@@ -767,7 +789,7 @@ router.patch('/:id/users/:userId/status', superadmin, async (req, res) => {
     }
 
     // Find the user
-    const user = await User.findOne({ 
+    const user = await User.findOne({
       _id: userId,
       company: id
     });

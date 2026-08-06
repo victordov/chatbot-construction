@@ -7,13 +7,13 @@ const ActivitySchema = new mongoose.Schema({
     ref: 'Task',
     required: true
   },
-  
+
   // Type of activity
   type: {
     type: String,
     enum: [
       'task_created',
-      'task_updated', 
+      'task_updated',
       'task_assigned',
       'task_unassigned',
       'status_changed',
@@ -28,39 +28,39 @@ const ActivitySchema = new mongoose.Schema({
     ],
     required: true
   },
-  
+
   // User who performed the action
   user: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
     required: true
   },
-  
+
   // User details for faster queries (denormalized)
   userName: {
     type: String,
     required: true
   },
-  
+
   // Description of the activity
   description: {
     type: String,
     required: true
   },
-  
+
   // Additional metadata for the activity
   metadata: {
     type: Map,
     of: mongoose.Schema.Types.Mixed
   },
-  
+
   // Old and new values for update activities
   changes: {
     oldValue: mongoose.Schema.Types.Mixed,
     newValue: mongoose.Schema.Types.Mixed,
     field: String
   },
-  
+
   // Company context (for scoping activities to company)
   company: {
     type: mongoose.Schema.Types.ObjectId,
@@ -68,7 +68,7 @@ const ActivitySchema = new mongoose.Schema({
     required: false, // Made optional to support super admin users
     default: null
   },
-  
+
   // Timestamp
   createdAt: {
     type: Date,

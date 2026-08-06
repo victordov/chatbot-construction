@@ -19,28 +19,28 @@ class WorkflowService {
     try {
       // Validate workflow structure
       this.validateWorkflow(workflowData);
-      
+
       // Set company context for multi-tenancy
       const company = user.role === 'superadmin' ? null : user.company?.id;
-      
+
       const workflow = new Workflow({
         ...workflowData,
         company,
         createdBy: user.id,
         version: 1
       });
-      
+
       // Compile workflow if it has nodes
       if (workflowData.nodes && workflowData.nodes.length > 0) {
         const compiledChain = await this.compileWorkflow(workflowData, company);
         workflow.compiledChain = compiledChain;
       }
-      
+
       await workflow.save();
-      
+
       // Save initial version
       await this.saveVersion(workflow, user, 'Initial version');
-      
+
       logger.info(`Workflow created: ${workflow._id} by user ${user.id}`);
       return workflow;
     } catch (error) {
@@ -48,100 +48,104 @@ class WorkflowService {
       throw error;
     }
   }
-  
+
   /**
    * Get workflows for a company or user
    */
   async getWorkflows(userCompanyId = null, userRole = null, status = null) {
     try {
-      let filter = {};
-      
+      const filter = {};
+
       // Apply company filtering based on user role
       if (userRole === 'superadmin') {
         // Super admin can see all workflows
-        if (status) filter.status = status;
+        if (status) {
+          filter.status = status;
+        }
       } else {
         // Regular users see only their company's workflows
         filter.company = userCompanyId;
-        if (status) filter.status = status;
+        if (status) {
+          filter.status = status;
+        }
       }
-      
+
       const workflows = await Workflow.find(filter)
         .populate('createdBy', 'username displayName')
         .populate('company', 'name')
         .sort({ updatedAt: -1 });
-      
+
       return workflows;
     } catch (error) {
       logger.error('Error getting workflows:', error);
       throw error;
     }
   }
-  
+
   /**
    * Get a specific workflow by ID
    */
   async getWorkflow(workflowId, userCompanyId = null, userRole = null) {
     try {
       const query = { _id: workflowId };
-      
+
       // Apply company filter for regular users
       if (userRole !== 'superadmin' && userCompanyId) {
         query.company = userCompanyId;
       }
-      
+
       const workflow = await Workflow.findOne(query)
         .populate('createdBy', 'username displayName email')
         .populate('company', 'name description');
-      
+
       if (!workflow) {
         throw new Error('Workflow not found');
       }
-      
+
       return workflow;
     } catch (error) {
       logger.error('Error getting workflow:', error);
       throw error;
     }
   }
-  
+
   /**
    * Update an existing workflow
    */
   async updateWorkflow(workflowId, updateData, user) {
     try {
       const userCompanyId = user.role === 'superadmin' ? null : user.company?.id;
-      
+
       // Get existing workflow
       const workflow = await this.getWorkflow(workflowId, userCompanyId, user.role);
-      
+
       // Validate updates
       if (updateData.nodes || updateData.edges) {
         this.validateWorkflow(updateData);
       }
-      
+
       // Recompile if structure changed
       if (updateData.nodes || updateData.edges) {
         const workflowForCompilation = {
           nodes: updateData.nodes || workflow.nodes,
           edges: updateData.edges || workflow.edges
         };
-        
+
         const compiledChain = await this.compileWorkflow(workflowForCompilation, workflow.company);
         updateData.compiledChain = compiledChain;
       }
-      
+
       // Increment version
       updateData.version = workflow.version + 1;
       updateData.updatedAt = new Date();
-      
+
       // Update workflow
       Object.assign(workflow, updateData);
       await workflow.save();
-      
+
       // Save new version
       await this.saveVersion(workflow, user, updateData.changeDescription);
-      
+
       logger.info(`Workflow updated: ${workflowId} to version ${workflow.version}`);
       return workflow;
     } catch (error) {
@@ -149,7 +153,7 @@ class WorkflowService {
       throw error;
     }
   }
-  
+
   /**
    * Publish a workflow
    */
@@ -157,10 +161,10 @@ class WorkflowService {
     try {
       const userCompanyId = user.role === 'superadmin' ? null : user.company?.id;
       const workflow = await this.getWorkflow(workflowId, userCompanyId, user.role);
-      
+
       // Validate workflow is ready for publishing
       this.validateForPublishing(workflow);
-      
+
       // Archive any currently published workflow for this company
       if (workflow.company) {
         await Workflow.updateMany(
@@ -168,12 +172,12 @@ class WorkflowService {
           { status: 'archived' }
         );
       }
-      
+
       // Publish this workflow
       workflow.status = 'published';
       workflow.publishedAt = new Date();
       await workflow.save();
-      
+
       logger.info(`Workflow published: ${workflowId}`);
       return workflow;
     } catch (error) {
@@ -181,7 +185,7 @@ class WorkflowService {
       throw error;
     }
   }
-  
+
   /**
    * Get workflow versions
    */
@@ -189,7 +193,7 @@ class WorkflowService {
     try {
       // Verify user has access to this workflow
       await this.getWorkflow(workflowId, userCompanyId, userRole);
-      
+
       const versions = await WorkflowVersion.getVersionHistory(workflowId, 20);
       return versions;
     } catch (error) {
@@ -197,40 +201,40 @@ class WorkflowService {
       throw error;
     }
   }
-  
+
   /**
    * Rollback workflow to a specific version
    */
   async rollbackWorkflow(workflowId, targetVersion, user) {
     try {
       const userCompanyId = user.role === 'superadmin' ? null : user.company?.id;
-      
+
       // Get current workflow and target version
       const workflow = await this.getWorkflow(workflowId, userCompanyId, user.role);
       const targetVersionData = await WorkflowVersion.getVersion(workflowId, targetVersion);
-      
+
       if (!targetVersionData) {
         throw new Error(`Version ${targetVersion} not found`);
       }
-      
+
       // Update workflow with target version data
       workflow.nodes = targetVersionData.nodes;
       workflow.edges = targetVersionData.edges;
       workflow.compiledChain = targetVersionData.compiledChain;
       workflow.version = workflow.version + 1; // Increment version for rollback
       workflow.updatedAt = new Date();
-      
+
       await workflow.save();
-      
+
       // Save rollback version
       await this.saveVersion(
-        workflow, 
-        user, 
+        workflow,
+        user,
         `Rollback to version ${targetVersion}`,
         true,
         targetVersion
       );
-      
+
       logger.info(`Workflow ${workflowId} rolled back to version ${targetVersion}`);
       return workflow;
     } catch (error) {
@@ -238,7 +242,7 @@ class WorkflowService {
       throw error;
     }
   }
-  
+
   /**
    * Delete a workflow
    */
@@ -246,16 +250,16 @@ class WorkflowService {
     try {
       const userCompanyId = user.role === 'superadmin' ? null : user.company?.id;
       const workflow = await this.getWorkflow(workflowId, userCompanyId, user.role);
-      
+
       // Check if workflow can be deleted
       if (workflow.status === 'published') {
         throw new Error('Cannot delete a published workflow. Archive it first.');
       }
-      
+
       // Delete workflow and its versions
       await WorkflowVersion.deleteMany({ workflowId: workflow._id });
       await Workflow.findByIdAndDelete(workflow._id);
-      
+
       logger.info(`Workflow deleted: ${workflowId}`);
       return { success: true, message: 'Workflow deleted successfully' };
     } catch (error) {
@@ -263,7 +267,7 @@ class WorkflowService {
       throw error;
     }
   }
-  
+
   /**
    * Get active workflow for a company
    */
@@ -275,7 +279,7 @@ class WorkflowService {
       throw error;
     }
   }
-  
+
   /**
    * Validate workflow structure.
    *
@@ -329,76 +333,76 @@ class WorkflowService {
     const config = data.config || {};
 
     switch (type) {
-      case 'persona':
-        if (!data.prompt || data.prompt.trim().length === 0) {
-          throw new Error(`Persona node ${node.id} must have a prompt`);
-        }
-        break;
+    case 'persona':
+      if (!data.prompt || data.prompt.trim().length === 0) {
+        throw new Error(`Persona node ${node.id} must have a prompt`);
+      }
+      break;
 
-      case 'knowledge':
-      case 'knowledge-source': {
-        if (!data.sourceType) {
-          throw new Error(`Knowledge node ${node.id} must have a source type`);
-        }
-
-        switch (data.sourceType) {
-          case 'google_sheets':
-          case 'google-sheets':
-            if (!config.sheetId && !config.spreadsheetId) {
-              throw new Error(`Knowledge node ${node.id} with Google Sheets source must have a sheet ID`);
-            }
-            break;
-          case 'pdf':
-          case 'url':
-          case 'pdf-url':
-            if (!config.url && !config.filePath) {
-              throw new Error(`Knowledge node ${node.id} must have a URL or file path`);
-            }
-            break;
-          case 'vector_store':
-          case 'vector-store':
-            if (!config.collectionName && !config.collection) {
-              throw new Error(`Knowledge node ${node.id} with vector store source must have a collection name`);
-            }
-            break;
-          default:
-            throw new Error(`Knowledge node ${node.id} has an unsupported source type: ${data.sourceType}`);
-        }
-        break;
+    case 'knowledge':
+    case 'knowledge-source': {
+      if (!data.sourceType) {
+        throw new Error(`Knowledge node ${node.id} must have a source type`);
       }
 
-      case 'router':
-        if (!Array.isArray(data.conditions)) {
-          throw new Error(`Router node ${node.id} must have conditions array`);
+      switch (data.sourceType) {
+      case 'google_sheets':
+      case 'google-sheets':
+        if (!config.sheetId && !config.spreadsheetId) {
+          throw new Error(`Knowledge node ${node.id} with Google Sheets source must have a sheet ID`);
         }
         break;
-
-      case 'fallback':
-        if (!data.message || data.message.trim().length === 0) {
-          throw new Error(`Fallback node ${node.id} must have a message`);
+      case 'pdf':
+      case 'url':
+      case 'pdf-url':
+        if (!config.url && !config.filePath) {
+          throw new Error(`Knowledge node ${node.id} must have a URL or file path`);
         }
         break;
-
-      case 'llm':
-        if (!data.prompt || data.prompt.trim().length === 0) {
-          throw new Error(`LLM node ${node.id} must have a prompt`);
+      case 'vector_store':
+      case 'vector-store':
+        if (!config.collectionName && !config.collection) {
+          throw new Error(`Knowledge node ${node.id} with vector store source must have a collection name`);
         }
         break;
-
-      case 'response':
-        if (!data.template && !data.message) {
-          throw new Error(`Response node ${node.id} must have a message template`);
-        }
-        break;
-
-      case 'start':
-      case 'moderation':
-      case 'operator-handoff':
-        // No extra configuration required.
-        break;
-
       default:
-        throw new Error(`Unknown node type: ${type}`);
+        throw new Error(`Knowledge node ${node.id} has an unsupported source type: ${data.sourceType}`);
+      }
+      break;
+    }
+
+    case 'router':
+      if (!Array.isArray(data.conditions)) {
+        throw new Error(`Router node ${node.id} must have conditions array`);
+      }
+      break;
+
+    case 'fallback':
+      if (!data.message || data.message.trim().length === 0) {
+        throw new Error(`Fallback node ${node.id} must have a message`);
+      }
+      break;
+
+    case 'llm':
+      if (!data.prompt || data.prompt.trim().length === 0) {
+        throw new Error(`LLM node ${node.id} must have a prompt`);
+      }
+      break;
+
+    case 'response':
+      if (!data.template && !data.message) {
+        throw new Error(`Response node ${node.id} must have a message template`);
+      }
+      break;
+
+    case 'start':
+    case 'moderation':
+    case 'operator-handoff':
+      // No extra configuration required.
+      break;
+
+    default:
+      throw new Error(`Unknown node type: ${type}`);
     }
   }
 
@@ -409,29 +413,29 @@ class WorkflowService {
     if (!workflow.nodes || workflow.nodes.length === 0) {
       throw new Error('Cannot publish empty workflow');
     }
-    
+
     // Must have at least one entry point
     const entryNodes = this.findEntryPoints(workflow.nodes, workflow.edges);
     if (entryNodes.length === 0) {
       throw new Error('Workflow must have at least one entry point');
     }
-    
+
     // Must have a compiled chain
     if (!workflow.compiledChain) {
       throw new Error('Workflow must be compiled before publishing');
     }
   }
-  
+
   /**
    * Find entry points in workflow
    */
   findEntryPoints(nodes, edges) {
     const nodeIds = new Set(nodes.map(n => n.id));
     const targetsWithSources = new Set(edges.map(e => e.target));
-    
+
     return nodes.filter(node => !targetsWithSources.has(node.id));
   }
-  
+
   /**
    * Simple cycle detection
    */
@@ -439,42 +443,48 @@ class WorkflowService {
     const graph = {};
     const visited = new Set();
     const recStack = new Set();
-    
+
     // Build adjacency list
     nodes.forEach(node => {
       graph[node.id] = [];
     });
-    
+
     edges.forEach(edge => {
       if (graph[edge.source]) {
         graph[edge.source].push(edge.target);
       }
     });
-    
+
     // DFS to detect cycles
     const hasCycle = (nodeId) => {
-      if (recStack.has(nodeId)) return true;
-      if (visited.has(nodeId)) return false;
-      
+      if (recStack.has(nodeId)) {
+        return true;
+      }
+      if (visited.has(nodeId)) {
+        return false;
+      }
+
       visited.add(nodeId);
       recStack.add(nodeId);
-      
+
       const neighbors = graph[nodeId] || [];
       for (const neighbor of neighbors) {
-        if (hasCycle(neighbor)) return true;
+        if (hasCycle(neighbor)) {
+          return true;
+        }
       }
-      
+
       recStack.delete(nodeId);
       return false;
     };
-    
+
     for (const nodeId of Object.keys(graph)) {
       if (hasCycle(nodeId)) {
         throw new Error('Workflow contains circular dependencies');
       }
     }
   }
-  
+
   /**
    * Save workflow version
    */
@@ -491,7 +501,7 @@ class WorkflowService {
         rollbackFromVersion,
         createdBy: user.id
       });
-      
+
       await version.save();
       return version;
     } catch (error) {
@@ -499,7 +509,7 @@ class WorkflowService {
       throw error;
     }
   }
-  
+
   /**
    * Compile workflow using WorkflowCompilerService
    */
@@ -507,7 +517,7 @@ class WorkflowService {
     try {
       const nodes = workflowData.nodes || [];
       const edges = workflowData.edges || [];
-      
+
       if (nodes.length === 0) {
         return {
           compiled: false,
@@ -518,7 +528,7 @@ class WorkflowService {
 
       // Use the workflow compiler service
       const compilationResult = await this.compiler.compileWorkflow(nodes, edges, tenantId);
-      
+
       return {
         compiled: true,
         timestamp: new Date(),

@@ -21,14 +21,14 @@ class KnowledgeConnectorService {
   async loadGoogleSheets(config, tenantId) {
     try {
       const { sheetId, range = 'A:Z', credentialsPath } = config;
-      
+
       if (!sheetId) {
         throw new Error('Google Sheets ID is required');
       }
 
       // Initialize the sheet
       const doc = new GoogleSpreadsheet(sheetId);
-      
+
       // Load credentials (this should be tenant-specific)
       if (credentialsPath) {
         const creds = require(credentialsPath);
@@ -37,28 +37,28 @@ class KnowledgeConnectorService {
         // Use environment credentials
         await doc.useServiceAccountAuth({
           client_email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
-          private_key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+          private_key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n')
         });
       }
 
       await doc.loadInfo();
       const sheet = doc.sheetsByIndex[0]; // Get first sheet
-      
+
       // Parse range
       const [startCol, endCol] = range.split(':');
       await sheet.loadCells(range);
-      
+
       const rows = [];
       const headerRow = sheet.getRows({ offset: 0, limit: 1 });
       const headers = [];
-      
+
       // Get headers
       const maxCol = sheet.columnCount;
       for (let col = 0; col < maxCol; col++) {
         const cell = sheet.getCell(0, col);
         headers.push(cell.value || `Column${col + 1}`);
       }
-      
+
       // Get data rows
       const allRows = await sheet.getRows();
       const documents = allRows.map((row, index) => {
@@ -66,7 +66,7 @@ class KnowledgeConnectorService {
         headers.forEach((header, colIndex) => {
           rowData[header] = row._rawData[colIndex] || '';
         });
-        
+
         return {
           id: `${tenantId}_sheets_${sheetId}_${index}`,
           content: Object.values(rowData).join(' ').trim(),
@@ -94,7 +94,7 @@ class KnowledgeConnectorService {
   async loadPdfUrl(config, tenantId) {
     try {
       const { url } = config;
-      
+
       if (!url) {
         throw new Error('URL is required');
       }
@@ -114,7 +114,7 @@ class KnowledgeConnectorService {
 
       // Split content into chunks for better vector storage
       const chunks = this.splitIntoChunks(content, 1000);
-      
+
       const documents = chunks.map((chunk, index) => ({
         id: `${tenantId}_url_${Buffer.from(url).toString('base64')}_${index}`,
         content: chunk,
@@ -142,10 +142,10 @@ class KnowledgeConnectorService {
     // - pdf-parse library for Node.js
     // - or call a Python service with PyPDF2/pdfplumber
     // - or use a cloud service like AWS Textract
-    
+
     try {
       const response = await axios.get(url, { responseType: 'arraybuffer' });
-      
+
       // For now, return a placeholder. In production, use proper PDF parsing
       return `PDF content from ${url} - would be extracted using pdf-parse or similar library`;
     } catch (error) {
@@ -166,7 +166,7 @@ class KnowledgeConnectorService {
       });
 
       const html = response.data;
-      
+
       // Basic HTML to text conversion (in production, use a proper HTML parser)
       const textContent = html
         .replace(/<script[^>]*>.*?<\/script>/gis, '')
@@ -190,7 +190,7 @@ class KnowledgeConnectorService {
 
     while (start < text.length) {
       let end = start + maxChunkSize;
-      
+
       if (end >= text.length) {
         chunks.push(text.slice(start));
         break;
@@ -217,7 +217,7 @@ class KnowledgeConnectorService {
     try {
       // This would integrate with Qdrant client
       // For now, return a placeholder
-      
+
       const results = documents.map(doc => ({
         id: doc.id,
         stored: true,
@@ -239,7 +239,7 @@ class KnowledgeConnectorService {
     try {
       // This would integrate with Qdrant client for vector search
       // with tenant filtering
-      
+
       // Placeholder implementation
       return {
         results: [],
@@ -261,18 +261,18 @@ class KnowledgeConnectorService {
       let documents = [];
 
       switch (sourceConfig.sourceType) {
-        case 'google_sheets':
-          documents = await this.loadGoogleSheets(sourceConfig.config, tenantId);
-          break;
-        case 'pdf':
-        case 'url':
-          documents = await this.loadPdfUrl(sourceConfig.config, tenantId);
-          break;
-        case 'vector_store':
-          // Direct vector store access - no processing needed
-          return { success: true, type: 'vector_store', config: sourceConfig.config };
-        default:
-          throw new Error(`Unsupported source type: ${sourceConfig.sourceType}`);
+      case 'google_sheets':
+        documents = await this.loadGoogleSheets(sourceConfig.config, tenantId);
+        break;
+      case 'pdf':
+      case 'url':
+        documents = await this.loadPdfUrl(sourceConfig.config, tenantId);
+        break;
+      case 'vector_store':
+        // Direct vector store access - no processing needed
+        return { success: true, type: 'vector_store', config: sourceConfig.config };
+      default:
+        throw new Error(`Unsupported source type: ${sourceConfig.sourceType}`);
       }
 
       // Store in vector database
@@ -308,16 +308,16 @@ class KnowledgeConnectorService {
         if (sourceType === 'vector_store' || sourceType === 'vector-store') {
           // Search vector store
           const results = await this.searchVectorStore(
-            query, 
-            tenantId, 
+            query,
+            tenantId,
             config.collectionName || `tenant_${tenantId}_knowledge`
           );
           knowledgeResults.push(...results.results);
         } else {
           // For other types, we would have already processed them into vector store
           const results = await this.searchVectorStore(
-            query, 
-            tenantId, 
+            query,
+            tenantId,
             `tenant_${tenantId}_knowledge`
           );
           knowledgeResults.push(...results.results);
@@ -348,52 +348,52 @@ class KnowledgeConnectorService {
     const type = config.type || config.sourceType;
 
     switch (type) {
-      case 'google-sheets':
-      case 'google_sheets': {
-        if (!config.spreadsheetId && !config.sheetId) {
-          throw new Error('Google Sheets service not configured: spreadsheetId is required');
-        }
-        if (!process.env.GOOGLE_CLIENT_EMAIL && !config.credentialsPath) {
-          throw new Error('Google Sheets service not configured: no service account credentials');
-        }
-        const documents = await this.loadGoogleSheets(
-          { ...config, sheetId: config.sheetId || config.spreadsheetId },
-          tenantId
-        );
-        return { source: 'google-sheets', results: this.rankByRelevance(documents, query) };
+    case 'google-sheets':
+    case 'google_sheets': {
+      if (!config.spreadsheetId && !config.sheetId) {
+        throw new Error('Google Sheets service not configured: spreadsheetId is required');
       }
-
-      case 'pdf-url':
-      case 'pdf':
-      case 'url': {
-        if (!config.url) {
-          throw new Error('Failed to fetch content from URL: no url provided');
-        }
-        try {
-          const documents = await this.loadPdfUrl(config, tenantId);
-          return { source: type, results: this.rankByRelevance(documents, query) };
-        } catch (error) {
-          // Surface a consistent message; callers (the editor's "test source"
-          // button) show this string directly to the user.
-          throw new Error(`Failed to fetch content from URL "${config.url}": ${error.message}`);
-        }
+      if (!process.env.GOOGLE_CLIENT_EMAIL && !config.credentialsPath) {
+        throw new Error('Google Sheets service not configured: no service account credentials');
       }
+      const documents = await this.loadGoogleSheets(
+        { ...config, sheetId: config.sheetId || config.spreadsheetId },
+        tenantId
+      );
+      return { source: 'google-sheets', results: this.rankByRelevance(documents, query) };
+    }
 
-      case 'vector-store':
-      case 'vector_store': {
-        if (!process.env.QDRANT_URL && !this.vectorStore) {
-          throw new Error('Vector store not configured: set QDRANT_URL');
-        }
-        const results = await this.searchVectorStore(
-          query,
-          tenantId,
-          config.collection || config.collectionName || `tenant_${tenantId}_knowledge`
-        );
-        return { source: 'vector-store', results: results.results || [] };
+    case 'pdf-url':
+    case 'pdf':
+    case 'url': {
+      if (!config.url) {
+        throw new Error('Failed to fetch content from URL: no url provided');
       }
+      try {
+        const documents = await this.loadPdfUrl(config, tenantId);
+        return { source: type, results: this.rankByRelevance(documents, query) };
+      } catch (error) {
+        // Surface a consistent message; callers (the editor's "test source"
+        // button) show this string directly to the user.
+        throw new Error(`Failed to fetch content from URL "${config.url}": ${error.message}`);
+      }
+    }
 
-      default:
-        throw new Error(`Unsupported knowledge source type: ${type}`);
+    case 'vector-store':
+    case 'vector_store': {
+      if (!process.env.QDRANT_URL && !this.vectorStore) {
+        throw new Error('Vector store not configured: set QDRANT_URL');
+      }
+      const results = await this.searchVectorStore(
+        query,
+        tenantId,
+        config.collection || config.collectionName || `tenant_${tenantId}_knowledge`
+      );
+      return { source: 'vector-store', results: results.results || [] };
+    }
+
+    default:
+      throw new Error(`Unsupported knowledge source type: ${type}`);
     }
   }
 

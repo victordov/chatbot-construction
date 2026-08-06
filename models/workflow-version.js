@@ -6,12 +6,12 @@ const WorkflowVersionSchema = new mongoose.Schema({
     ref: 'Workflow',
     required: true
   },
-  
+
   version: {
     type: Number,
     required: true
   },
-  
+
   // Snapshot of workflow state at this version
   nodes: [{
     id: { type: String, required: true },
@@ -22,7 +22,7 @@ const WorkflowVersionSchema = new mongoose.Schema({
     },
     data: { type: mongoose.Schema.Types.Mixed, required: true }
   }],
-  
+
   edges: [{
     id: { type: String, required: true },
     source: { type: String, required: true },
@@ -30,27 +30,27 @@ const WorkflowVersionSchema = new mongoose.Schema({
     type: { type: String, default: 'default' },
     data: { type: mongoose.Schema.Types.Mixed }
   }],
-  
+
   // Compiled execution plan for this version
   compiledChain: {
     type: mongoose.Schema.Types.Mixed
   },
-  
+
   // Version metadata
   changeDescription: {
     type: String,
     trim: true
   },
-  
+
   isRollback: {
     type: Boolean,
     default: false
   },
-  
+
   rollbackFromVersion: {
     type: Number
   },
-  
+
   // Performance data for this version
   performanceMetrics: {
     compilationTime: { type: Number }, // milliseconds
@@ -59,12 +59,12 @@ const WorkflowVersionSchema = new mongoose.Schema({
     edgeCount: { type: Number },
     complexityScore: { type: Number } // calculated complexity metric
   },
-  
+
   createdAt: {
     type: Date,
     default: Date.now
   },
-  
+
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
@@ -98,27 +98,27 @@ WorkflowVersionSchema.statics.getLatestVersion = function(workflowId) {
 WorkflowVersionSchema.methods.calculateComplexity = function() {
   const nodeCount = this.nodes.length;
   const edgeCount = this.edges.length;
-  
+
   // Simple complexity calculation based on nodes, edges, and node types
   let complexityScore = nodeCount + (edgeCount * 0.5);
-  
+
   // Add complexity based on node types
   this.nodes.forEach(node => {
     switch (node.type) {
-      case 'router':
-        complexityScore += 2; // Routing logic adds complexity
-        break;
-      case 'knowledge':
-        complexityScore += 1.5; // Knowledge retrieval adds some complexity
-        break;
-      case 'moderation':
-        complexityScore += 1; // Moderation is relatively simple
-        break;
-      default:
-        complexityScore += 0.5; // Base node complexity
+    case 'router':
+      complexityScore += 2; // Routing logic adds complexity
+      break;
+    case 'knowledge':
+      complexityScore += 1.5; // Knowledge retrieval adds some complexity
+      break;
+    case 'moderation':
+      complexityScore += 1; // Moderation is relatively simple
+      break;
+    default:
+      complexityScore += 0.5; // Base node complexity
     }
   });
-  
+
   return Math.round(complexityScore * 100) / 100; // Round to 2 decimal places
 };
 

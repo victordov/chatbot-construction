@@ -41,17 +41,17 @@ router.get('/', authMiddleware, checkWorkflowAccess, async (req, res) => {
       req.user.role,
       status
     );
-    
-    res.json({ 
-      success: true, 
+
+    res.json({
+      success: true,
       workflows,
       count: workflows.length
     });
   } catch (error) {
     logger.error('Error fetching workflows:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to fetch workflows' 
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch workflows'
     });
   }
 });
@@ -60,7 +60,7 @@ router.get('/', authMiddleware, checkWorkflowAccess, async (req, res) => {
 router.get('/knowledge-sources', authMiddleware, checkWorkflowAccess, async (req, res) => {
   try {
     const { type } = req.query;
-    
+
     let knowledgeSources = [];
 
     if (req.user.company?.id) {
@@ -79,9 +79,9 @@ router.get('/knowledge-sources', authMiddleware, checkWorkflowAccess, async (req
     });
   } catch (error) {
     logger.error('Error fetching knowledge sources:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to fetch knowledge sources' 
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch knowledge sources'
     });
   }
 });
@@ -94,17 +94,17 @@ router.get('/:id', authMiddleware, checkWorkflowAccess, async (req, res) => {
       req.user.company?.id,
       req.user.role
     );
-    
-    res.json({ 
-      success: true, 
-      workflow 
+
+    res.json({
+      success: true,
+      workflow
     });
   } catch (error) {
     logger.error('Error fetching workflow:', error);
     const statusCode = error.message === 'Workflow not found' ? 404 : 500;
-    res.status(statusCode).json({ 
-      success: false, 
-      error: error.message || 'Failed to fetch workflow' 
+    res.status(statusCode).json({
+      success: false,
+      error: error.message || 'Failed to fetch workflow'
     });
   }
 });
@@ -113,33 +113,33 @@ router.get('/:id', authMiddleware, checkWorkflowAccess, async (req, res) => {
 router.post('/', authMiddleware, checkWorkflowAccess, async (req, res) => {
   try {
     const { name, description, nodes = [], edges = [] } = req.body;
-    
+
     if (!name || name.trim().length === 0) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Workflow name is required' 
+      return res.status(400).json({
+        success: false,
+        error: 'Workflow name is required'
       });
     }
-    
+
     const workflowData = {
       name: name.trim(),
       description: description?.trim(),
       nodes,
       edges
     };
-    
+
     const workflow = await WorkflowService.createWorkflow(workflowData, req.user);
-    
-    res.status(201).json({ 
-      success: true, 
+
+    res.status(201).json({
+      success: true,
       workflow,
       message: 'Workflow created successfully'
     });
   } catch (error) {
     logger.error('Error creating workflow:', error);
-    res.status(400).json({ 
-      success: false, 
-      error: error.message || 'Failed to create workflow' 
+    res.status(400).json({
+      success: false,
+      error: error.message || 'Failed to create workflow'
     });
   }
 });
@@ -148,28 +148,32 @@ router.post('/', authMiddleware, checkWorkflowAccess, async (req, res) => {
 router.put('/:id', authMiddleware, checkWorkflowAccess, async (req, res) => {
   try {
     const updateData = { ...req.body };
-    
+
     // Trim string fields
-    if (updateData.name) updateData.name = updateData.name.trim();
-    if (updateData.description) updateData.description = updateData.description.trim();
-    
+    if (updateData.name) {
+      updateData.name = updateData.name.trim();
+    }
+    if (updateData.description) {
+      updateData.description = updateData.description.trim();
+    }
+
     const workflow = await WorkflowService.updateWorkflow(
       req.params.id,
       updateData,
       req.user
     );
-    
-    res.json({ 
-      success: true, 
+
+    res.json({
+      success: true,
       workflow,
       message: 'Workflow updated successfully'
     });
   } catch (error) {
     logger.error('Error updating workflow:', error);
     const statusCode = error.message === 'Workflow not found' ? 404 : 400;
-    res.status(statusCode).json({ 
-      success: false, 
-      error: error.message || 'Failed to update workflow' 
+    res.status(statusCode).json({
+      success: false,
+      error: error.message || 'Failed to update workflow'
     });
   }
 });
@@ -178,7 +182,7 @@ router.put('/:id', authMiddleware, checkWorkflowAccess, async (req, res) => {
 router.post('/:id/publish', authMiddleware, checkWorkflowAccess, async (req, res) => {
   try {
     const workflow = await WorkflowService.publishWorkflow(req.params.id, req.user);
-    
+
     // Hot-swap into the runtime that is actually serving traffic. This used to
     // construct a fresh WorkflowRuntimeService, so the swap landed in a
     // throwaway object and live conversations kept the old workflow.
@@ -213,9 +217,9 @@ router.post('/:id/publish', authMiddleware, checkWorkflowAccess, async (req, res
   } catch (error) {
     logger.error('Error publishing workflow:', error);
     const statusCode = error.message === 'Workflow not found' ? 404 : 400;
-    res.status(statusCode).json({ 
-      success: false, 
-      error: error.message || 'Failed to publish workflow' 
+    res.status(statusCode).json({
+      success: false,
+      error: error.message || 'Failed to publish workflow'
     });
   }
 });
@@ -228,27 +232,27 @@ router.post('/:id/archive', authMiddleware, checkWorkflowAccess, async (req, res
       req.user.company?.id,
       req.user.role
     );
-    
+
     if (workflow.status === 'archived') {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Workflow is already archived' 
+      return res.status(400).json({
+        success: false,
+        error: 'Workflow is already archived'
       });
     }
-    
+
     await workflow.archive();
-    
-    res.json({ 
-      success: true, 
+
+    res.json({
+      success: true,
       workflow,
       message: 'Workflow archived successfully'
     });
   } catch (error) {
     logger.error('Error archiving workflow:', error);
     const statusCode = error.message === 'Workflow not found' ? 404 : 500;
-    res.status(statusCode).json({ 
-      success: false, 
-      error: error.message || 'Failed to archive workflow' 
+    res.status(statusCode).json({
+      success: false,
+      error: error.message || 'Failed to archive workflow'
     });
   }
 });
@@ -261,18 +265,18 @@ router.get('/:id/versions', authMiddleware, checkWorkflowAccess, async (req, res
       req.user.company?.id,
       req.user.role
     );
-    
-    res.json({ 
-      success: true, 
+
+    res.json({
+      success: true,
       versions,
       count: versions.length
     });
   } catch (error) {
     logger.error('Error fetching workflow versions:', error);
     const statusCode = error.message === 'Workflow not found' ? 404 : 500;
-    res.status(statusCode).json({ 
-      success: false, 
-      error: error.message || 'Failed to fetch workflow versions' 
+    res.status(statusCode).json({
+      success: false,
+      error: error.message || 'Failed to fetch workflow versions'
     });
   }
 });
@@ -281,31 +285,31 @@ router.get('/:id/versions', authMiddleware, checkWorkflowAccess, async (req, res
 router.post('/:id/rollback/:version', authMiddleware, checkWorkflowAccess, async (req, res) => {
   try {
     const version = parseInt(req.params.version);
-    
+
     if (isNaN(version) || version < 1) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Invalid version number' 
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid version number'
       });
     }
-    
+
     const workflow = await WorkflowService.rollbackWorkflow(
       req.params.id,
       version,
       req.user
     );
-    
-    res.json({ 
-      success: true, 
+
+    res.json({
+      success: true,
       workflow,
       message: `Workflow rolled back to version ${version}`
     });
   } catch (error) {
     logger.error('Error rolling back workflow:', error);
     const statusCode = error.message.includes('not found') ? 404 : 400;
-    res.status(statusCode).json({ 
-      success: false, 
-      error: error.message || 'Failed to rollback workflow' 
+    res.status(statusCode).json({
+      success: false,
+      error: error.message || 'Failed to rollback workflow'
     });
   }
 });
@@ -314,17 +318,17 @@ router.post('/:id/rollback/:version', authMiddleware, checkWorkflowAccess, async
 router.delete('/:id', authMiddleware, checkWorkflowAccess, async (req, res) => {
   try {
     const result = await WorkflowService.deleteWorkflow(req.params.id, req.user);
-    
-    res.json({ 
-      success: true, 
+
+    res.json({
+      success: true,
       message: result.message
     });
   } catch (error) {
     logger.error('Error deleting workflow:', error);
     const statusCode = error.message === 'Workflow not found' ? 404 : 400;
-    res.status(statusCode).json({ 
-      success: false, 
-      error: error.message || 'Failed to delete workflow' 
+    res.status(statusCode).json({
+      success: false,
+      error: error.message || 'Failed to delete workflow'
     });
   }
 });
@@ -333,31 +337,31 @@ router.delete('/:id', authMiddleware, checkWorkflowAccess, async (req, res) => {
 router.get('/active/current', authMiddleware, async (req, res) => {
   try {
     if (!req.user.company?.id) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'No company associated with user' 
+      return res.status(400).json({
+        success: false,
+        error: 'No company associated with user'
       });
     }
-    
+
     const workflow = await WorkflowService.getActiveWorkflow(req.user.company.id);
-    
+
     if (!workflow) {
-      return res.json({ 
-        success: true, 
+      return res.json({
+        success: true,
         workflow: null,
         message: 'No active workflow found'
       });
     }
-    
-    res.json({ 
-      success: true, 
-      workflow 
+
+    res.json({
+      success: true,
+      workflow
     });
   } catch (error) {
     logger.error('Error fetching active workflow:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to fetch active workflow' 
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch active workflow'
     });
   }
 });
@@ -407,9 +411,9 @@ router.get('/:id/stats', authMiddleware, checkWorkflowAccess, async (req, res) =
       req.user.company?.id,
       req.user.role
     );
-    
-    res.json({ 
-      success: true, 
+
+    res.json({
+      success: true,
       stats: workflow.executionStats || {
         totalExecutions: 0,
         averageExecutionTime: 0,
@@ -419,9 +423,9 @@ router.get('/:id/stats', authMiddleware, checkWorkflowAccess, async (req, res) =
   } catch (error) {
     logger.error('Error fetching workflow stats:', error);
     const statusCode = error.message === 'Workflow not found' ? 404 : 500;
-    res.status(statusCode).json({ 
-      success: false, 
-      error: error.message || 'Failed to fetch workflow stats' 
+    res.status(statusCode).json({
+      success: false,
+      error: error.message || 'Failed to fetch workflow stats'
     });
   }
 });

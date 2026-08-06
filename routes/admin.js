@@ -46,36 +46,48 @@ router.get('/active-chats', async (req, res) => {
   try {
     const query = { status: 'active', ...companyFilter(req.user) };
 
-    const activeChatsSummary = await Conversation.find(
-      query,
+    // A find() projection of `{'messages.length': {$size: '$messages'}}` does
+    // not produce a count - it rewrites `messages` into one `{length: N}` entry
+    // per message. The message count only ever worked by accident, via the
+    // resulting array's own length. An aggregation gives a real scalar and
+    // avoids shipping the message bodies over the wire at all.
+    const activeChats = await Conversation.aggregate([
+      { $match: query },
+      { $sort: { lastActivity: -1 } },
+      { $limit: 200 },
       {
-        sessionId: 1,
-        startedAt: 1,
-        domain: 1,
-        hasOperator: 1,
-        operatorName: 1,
-        metadata: 1,
-        company: 1,
-        lastActivity: 1,
-        'messages.length': { $size: '$messages' }
+        $project: {
+          sessionId: 1,
+          startedAt: 1,
+          lastActivity: 1,
+          domain: 1,
+          hasOperator: 1,
+          operatorName: 1,
+          metadata: 1,
+          company: 1,
+          messageCount: { $size: { $ifNull: ['$messages', []] } },
+          lastMessage: { $last: '$messages.content' }
+        }
       }
-    ).populate('company', 'name').sort({ lastActivity: -1 }).limit(200);
+    ]);
 
-    const chats = activeChatsSummary.map(chat => ({
+    await Company.populate(activeChats, { path: 'company', select: 'name' });
+
+    const chats = activeChats.map(chat => ({
       sessionId: chat.sessionId,
       startedAt: chat.startedAt,
       lastActivity: chat.lastActivity,
       domain: chat.domain,
       hasOperator: chat.hasOperator,
       operatorName: chat.operatorName,
-      userName:
-        chat.metadata &&
-        (chat.metadata.name || (chat.metadata.get && chat.metadata.get('name'))),
+      userName: chat.metadata && chat.metadata.name,
+      // A preview lets an operator triage the queue without opening each chat.
+      lastMessage: chat.lastMessage,
       company: chat.company ? {
         id: chat.company._id,
         name: chat.company.name
       } : null,
-      'messages.length': chat['messages.length']
+      messageCount: chat.messageCount
     }));
 
     res.json({ chats });
@@ -110,37 +122,37 @@ router.get('/chat-history', async (req, res) => {
     const effectiveQuery = query.$and.length > 0 ? query : {};
 
     const [chatHistory, total] = await Promise.all([
-      Conversation.find(
-        effectiveQuery,
+      Conversation.aggregate([
+        { $match: effectiveQuery },
+        { $sort: { startedAt: -1 } },
+        { $skip: skip },
+        { $limit: limit },
         {
-          sessionId: 1,
-          startedAt: 1,
-          endedAt: 1,
-          status: 1,
-          domain: 1,
-          company: 1,
-          metadata: 1,
-          'messages.length': { $size: '$messages' }
+          $project: {
+            sessionId: 1,
+            startedAt: 1,
+            endedAt: 1,
+            status: 1,
+            domain: 1,
+            company: 1,
+            metadata: 1,
+            messageCount: { $size: { $ifNull: ['$messages', []] } }
+          }
         }
-      )
-        .populate('company', 'name')
-        .sort({ startedAt: -1 })
-        .skip(skip)
-        .limit(limit),
+      ]),
       Conversation.countDocuments(effectiveQuery)
     ]);
 
-    const history = chatHistory.map(chat => {
-      const obj = chat.toObject({ flattenMaps: true });
-      return {
-        ...obj,
-        userName: obj.metadata && obj.metadata.name,
-        company: chat.company ? {
-          id: chat.company._id,
-          name: chat.company.name
-        } : null
-      };
-    });
+    await Company.populate(chatHistory, { path: 'company', select: 'name' });
+
+    const history = chatHistory.map(chat => ({
+      ...chat,
+      userName: chat.metadata && chat.metadata.name,
+      company: chat.company ? {
+        id: chat.company._id,
+        name: chat.company.name
+      } : null
+    }));
 
     res.json({
       history,
@@ -516,7 +528,7 @@ router.get('/export', async (req, res) => {
         domain: 1,
         operatorName: 1,
         metadata: 1,
-        'messages.length': { $size: '$messages' }
+        messages: 1
       }
     ).sort({ startedAt: -1 }).limit(5000).lean();
 

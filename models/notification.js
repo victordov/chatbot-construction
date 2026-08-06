@@ -30,12 +30,15 @@ const NotificationSchema = new mongoose.Schema({
   }
 });
 
-// Index for faster querying
-NotificationSchema.index({ userId: 1 });
-NotificationSchema.index({ taskId: 1 });
-NotificationSchema.index({ read: 1 });
-NotificationSchema.index({ type: 1 });
-NotificationSchema.index({ createdAt: 1 });
+// The bell only ever asks for "this user's notifications, newest first", and
+// the dedupe check asks for "a notification of this type for this task".
+NotificationSchema.index({ userId: 1, createdAt: -1 });
+NotificationSchema.index({ userId: 1, read: 1 });
+NotificationSchema.index({ taskId: 1, type: 1 });
+
+// Expire read notifications after 30 days so the collection does not grow
+// without bound; nobody reads a month-old deadline reminder.
+NotificationSchema.index({ createdAt: 1 }, { expireAfterSeconds: 30 * 24 * 60 * 60 });
 
 const Notification = mongoose.model('Notification', NotificationSchema);
 

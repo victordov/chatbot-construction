@@ -23,24 +23,24 @@ const mockSocketManager = {
 const createTestApp = () => {
   const app = express();
   app.use(express.json());
-  
+
   // Import and setup routes
   const authRoutes = require('../routes/auth');
   const workflowRoutes = require('../routes/workflow');
   const workflowExecutionRoutes = require('../routes/workflow-execution');
-  
+
   // Initialize services for workflow execution routes
   const workflowExecutionRouter = require('../routes/workflow-execution');
   // Find and call initializeServices if it exists
   if (workflowExecutionRouter.initializeServices) {
     workflowExecutionRouter.initializeServices(mockSocketManager);
   }
-  
+
   // Setup routes
   app.use('/api/auth', authRoutes);
   app.use('/api/workflows', workflowRoutes);
   app.use('/api/workflow-execution', workflowExecutionRoutes);
-  
+
   return app;
 };
 
@@ -56,7 +56,7 @@ describe('Visual Workflow Editor Integration', () => {
     if (mongoose.connection.readyState === 0) {
       await mongoose.connect(process.env.MONGODB_TEST_URI || 'mongodb://localhost:27017/chatbot_test');
     }
-    
+
     // Create test app
     app = createTestApp();
 
@@ -239,7 +239,7 @@ describe('Visual Workflow Editor Integration', () => {
   describe('Workflow Compilation', () => {
     test('should compile workflow to executable format', async () => {
       const compiler = new WorkflowCompilerService();
-      
+
       const compilationResult = await compiler.compileWorkflow(
         testWorkflow.nodes,
         testWorkflow.edges,
@@ -256,7 +256,7 @@ describe('Visual Workflow Editor Integration', () => {
 
     test('should validate workflow compilation', async () => {
       const compiler = new WorkflowCompilerService();
-      
+
       const validation = compiler.validateWorkflow(
         testWorkflow.nodes,
         testWorkflow.edges
@@ -321,8 +321,8 @@ describe('Visual Workflow Editor Integration', () => {
       const updatedWorkflow = {
         ...testWorkflow,
         version: testWorkflow.version + 1,
-        nodes: testWorkflow.nodes.map(node => 
-          node.data.type === 'persona' 
+        nodes: testWorkflow.nodes.map(node =>
+          node.data.type === 'persona'
             ? { ...node, data: { ...node.data, prompt: 'Updated persona prompt' } }
             : node
         )
@@ -479,7 +479,7 @@ describe('Visual Workflow Editor Integration', () => {
       }
 
       const responses = await Promise.all(promises);
-      
+
       responses.forEach((response, index) => {
         expect(response.status).toBe(200);
         expect(response.body.success).toBe(true);

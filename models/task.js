@@ -92,17 +92,24 @@ const TaskSchema = new mongoose.Schema({
   }
 });
 
-// Index for faster querying
-TaskSchema.index({ assignee: 1 });
-TaskSchema.index({ status: 1 });
-TaskSchema.index({ dueDate: 1 });
-TaskSchema.index({ priority: 1 });
-TaskSchema.index({ conversationId: 1 });
+// Indexes.
+//
+// Every dashboard query is scoped to a company first, so leading each index
+// with `company` lets one index serve the filter, the sort and the covering
+// scan. The previous ten single-field indexes could not do that: a query for
+// "this company's open tasks sorted by due date" used one of them and then
+// sorted in memory, while the other nine cost write throughput for nothing.
+TaskSchema.index({ company: 1, createdAt: -1 });
+TaskSchema.index({ company: 1, status: 1, dueDate: 1 });
+TaskSchema.index({ company: 1, assignee: 1, status: 1 });
+TaskSchema.index({ company: 1, priority: 1, dueDate: 1 });
+
+// Follow-up lookups and the conversation drill-through.
 TaskSchema.index({ parentTaskId: 1 });
-TaskSchema.index({ company: 1 });
-TaskSchema.index({ 'contactInfo.email': 1 });
-TaskSchema.index({ 'contactInfo.phone': 1 });
-TaskSchema.index({ 'contactInfo.name': 1 });
+TaskSchema.index({ conversationId: 1 });
+
+// The deadline sweep scans across companies by due date and status.
+TaskSchema.index({ dueDate: 1, status: 1 });
 
 const Task = mongoose.model('Task', TaskSchema);
 

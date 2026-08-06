@@ -5,10 +5,11 @@
 
 // eslint-disable-next-line no-unused-vars
 class EncryptionUtil {
-  constructor() {
+  constructor(baseUrl = null) {
     this.isReady = false;
     this.keyPair = null;
     this.serverPublicKey = null;
+    this.baseUrl = baseUrl;
   }
 
   /**
@@ -31,39 +32,76 @@ class EncryptionUtil {
   }
 
   /**
-   * Load required scripts dynamically
+   * Load TweetNaCl and TweetNaCl-util.
+   *
+   * These are served from this application's own origin rather than a public
+   * CDN. Two reasons:
+   *
+   *  - The libraries are security-critical. Fetching them from a third party
+   *    means that party can silently swap the crypto out from under every
+   *    conversation.
+   *  - A customer embedding the widget only has to allowlist this server in
+   *    their Content-Security-Policy, not two unrelated CDNs. The previous
+   *    cdnjs.cloudflare.com URL was blocked outright by this very app's own
+   *    CSP, so encryption never initialised at all.
+   *
    * @returns {Promise<void>}
    */
   loadScripts() {
-    return new Promise((resolve, reject) => {
-      // Load TweetNaCl
-      const naclScript = document.createElement('script');
-      naclScript.src = 'https://cdnjs.cloudflare.com/ajax/libs/tweetnacl/1.0.3/nacl-fast.min.js';
-      naclScript.onload = () => {
-        // Load TweetNaCl-util after TweetNaCl is loaded
-        const naclUtilScript = document.createElement('script');
-        naclUtilScript.src = 'https://cdn.jsdelivr.net/npm/tweetnacl-util@0.15.1/nacl-util.min.js';
-        naclUtilScript.onload = () => {
-          // Ensure nacl.util is fully defined before resolving
-          if (typeof nacl !== 'undefined' && nacl.util && typeof nacl.util.encodeBase64 === 'function' && typeof nacl.util.decodeBase64 === 'function') {
-            resolve();
-          } else {
-            // If nacl.util is not fully defined, wait a bit and check again
-            setTimeout(() => {
-              if (typeof nacl !== 'undefined' && nacl.util && typeof nacl.util.encodeBase64 === 'function' && typeof nacl.util.decodeBase64 === 'function') {
-                resolve();
-              } else {
-                reject(new Error('nacl.util is not fully defined after loading scripts'));
-              }
-            }, 100);
-          }
-        };
-        naclUtilScript.onerror = reject;
-        document.body.appendChild(naclUtilScript);
-      };
-      naclScript.onerror = reject;
-      document.body.appendChild(naclScript);
+    const baseUrl = this.baseUrl || EncryptionUtil.resolveBaseUrl();
+
+    const loadScript = src => new Promise((resolve, reject) => {
+      // Do not load the same library twice if two widgets share a page.
+      if (document.querySelector(`script[src="${src}"]`)) {
+        return resolve();
+      }
+      const element = document.createElement('script');
+      element.src = src;
+      element.onload = resolve;
+      element.onerror = () => reject(new Error(`Failed to load ${src}`));
+      document.head.appendChild(element);
     });
+
+    const naclReady = () =>
+      typeof nacl !== 'undefined' &&
+      nacl.util &&
+      typeof nacl.util.encodeBase64 === 'function' &&
+      typeof nacl.util.decodeBase64 === 'function';
+
+    return loadScript(`${baseUrl}/widget/js/lib/nacl-fast.min.js`)
+      .then(() => loadScript(`${baseUrl}/widget/js/lib/nacl-util.min.js`))
+      .then(() => {
+        if (naclReady()) {
+          return;
+        }
+        // The globals are assigned during script evaluation, which can lag the
+        // load event by a tick in some browsers.
+        return new Promise((resolve, reject) => {
+          setTimeout(() => {
+            if (naclReady()) {
+              resolve();
+            } else {
+              reject(new Error('TweetNaCl did not initialise'));
+            }
+          }, 100);
+        });
+      });
+  }
+
+  /**
+   * Work out where this script was served from, so the libraries load from the
+   * same origin even when the widget is embedded on another domain.
+   */
+  static resolveBaseUrl() {
+    const script = document.querySelector('script[src*="/widget/js/encryption.js"]');
+    if (script && script.src) {
+      try {
+        return new URL(script.src).origin;
+      } catch (error) {
+        // fall through
+      }
+    }
+    return window.location.origin;
   }
 
   /**

@@ -6,7 +6,7 @@ class GoogleAuthService {
     this.clientId = process.env.GOOGLE_CLIENT_ID;
     this.clientSecret = process.env.GOOGLE_CLIENT_SECRET;
     this.redirectUri = process.env.GOOGLE_REDIRECT_URI;
-    
+
     // Validate that required environment variables are set
     if (!this.clientId || !this.clientSecret || !this.redirectUri) {
       console.warn('Google OAuth environment variables not configured. Google features will be disabled.');
@@ -20,7 +20,7 @@ class GoogleAuthService {
     if (!this.isConfigured) {
       throw new Error('Google OAuth is not configured. Please set GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, and GOOGLE_REDIRECT_URI environment variables.');
     }
-    
+
     return new google.auth.OAuth2(
       this.clientId,
       this.clientSecret,
@@ -32,7 +32,7 @@ class GoogleAuthService {
     if (!this.isConfigured) {
       throw new Error('Google OAuth is not configured');
     }
-    
+
     const client = this.createOAuthClient();
     const scopes = [
       'https://www.googleapis.com/auth/spreadsheets.readonly',
@@ -51,7 +51,7 @@ class GoogleAuthService {
     if (!this.isConfigured) {
       throw new Error('Google OAuth is not configured');
     }
-    
+
     const client = this.createOAuthClient();
     const { tokens } = await client.getToken(code);
     await this.saveTokens(userId, tokens);

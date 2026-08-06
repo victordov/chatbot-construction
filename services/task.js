@@ -7,6 +7,7 @@ const Conversation = require('../models/conversation');
 const User = require('../models/user');
 const ActivityService = require('./activity');
 const { logger } = require('./logging');
+const { escapeRegex } = require('../utils/query');
 
 class TaskService {
   constructor() {
@@ -61,22 +62,29 @@ class TaskService {
         }
       }
 
-      // Get tasks with applied filters
+      // Get tasks with applied filters. `lean()` skips hydrating full mongoose
+      // documents for a read-only list.
       const tasks = await Task.find(query)
-        .populate('assignee', 'username email')
-        .populate('createdBy', 'username email')
+        .populate('assignee', 'username email displayName')
+        .populate('createdBy', 'username email displayName')
         .populate('company', 'name')
-        .sort({ createdAt: -1 });
+        .sort({ createdAt: -1 })
+        .limit(filters.limit || 500)
+        .lean();
 
-      // Check if each task has follow-ups
-      const tasksWithFollowUpInfo = await Promise.all(tasks.map(async (task) => {
-        const taskObj = task.toObject();
-        const followUpCount = await Task.countDocuments({ parentTaskId: task._id });
-        taskObj.hasFollowUps = followUpCount > 0;
-        return taskObj;
+      // Annotate follow-ups with ONE query instead of one per task. The
+      // previous Promise.all issued a countDocuments per row, so a company with
+      // 500 tasks made 501 round trips to list its task board.
+      const ids = tasks.map(task => task._id);
+      const parentsWithFollowUps = ids.length
+        ? await Task.distinct('parentTaskId', { parentTaskId: { $in: ids } })
+        : [];
+      const hasFollowUps = new Set(parentsWithFollowUps.map(id => id.toString()));
+
+      return tasks.map(task => ({
+        ...task,
+        hasFollowUps: hasFollowUps.has(task._id.toString())
       }));
-
-      return tasksWithFollowUpInfo;
     } catch (error) {
       logger.error('Error getting tasks', { error });
       throw new Error('Failed to get tasks');
@@ -93,16 +101,19 @@ class TaskService {
   async getTaskById(taskId, userCompanyId = null, userRole = null) {
     try {
       const query = { _id: taskId };
-      
+
       // Apply company filter for multi-tenancy (skip for super admin)
       if (userRole !== 'superadmin' && userCompanyId) {
         query.company = userCompanyId;
       }
 
       const task = await Task.findOne(query)
-        .populate('assignee', 'username email')
-        .populate('createdBy', 'username email')
-        .populate('conversationId', 'messages sessionId')
+        .populate('assignee', 'username email displayName')
+        .populate('createdBy', 'username email displayName')
+        // Only the sessionId is needed to link back to the conversation.
+        // Populating `messages` pulled every message of the whole thread into
+        // memory just to render a task's header.
+        .populate('conversationId', 'sessionId startedAt status')
         .populate('parentTaskId', 'title')
         .populate('company', 'name');
 
@@ -181,7 +192,7 @@ class TaskService {
     try {
       // First get the original task to track changes
       const originalTask = await this.getTaskById(taskId, userCompanyId, userRole);
-      
+
       // Add updatedAt timestamp
       updateData.updatedAt = new Date();
 
@@ -211,17 +222,17 @@ class TaskService {
 
       // Log specific activities for important changes
       if (updatedByUser) {
-        logger.info('Task update - user object for activity logging', { 
-          userId: updatedByUser.id, 
+        logger.info('Task update - user object for activity logging', {
+          userId: updatedByUser.id,
           username: updatedByUser.username,
           company: updatedByUser.company,
           userKeys: Object.keys(updatedByUser)
         });
-        
+
         // Log status change
         if (updateData.status && updateData.status !== originalTask.status) {
           await this.activityService.logStatusChanged(task, originalTask.status, updateData.status, updatedByUser);
-          
+
           // Log task completion if status changed to completed
           if (updateData.status === 'completed') {
             await this.activityService.logTaskCompleted(task, updatedByUser);
@@ -267,7 +278,7 @@ class TaskService {
   async deleteTask(taskId, userCompanyId = null, user = null) {
     try {
       const query = { _id: taskId };
-      
+
       // Apply company filter for multi-tenancy
       if (userCompanyId) {
         query.company = userCompanyId;
@@ -417,8 +428,9 @@ class TaskService {
         return [];
       }
 
-      // Create a regex for case-insensitive search
-      const searchRegex = new RegExp(searchTerm, 'i');
+      // Escape the term before building a regex: unescaped user input allows
+      // regex injection and a ReDoS pattern like `(a+)+$` against the database.
+      const searchRegex = new RegExp(escapeRegex(searchTerm), 'i');
 
       // Build query with company filter
       const query = {
@@ -438,6 +450,7 @@ class TaskService {
 
       // Search in title, description, and contact info
       const tasks = await Task.find(query)
+        .limit(200)
         .populate('assignee', 'username email')
         .populate('createdBy', 'username email')
         .populate('company', 'name')

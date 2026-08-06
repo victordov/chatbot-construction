@@ -36,26 +36,26 @@ class ActivityService {
    */
   async createActivity(activityData) {
     try {
-      logger.info('Creating activity with data', { 
+      logger.info('Creating activity with data', {
         activityData: {
           ...activityData,
           metadata: activityData.metadata ? 'Map object' : undefined
         }
       });
-      
+
       const activity = new Activity(activityData);
       await activity.save();
-      
+
       // Populate user and return
       await activity.populate('user', 'username displayName');
-      
-      logger.info('Activity created successfully', { 
-        activityId: activity._id, 
+
+      logger.info('Activity created successfully', {
+        activityId: activity._id,
         type: activity.type,
         taskId: activity.taskId,
         userId: activity.user?._id
       });
-      
+
       return activity;
     } catch (error) {
       logger.error('Error creating activity', { error, activityData });
@@ -83,8 +83,8 @@ class ActivityService {
         const activities = await Activity.find({
           taskId: taskId
         })
-        .populate('user', 'username displayName')
-        .sort({ createdAt: -1 });
+          .populate('user', 'username displayName')
+          .sort({ createdAt: -1 });
 
         logger.info(`Found ${activities.length} activities for task ${taskId} (super admin access)`);
         return activities;
@@ -100,8 +100,8 @@ class ActivityService {
         taskId: taskId,
         company: userCompanyId
       })
-      .populate('user', 'username displayName')
-      .sort({ createdAt: -1 });
+        .populate('user', 'username displayName')
+        .sort({ createdAt: -1 });
 
       logger.info(`Found ${activities.length} activities for task ${taskId}`);
       return activities;
@@ -296,7 +296,7 @@ class ActivityService {
   async logTaskUpdated(task, updatedFields, updatedByUser) {
     try {
       const changedFields = Object.keys(updatedFields).join(', ');
-      
+
       await this.createActivity({
         taskId: task._id,
         type: 'task_updated',
@@ -323,8 +323,8 @@ class ActivityService {
         taskId: { $in: taskIds },
         company: userCompanyId
       })
-      .populate('user', 'username displayName')
-      .sort({ createdAt: -1 });
+        .populate('user', 'username displayName')
+        .sort({ createdAt: -1 });
 
       return activities;
     } catch (error) {

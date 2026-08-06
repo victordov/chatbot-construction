@@ -103,6 +103,34 @@ function setupWebSockets(server) {
     let clientCompanyId = null;
 
     /**
+     * Where this socket connected from, captured once at connection time.
+     *
+     * Operators use this to see which site a conversation came from, and it
+     * drives the traffic-source chart. Different transports populate different
+     * headers, so try each in turn rather than relying on `origin` alone.
+     */
+    const connectionOrigin = (() => {
+      const headers = socket.handshake.headers || {};
+      const candidate = headers.origin || headers.referer;
+
+      if (candidate) {
+        try {
+          return new URL(candidate).origin;
+        } catch {
+          return candidate;
+        }
+      }
+
+      // Last resort: the Host header tells us the server the client reached,
+      // which for a first-party install is also the site they are on.
+      if (headers.host) {
+        return `${socket.handshake.secure ? 'https' : 'http'}://${headers.host}`;
+      }
+
+      return null;
+    })();
+
+    /**
      * Emit to the operators of one tenant (plus superadmins), excluding this
      * socket. Replaces the previous global 'operators' room, which delivered
      * every tenant's messages to every tenant's operators.
@@ -170,6 +198,10 @@ function setupWebSockets(server) {
      * resolved company so multi-tenant filtering works downstream.
      */
     const getOrCreateConversation = async (sessionId, hints = {}) => {
+      // Where the visitor is chatting from. Operators use this to know which
+      // site a conversation came from, and it drives the traffic-source chart.
+      const origin = hints.pageUrl || connectionOrigin;
+
       let conversation = await Conversation.findOne({ sessionId });
 
       if (!conversation) {
@@ -177,13 +209,20 @@ function setupWebSockets(server) {
         conversation = new Conversation({
           sessionId,
           company: companyId || undefined,
-          domain: socket.handshake.headers.origin || socket.handshake.headers.referer,
+          domain: origin,
           messages: []
         });
-      } else if (!conversation.company) {
-        const companyId = await resolveClientCompany(sessionId, hints);
-        if (companyId) {
-          conversation.company = companyId;
+      } else {
+        // Backfill on conversations created before the tenant or origin was
+        // known - for example by a `join` that arrived before `user-details`.
+        if (!conversation.company) {
+          const companyId = await resolveClientCompany(sessionId, hints);
+          if (companyId) {
+            conversation.company = companyId;
+          }
+        }
+        if (!conversation.domain && origin) {
+          conversation.domain = origin;
         }
       }
 

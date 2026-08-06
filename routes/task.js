@@ -440,9 +440,9 @@ router.get('/:id/activities', auth, operator, async (req, res) => {
   try {
     const ActivityService = require('../services/activity');
     const activityService = new ActivityService();
-    
+
     const activities = await activityService.getTaskActivities(req.params.id, req.user.company?.id, req.user.role);
-    
+
     res.json({ activities });
   } catch (error) {
     if (error.message === 'Task not found' || error.message === 'Access denied: Task not accessible') {

@@ -21,7 +21,7 @@ class OperatorAssistService extends EventEmitter {
   async joinConversation(operatorId, conversationId, tenantId) {
     try {
       const sessionId = this.generateSessionId();
-      
+
       const operatorInfo = {
         operatorId,
         conversationId,
@@ -34,7 +34,7 @@ class OperatorAssistService extends EventEmitter {
 
       // Store operator session
       this.operatorSessions.set(sessionId, operatorInfo);
-      
+
       // Mark conversation as assisted
       this.assistedConversations.set(conversationId, {
         operatorId,
@@ -56,7 +56,7 @@ class OperatorAssistService extends EventEmitter {
       });
 
       logger.info(`Operator ${operatorId} joined conversation ${conversationId}`);
-      
+
       return {
         success: true,
         sessionId,
@@ -79,10 +79,10 @@ class OperatorAssistService extends EventEmitter {
       }
 
       const { operatorId, conversationId, tenantId } = operatorInfo;
-      
+
       // Remove session
       this.operatorSessions.delete(sessionId);
-      
+
       // Remove conversation assistance
       const assistInfo = this.assistedConversations.get(conversationId);
       if (assistInfo && assistInfo.sessionId === sessionId) {
@@ -100,7 +100,7 @@ class OperatorAssistService extends EventEmitter {
       });
 
       logger.info(`Operator ${operatorId} left conversation ${conversationId}`);
-      
+
       // Emit event for workflow routing to fall back to bot
       this.emit('operator:left', {
         conversationId,
@@ -300,7 +300,7 @@ class OperatorAssistService extends EventEmitter {
       // But mark it as a suggestion, not an automatic response
       const WorkflowCompilerService = require('./workflow-compiler');
       const compiler = new WorkflowCompilerService();
-      
+
       const suggestion = await compiler.executeWorkflow(
         workflowChain,
         userMessage,
@@ -322,7 +322,7 @@ class OperatorAssistService extends EventEmitter {
       });
 
       logger.info(`Generated suggestion for conversation ${conversationId}`);
-      
+
       return {
         success: true,
         suggestion: suggestion.response,
@@ -363,7 +363,7 @@ class OperatorAssistService extends EventEmitter {
       });
 
       logger.info(`Operator ${operatorInfo.operatorId} sent response to conversation ${conversationId}`);
-      
+
       return { success: true };
     } catch (error) {
       logger.error('Error sending operator response:', error);
@@ -380,7 +380,7 @@ class OperatorAssistService extends EventEmitter {
     }
 
     const tenantPresence = this.presenceTracking.get(tenantId);
-    
+
     if (isOnline) {
       tenantPresence.set(operatorId, {
         lastSeen: new Date(),
@@ -405,7 +405,9 @@ class OperatorAssistService extends EventEmitter {
    */
   getOnlineOperators(tenantId) {
     const tenantPresence = this.presenceTracking.get(tenantId);
-    if (!tenantPresence) return [];
+    if (!tenantPresence) {
+      return [];
+    }
 
     return Array.from(tenantPresence.entries()).map(([operatorId, info]) => ({
       operatorId,
@@ -418,7 +420,9 @@ class OperatorAssistService extends EventEmitter {
    */
   handleOperatorTimeout(sessionId) {
     const operatorInfo = this.operatorSessions.get(sessionId);
-    if (!operatorInfo) return;
+    if (!operatorInfo) {
+      return;
+    }
 
     const now = new Date();
     const inactiveTime = now - operatorInfo.lastActivity || operatorInfo.joinedAt;
@@ -446,7 +450,7 @@ class OperatorAssistService extends EventEmitter {
   getOperatorStats(tenantId) {
     const activeSessions = Array.from(this.operatorSessions.values())
       .filter(session => session.tenantId === tenantId && session.isActive);
-    
+
     const assistedConversations = Array.from(this.assistedConversations.values())
       .filter(conv => conv.isActive);
 
@@ -474,11 +478,11 @@ class OperatorAssistService extends EventEmitter {
   cleanup() {
     const now = new Date();
     const sessions = Array.from(this.operatorSessions.entries());
-    
+
     sessions.forEach(([sessionId, info]) => {
       const lastActivity = info.lastActivity || info.joinedAt;
       const inactiveTime = now - lastActivity;
-      
+
       if (inactiveTime > 30 * 60 * 1000) { // 30 minutes
         this.handleOperatorTimeout(sessionId);
       }
@@ -498,7 +502,7 @@ class OperatorAssistService extends EventEmitter {
     this.assistedConversations.clear();
     this.presenceTracking.clear();
     this.removeAllListeners();
-    
+
     logger.info('Operator assist service shut down');
   }
 }

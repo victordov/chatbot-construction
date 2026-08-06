@@ -6,39 +6,39 @@ const KnowledgeSourceSchema = new mongoose.Schema({
     required: true,
     trim: true
   },
-  
+
   description: {
     type: String,
     trim: true
   },
-  
+
   type: {
     type: String,
     enum: ['google_sheets', 'pdf', 'url', 'vector_store', 'file_upload'],
     required: true
   },
-  
+
   // Configuration based on source type
   config: {
     // Google Sheets specific
     sheetId: { type: String },
     range: { type: String, default: 'A:Z' },
     apiKey: { type: String }, // Encrypted
-    
+
     // PDF/URL specific
     url: { type: String },
     filePath: { type: String },
-    
+
     // Vector Store specific
     collectionName: { type: String },
     embeddingModel: { type: String, default: 'text-embedding-ada-002' },
-    
+
     // File Upload specific
     fileName: { type: String },
     fileSize: { type: Number },
     mimeType: { type: String },
     s3Key: { type: String },
-    
+
     // Processing options
     chunkSize: { type: Number, default: 1000 },
     chunkOverlap: { type: Number, default: 200 },
@@ -48,7 +48,7 @@ const KnowledgeSourceSchema = new mongoose.Schema({
       extractMetadata: { type: Boolean, default: true }
     }
   },
-  
+
   // Company context for multi-tenancy
   company: {
     type: mongoose.Schema.Types.ObjectId,
@@ -58,35 +58,35 @@ const KnowledgeSourceSchema = new mongoose.Schema({
     },
     default: null
   },
-  
+
   // Access control
   isActive: {
     type: Boolean,
     default: true
   },
-  
+
   isPublic: {
     type: Boolean,
     default: false // Whether this source can be used by other companies
   },
-  
+
   // Sync status
   lastSync: {
     type: Date
   },
-  
+
   syncStatus: {
     type: String,
     enum: ['pending', 'syncing', 'success', 'error', 'never_synced'],
     default: 'never_synced'
   },
-  
+
   syncError: {
     message: { type: String },
     timestamp: { type: Date },
     retryCount: { type: Number, default: 0 }
   },
-  
+
   // Statistics
   stats: {
     documentCount: { type: Number, default: 0 },
@@ -95,21 +95,21 @@ const KnowledgeSourceSchema = new mongoose.Schema({
     lastUsed: { type: Date },
     usageCount: { type: Number, default: 0 }
   },
-  
+
   // Metadata
   tags: [{ type: String, trim: true }],
-  
+
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
     required: true
   },
-  
+
   createdAt: {
     type: Date,
     default: Date.now
   },
-  
+
   updatedAt: {
     type: Date,
     default: Date.now
@@ -125,10 +125,10 @@ KnowledgeSourceSchema.index({ 'stats.lastUsed': -1 });
 KnowledgeSourceSchema.index({ createdBy: 1 });
 
 // Text search index
-KnowledgeSourceSchema.index({ 
-  name: 'text', 
-  description: 'text', 
-  tags: 'text' 
+KnowledgeSourceSchema.index({
+  name: 'text',
+  description: 'text',
+  tags: 'text'
 }, {
   weights: {
     name: 10,
@@ -153,7 +153,7 @@ KnowledgeSourceSchema.methods.markAsUsed = function() {
 KnowledgeSourceSchema.methods.updateSyncStatus = function(status, error = null) {
   this.syncStatus = status;
   this.lastSync = new Date();
-  
+
   if (error) {
     this.syncError = {
       message: error.message || error,
@@ -163,7 +163,7 @@ KnowledgeSourceSchema.methods.updateSyncStatus = function(status, error = null) 
   } else if (status === 'success') {
     this.syncError = undefined;
   }
-  
+
   return this.save();
 };
 
@@ -174,27 +174,31 @@ KnowledgeSourceSchema.methods.updateStats = function(stats) {
 
 // Static methods
 KnowledgeSourceSchema.statics.getByCompany = function(companyId, type = null) {
-  const filter = { 
-    company: companyId, 
-    isActive: true 
+  const filter = {
+    company: companyId,
+    isActive: true
   };
-  
-  if (type) filter.type = type;
-  
+
+  if (type) {
+    filter.type = type;
+  }
+
   return this.find(filter)
     .populate('createdBy', 'username displayName')
     .sort({ updatedAt: -1 });
 };
 
 KnowledgeSourceSchema.statics.getPublicSources = function(type = null) {
-  const filter = { 
-    isPublic: true, 
+  const filter = {
+    isPublic: true,
     isActive: true,
     syncStatus: 'success'
   };
-  
-  if (type) filter.type = type;
-  
+
+  if (type) {
+    filter.type = type;
+  }
+
   return this.find(filter)
     .populate('createdBy', 'username displayName')
     .sort({ 'stats.usageCount': -1 });
@@ -203,7 +207,7 @@ KnowledgeSourceSchema.statics.getPublicSources = function(type = null) {
 KnowledgeSourceSchema.statics.searchSources = function(query, companyId) {
   return this.find({
     $and: [
-      { 
+      {
         $or: [
           { company: companyId },
           { isPublic: true }
@@ -212,11 +216,11 @@ KnowledgeSourceSchema.statics.searchSources = function(query, companyId) {
       { isActive: true },
       { $text: { $search: query } }
     ]
-  }, { 
-    score: { $meta: 'textScore' } 
+  }, {
+    score: { $meta: 'textScore' }
   })
-  .sort({ score: { $meta: 'textScore' } })
-  .populate('createdBy', 'username displayName');
+    .sort({ score: { $meta: 'textScore' } })
+    .populate('createdBy', 'username displayName');
 };
 
 KnowledgeSourceSchema.statics.getNeedingSync = function() {

@@ -7,6 +7,10 @@
   // Configuration with defaults
   const config = {
     serverUrl: '',
+    // Identifies the tenant this widget belongs to. The server uses it to
+    // attribute conversations to a company; without it, chats only reach the
+    // right dashboard if the page's origin happens to be registered.
+    widgetKey: null,
     chatbotName: 'Assistant',
     primaryColor: '#2196f3',
     initialMessage: 'Hello! How can I assist you today?',
@@ -128,7 +132,7 @@
     const script = document.createElement('script');
     script.src = `${config.serverUrl}/widget/js/encryption.js`;
     script.onload = () => {
-      encryptionUtil = new EncryptionUtil();
+      encryptionUtil = new EncryptionUtil(config.serverUrl);
       encryptionUtil.init()
         .then(success => {
           if (!success) {
@@ -396,7 +400,10 @@
     script.onload = () => {
       // Connect to server with reconnection options
       socket = io(config.serverUrl, {
-        query: { sessionId },
+        // The key travels in the handshake so the server can resolve the
+        // tenant before the first message is stored.
+        auth: { widgetKey: config.widgetKey },
+        query: { sessionId, widgetKey: config.widgetKey || '' },
         reconnection: true,
         reconnectionAttempts: Infinity,
         reconnectionDelay: 1000,
@@ -632,6 +639,8 @@
         // Re-establish session
         const publicKey = encryptionUtil ? await encryptionUtil.getPublicKey() : null;
         socket.emit('resume-session', {
+          widgetKey: config.widgetKey,
+          pageUrl: window.location.origin,
           sessionId,
           publicKey
         });
@@ -643,6 +652,8 @@
         // Request chat history
         const publicKey = encryptionUtil ? await encryptionUtil.getPublicKey() : null;
         socket.emit('resume-session', {
+          widgetKey: config.widgetKey,
+          pageUrl: window.location.origin,
           sessionId,
           publicKey
         });
@@ -771,6 +782,10 @@
     if (socket) {
       socket.emit('user-details', {
         sessionId,
+        // Carry the tenant hints: this event usually creates the conversation
+        // document, so it must be able to attribute it to a company.
+        widgetKey: config.widgetKey,
+        pageUrl: window.location.origin,
         name: userName,
         email: userEmail,
         phone: userPhone
@@ -813,7 +828,11 @@
 
       // Emit event to the server that chat was opened
       if (socket) {
-        socket.emit('chat-opened', { sessionId });
+        socket.emit('chat-opened', {
+          sessionId,
+          widgetKey: config.widgetKey,
+          pageUrl: window.location.origin
+        });
       }
 
       // Broadcast chat window state to other tabs/windows

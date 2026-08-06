@@ -83,14 +83,14 @@ app.use(helmet({
   // defaults (which would block them outright).
   contentSecurityPolicy: {
     directives: {
-      defaultSrc: ["'self'"],
-      scriptSrc: ["'self'", "'unsafe-inline'", 'https://cdn.jsdelivr.net', 'https://unpkg.com'],
-      styleSrc: ["'self'", "'unsafe-inline'", 'https://cdn.jsdelivr.net', 'https://unpkg.com'],
-      imgSrc: ["'self'", 'data:', 'https:'],
-      connectSrc: ["'self'", 'ws:', 'wss:'],
-      fontSrc: ["'self'", 'data:', 'https://cdn.jsdelivr.net'],
-      objectSrc: ["'none'"],
-      frameAncestors: ["'self'"]
+      defaultSrc: ['\'self\''],
+      scriptSrc: ['\'self\'', '\'unsafe-inline\'', 'https://cdn.jsdelivr.net', 'https://unpkg.com'],
+      styleSrc: ['\'self\'', '\'unsafe-inline\'', 'https://cdn.jsdelivr.net', 'https://unpkg.com'],
+      imgSrc: ['\'self\'', 'data:', 'https:'],
+      connectSrc: ['\'self\'', 'ws:', 'wss:'],
+      fontSrc: ['\'self\'', 'data:', 'https://cdn.jsdelivr.net'],
+      objectSrc: ['\'none\''],
+      frameAncestors: ['\'self\'']
     }
   },
   // The widget is embedded cross-origin by design.
@@ -205,17 +205,20 @@ app.use(express.static(publicDir, {
   etag: true,
   lastModified: true,
   setHeaders(res, filePath) {
-    // The widget bundle is versioned by the deploy process, so it can be
-    // cached hard and served from the edge.
-    if (filePath.includes(`${path.sep}widget${path.sep}`)) {
-      res.setHeader('Cache-Control', 'public, max-age=86400');
+    // Vendored libraries are pinned to a version by their filename, so they
+    // are safe to cache hard.
+    if (filePath.includes(`${path.sep}lib${path.sep}`)) {
+      res.setHeader('Cache-Control', 'public, max-age=604800, immutable');
       return;
     }
 
-    // Everything else (dashboard HTML/CSS/JS) uses `no-cache`, which still
-    // revalidates cheaply via ETag and returns 304, but guarantees a deploy is
-    // picked up on the next request. A plain max-age would leave users on a
-    // stale dashboard until it expired.
+    // Everything else - including the widget - uses `no-cache`. That still
+    // revalidates cheaply via ETag and returns a 304, but guarantees a deploy
+    // reaches users on their next request.
+    //
+    // The widget in particular must not be cached by max-age: its URL carries
+    // no version or content hash, so a long TTL would pin visitors to a stale
+    // (possibly broken) widget with no way to invalidate it.
     res.setHeader('Cache-Control', 'no-cache');
   }
 }));

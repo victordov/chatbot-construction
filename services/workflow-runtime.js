@@ -22,7 +22,7 @@ class WorkflowRuntimeService extends EventEmitter {
   async loadWorkflow(tenantId, workflow) {
     try {
       logger.info(`Loading workflow for tenant ${tenantId}: ${workflow._id}`);
-      
+
       // Always compile from the graph. A stored compiledChain can be stale
       // relative to the nodes/edges the tenant just published.
       const compilationResult = await this.compiler.compileWorkflow(
@@ -74,11 +74,11 @@ class WorkflowRuntimeService extends EventEmitter {
   async hotSwapWorkflow(tenantId, newWorkflow) {
     try {
       logger.info(`Hot-swapping workflow for tenant ${tenantId}`);
-      
+
       // Compile the new workflow
       const compilationResult = await this.compiler.compileWorkflow(
-        newWorkflow.nodes || [], 
-        newWorkflow.edges || [], 
+        newWorkflow.nodes || [],
+        newWorkflow.edges || [],
         tenantId
       );
 
@@ -115,7 +115,7 @@ class WorkflowRuntimeService extends EventEmitter {
       });
 
       logger.info(`Hot-swap completed for tenant ${tenantId}: v${oldWorkflow?.version} -> v${newWorkflow.version}`);
-      
+
       return {
         success: true,
         oldVersion: oldWorkflow?.version,
@@ -189,12 +189,12 @@ class WorkflowRuntimeService extends EventEmitter {
 
       // Update stats
       this.updateExecutionStats(tenantId, responseTime, !result.success);
-      
+
       // Update workflow execution count
       activeWorkflow.executionCount++;
 
       logger.info(`Workflow executed for tenant ${tenantId} in ${responseTime}ms`);
-      
+
       return {
         ...result,
         metadata: {
@@ -224,7 +224,7 @@ class WorkflowRuntimeService extends EventEmitter {
 
     stats.executionCount++;
     stats.lastExecution = new Date();
-    
+
     if (isError) {
       stats.errors++;
     } else {
@@ -273,7 +273,7 @@ class WorkflowRuntimeService extends EventEmitter {
    */
   getAllActiveWorkflows() {
     const workflows = [];
-    
+
     for (const tenantId of this.activeWorkflows.keys()) {
       workflows.push({
         tenantId,
@@ -290,10 +290,10 @@ class WorkflowRuntimeService extends EventEmitter {
   unloadWorkflow(tenantId) {
     const removed = this.activeWorkflows.delete(tenantId);
     this.executionStats.delete(tenantId);
-    
+
     if (removed) {
       logger.info(`Workflow unloaded for tenant ${tenantId}`);
-      
+
       // Broadcast unload notification
       if (this.socketManager && typeof this.socketManager.broadcastToTenant === 'function') {
         this.socketManager.broadcastToTenant(tenantId, 'workflow:unloaded', {

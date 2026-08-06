@@ -43,7 +43,7 @@ const consoleFormat = winston.format.combine(
     const { timestamp, level, message, ...metadata } = info;
 
     // Check if there's any metadata to display
-    const metadataStr = Object.keys(metadata).length ? 
+    const metadataStr = Object.keys(metadata).length ?
       ' ' + JSON.stringify(metadata) : '';
 
     return `${timestamp} ${level}: ${message}${metadataStr}`;
@@ -107,13 +107,13 @@ const httpLogger = (req, res, next) => {
       res.statusCode >= 400 ? 'warn' : 'http';
 
     logger.log(level, message, {
-        method: req.method,
-        url: req.originalUrl,
-        ip: req.ip,
-        statusCode: res.statusCode,
-        userAgent: req.get('user-agent'),
-        referrer: req.get('referer'),
-        responseTime: duration
+      method: req.method,
+      url: req.originalUrl,
+      ip: req.ip,
+      statusCode: res.statusCode,
+      userAgent: req.get('user-agent'),
+      referrer: req.get('referer'),
+      responseTime: duration
     });
   });
 

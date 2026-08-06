@@ -21,7 +21,7 @@ async function testActivityTracking() {
     console.log('Connected to MongoDB');
 
     // Find or create a super admin user
-    let superAdmin = await User.findOne({ role: 'superadmin' });
+    const superAdmin = await User.findOne({ role: 'superadmin' });
     if (!superAdmin) {
       console.log('No super admin found in database');
       return;

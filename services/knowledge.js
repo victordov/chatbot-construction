@@ -27,9 +27,9 @@ class KnowledgeService {
   async list(userId, query = '') {
     const q = query
       ? { $or: [
-          { title: { $regex: query, $options: 'i' } },
-          { spreadsheetId: { $regex: query, $options: 'i' } }
-        ] }
+        { title: { $regex: query, $options: 'i' } },
+        { spreadsheetId: { $regex: query, $options: 'i' } }
+      ] }
       : {};
     return KnowledgeDocument.find({ userId, ...q }).select('spreadsheetId title sheet createdAt');
   }
@@ -41,13 +41,19 @@ class KnowledgeService {
   async refresh(userId, id) {
     try {
       const doc = await KnowledgeDocument.findOne({ _id: id, userId });
-      if (!doc) throw new Error('Document not found');
-      const excludeMap = doc.columns.reduce((acc, c) => { acc[c.name] = c.exclude; return acc; }, {});
+      if (!doc) {
+        throw new Error('Document not found');
+      }
+      const excludeMap = doc.columns.reduce((acc, c) => {
+        acc[c.name] = c.exclude; return acc;
+      }, {});
       const { title } = await this.sheetsService.getSheetNames(userId, doc.spreadsheetId);
       const sheetData = await this.sheetsService.getSheetData(userId, doc.spreadsheetId, doc.sheet || 'Sheet1');
       doc.columns = sheetData.header.map(name => ({ name, exclude: excludeMap[name] || false }));
       doc.rows = sheetData.rows;
-      if (title) doc.title = title;
+      if (title) {
+        doc.title = title;
+      }
       await doc.save();
       return doc;
     } catch (error) {
@@ -59,8 +65,12 @@ class KnowledgeService {
   async updateColumns(userId, id, excluded) {
     try {
       const doc = await KnowledgeDocument.findOne({ _id: id, userId });
-      if (!doc) throw new Error('Document not found');
-      doc.columns.forEach(col => { col.exclude = excluded.includes(col.name); });
+      if (!doc) {
+        throw new Error('Document not found');
+      }
+      doc.columns.forEach(col => {
+        col.exclude = excluded.includes(col.name);
+      });
       await doc.save();
       return doc;
     } catch (error) {

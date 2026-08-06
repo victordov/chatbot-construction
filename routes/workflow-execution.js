@@ -42,7 +42,7 @@ router.post('/execute', authenticate, async (req, res) => {
     if (isAssisted) {
       // Generate suggested response for operator instead of auto-responding
       const assistInfo = operatorAssistServiceRef().getAssistanceInfo(conversationId);
-      
+
       // Get workflow for suggestion generation
       const workflowStatus = runtimeServiceRef().getWorkflowStatus(tenantId);
       if (workflowStatus?.status === 'active') {
@@ -114,7 +114,7 @@ router.post('/execute', authenticate, async (req, res) => {
 router.get('/status', authenticate, admin, (req, res) => {
   try {
     const tenantId = req.user.company?.id || req.user.id;
-    
+
     if (!runtimeServiceRef()) {
       return res.status(503).json({
         success: false,
@@ -123,7 +123,7 @@ router.get('/status', authenticate, admin, (req, res) => {
     }
 
     const status = runtimeServiceRef().getWorkflowStatus(tenantId);
-    
+
     res.json({
       success: true,
       status
@@ -151,7 +151,7 @@ router.get('/all-active', authenticate, superadmin, (req, res) => {
     }
 
     const workflows = runtimeServiceRef().getAllActiveWorkflows();
-    
+
     res.json({
       success: true,
       workflows
@@ -184,7 +184,7 @@ router.post('/reload', authenticate, admin, async (req, res) => {
     // Get workflow from database
     const Workflow = require('../models/workflow');
     const workflow = await Workflow.findById(workflowId);
-    
+
     if (!workflow) {
       return res.status(404).json({
         success: false,
@@ -210,7 +210,7 @@ router.post('/reload', authenticate, admin, async (req, res) => {
 
     // Load the workflow
     await runtimeServiceRef().loadWorkflow(tenantId, workflow);
-    
+
     res.json({
       success: true,
       message: 'Workflow reloaded successfully'
@@ -239,7 +239,7 @@ router.get('/health', (req, res) => {
     }
 
     const health = runtimeServiceRef().getHealthStatus();
-    
+
     res.json({
       healthy: true,
       ...health
@@ -319,7 +319,7 @@ router.post('/operator/leave', authenticate, operator, async (req, res) => {
     }
 
     const result = await operatorAssistServiceRef().leaveConversation(sessionId);
-    
+
     res.json(result);
 
   } catch (error) {
@@ -358,7 +358,7 @@ router.post('/operator/respond', authenticate, operator, async (req, res) => {
       message,
       conversationId
     );
-    
+
     res.json(result);
 
   } catch (error) {
@@ -386,7 +386,7 @@ router.get('/operator/stats', authenticate, admin, (req, res) => {
     }
 
     const stats = operatorAssistServiceRef().getOperatorStats(tenantId);
-    
+
     res.json({
       success: true,
       stats

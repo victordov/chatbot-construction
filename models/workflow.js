@@ -19,7 +19,7 @@ const WorkflowSchema = new mongoose.Schema({
     enum: ['draft', 'published', 'archived'],
     default: 'draft'
   },
-  
+
   // React Flow graph data
   nodes: [{
     id: { type: String, required: true },
@@ -30,7 +30,7 @@ const WorkflowSchema = new mongoose.Schema({
     },
     data: { type: mongoose.Schema.Types.Mixed, required: true }
   }],
-  
+
   edges: [{
     id: { type: String, required: true },
     source: { type: String, required: true },
@@ -38,12 +38,12 @@ const WorkflowSchema = new mongoose.Schema({
     type: { type: String, default: 'default' },
     data: { type: mongoose.Schema.Types.Mixed }
   }],
-  
+
   // Compiled execution plan
   compiledChain: {
     type: mongoose.Schema.Types.Mixed
   },
-  
+
   // Multi-tenancy
   company: {
     type: mongoose.Schema.Types.ObjectId,
@@ -53,40 +53,40 @@ const WorkflowSchema = new mongoose.Schema({
     },
     default: null
   },
-  
+
   // Root system prompt that tenants cannot edit
   rootSystemPrompt: {
     type: String,
-    default: "You are a helpful AI assistant. Always be respectful, accurate, and helpful. Follow all safety guidelines and never provide harmful information."
+    default: 'You are a helpful AI assistant. Always be respectful, accurate, and helpful. Follow all safety guidelines and never provide harmful information.'
   },
-  
+
   // Moderation settings (enforced by platform)
   moderationConfig: {
     enabled: { type: Boolean, default: true },
     strictness: { type: String, enum: ['low', 'medium', 'high'], default: 'medium' },
     customFilters: [String]
   },
-  
+
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
     required: true
   },
-  
+
   createdAt: {
     type: Date,
     default: Date.now
   },
-  
+
   updatedAt: {
     type: Date,
     default: Date.now
   },
-  
+
   publishedAt: {
     type: Date
   },
-  
+
   // Performance tracking
   executionStats: {
     totalExecutions: { type: Number, default: 0 },
@@ -135,8 +135,10 @@ WorkflowSchema.statics.getActiveWorkflow = function(companyId) {
 
 WorkflowSchema.statics.getWorkflowsByCompany = function(companyId, status = null) {
   const filter = { company: companyId };
-  if (status) filter.status = status;
-  
+  if (status) {
+    filter.status = status;
+  }
+
   return this.find(filter)
     .populate('createdBy', 'username displayName')
     .sort({ updatedAt: -1 });

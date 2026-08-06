@@ -39,6 +39,7 @@ All configuration is managed via environment variables. You can set these in a `
 - `GOOGLE_CLIENT_SECRET` - Google API client secret
 - `GOOGLE_REDIRECT_URI` - Google OAuth2 redirect URI (e.g. `http://localhost:3000/api/google/oauth2callback`)
 - `GOOGLE_REFRESH_TOKEN` - Google OAuth2 refresh token (optional, legacy)
+- `SESSION_SECRET` - Secret for session cookies (required in production, min 32 chars)
 - `EMAIL_HOST` - SMTP host (for alerting)
 - `EMAIL_PORT` - SMTP port
 - `EMAIL_USER` - SMTP username
@@ -63,6 +64,21 @@ ADMIN_EMAIL=admin@example.com
 
 ---
 
+### Production requirements
+
+The server refuses to start in production (`NODE_ENV=production`) if
+`JWT_SECRET` or `SESSION_SECRET` is missing, shorter than 32 characters, or
+still set to the built-in development value. Generate them with:
+
+```sh
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+```
+
+Behind a reverse proxy, set `TRUST_PROXY=1` so secure cookies and per-IP rate
+limiting see the real client address.
+
+---
+
 ## 4. Running the Application
 
 Start the server:
@@ -71,6 +87,21 @@ npm start
 ```
 
 The server will run on the port specified in your `.env` file (default: 3000).
+
+### Health checks
+
+- `GET /health` - liveness; returns 200 whenever the process is up.
+- `GET /ready` - readiness; returns 503 while MongoDB is unreachable.
+
+Point your load balancer at `/ready` and your process supervisor at `/health`.
+
+### Tests
+
+```sh
+npm test
+```
+
+An in-memory MongoDB starts automatically, so no local `mongod` is required.
 
 ---
 
@@ -91,13 +122,16 @@ The application supports a multi-tenant architecture with the following roles:
 - **Company Admin**: Can manage operators within their company and view data related to their company.
 - **Operator**: Can handle chats assigned to them within their company.
 
-### Migration from Single-tenant to Multi-tenant
+### Onboarding a company
 
-If you're upgrading from a previous version, you'll need to run the migration script to update existing admin users to superadmins:
+1. Sign in as a superadmin and create the company under **Companies**.
+2. Create a company admin for it.
+3. As that company admin, open **Install Widget**. Copy the embed snippet onto
+   the customer's site and add their origin(s) under **Allowed domains**.
 
-```sh
-node migrate-admin-users.js
-```
+The snippet's `data-widget-key` is what attributes incoming chats to the
+company. Without it, a conversation is only matched if the page's origin is
+registered under **Allowed domains**.
 
 This script will find all users with the role 'admin' and update them to 'superadmin'.
 
