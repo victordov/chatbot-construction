@@ -106,6 +106,31 @@ const CompanySchema = new mongoose.Schema({
   },
 
   /**
+   * How conversations reach an operator.
+   *
+   * Without this a queue is a free-for-all: whoever is watching picks up what
+   * they fancy, the same person takes everything, and the visitor nobody
+   * fancied waits indefinitely.
+   */
+  routing: {
+    /** Off by default. Turning it on changes who answers, which is a decision. */
+    autoAssign: { type: Boolean, default: false },
+    /**
+     * How many conversations one operator can hold at once.
+     *
+     * The cap is the point: an operator juggling nine chats is answering none
+     * of them well, and a queue that keeps assigning is just hiding the fact
+     * that the team is under water.
+     */
+    maxConcurrent: { type: Number, default: 3, min: 1, max: 20 },
+    /**
+     * Assign a conversation the moment it starts, rather than when the visitor
+     * asks for a person. Suits teams with no bot in front.
+     */
+    assignOnStart: { type: Boolean, default: false }
+  },
+
+  /**
    * Tenant-specific widget branding, surfaced to the widget at bootstrap.
    */
   widgetSettings: {

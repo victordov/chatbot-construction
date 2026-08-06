@@ -43,6 +43,30 @@ const UserSchema = new mongoose.Schema({
     type: Boolean,
     default: true
   },
+  /**
+   * Override the company's concurrent-chat cap for this person.
+   *
+   * A team is not uniform: someone new takes two at a time, someone
+   * experienced takes six, and a team lead answering between meetings takes
+   * one. Null means "use the company setting".
+   */
+  maxConcurrentChats: {
+    type: Number,
+    min: 1,
+    max: 20,
+    default: null
+  },
+  /**
+   * Whether this person is taking new conversations right now.
+   *
+   * Distinct from being connected: someone can be at their desk with the
+   * dashboard open and still not want the queue handing them anything, because
+   * they are finishing a difficult one or about to leave.
+   */
+  acceptingChats: {
+    type: Boolean,
+    default: true
+  },
   lastLogin: {
     type: Date
   },

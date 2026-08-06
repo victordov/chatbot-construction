@@ -10,6 +10,7 @@ const usageService = require('../services/usage');
 const { logger } = require('../services/logging');
 const socketManager = require('../socketManager');
 const csatService = require('../services/csat');
+const assignmentService = require('../services/assignment');
 const {
   containsRegex,
   companyFilter,
@@ -73,6 +74,8 @@ router.get('/active-chats', async (req, res) => {
           channel: 1,
           email: 1,
           contact: 1,
+          tags: 1,
+          operatorId: 1,
           messageCount: { $size: { $ifNull: ['$messages', []] } },
           lastMessage: { $last: '$messages.content' }
         }
@@ -94,6 +97,10 @@ router.get('/active-chats', async (req, res) => {
       channel: chat.channel || 'chat',
       subject: chat.email && chat.email.subject,
       contactId: chat.contact,
+      tags: chat.tags || [],
+      // Needed so the dashboard can mark the rows this operator owns without
+      // matching on the display name, which is not unique.
+      operatorId: chat.operatorId ? String(chat.operatorId) : null,
       // A preview lets an operator triage the queue without opening each chat.
       lastMessage: chat.lastMessage,
       company: chat.company ? {
@@ -247,6 +254,135 @@ router.post('/chat/:sessionId/contact-info', async (req, res) => {
  * or "billing already refunded this" so the next person picking the chat up
  * is not starting cold.
  */
+/**
+ * Tags on a conversation.
+ *
+ * Sent as the complete list rather than as add/remove operations: the UI is a
+ * set of chips the operator edits, and add/remove would need conflict handling
+ * for the case where two operators are looking at the same conversation.
+ */
+router.put('/chat/:sessionId/tags', async (req, res) => {
+  try {
+    const conversation = await loadScopedConversation(req, res);
+    if (!conversation) {
+      return;
+    }
+
+    conversation.tags = assignmentService.normaliseTags(req.body.tags);
+    await conversation.save();
+
+    socketManager.emitToOperators(conversation.company, 'conversation-tagged', {
+      sessionId: conversation.sessionId,
+      tags: conversation.tags,
+      by: req.user.displayName || req.user.username
+    });
+
+    res.json({ tags: conversation.tags });
+  } catch (error) {
+    logger.error('Error updating conversation tags', { error });
+    res.status(500).json({ error: 'Failed to update the tags' });
+  }
+});
+
+/**
+ * The tags this company already uses, most used first.
+ *
+ * Offered as suggestions while tagging. This is the entire mechanism that stops
+ * "billing", "Billing" and "billin" all existing side by side.
+ */
+router.get('/tags', async (req, res) => {
+  try {
+    if (!req.user.company?.id && req.user.role !== 'superadmin') {
+      return res.json({ tags: [] });
+    }
+
+    const companyId = req.user.company?.id
+      ? new mongoose.Types.ObjectId(req.user.company.id)
+      : null;
+
+    res.json({ tags: companyId ? await assignmentService.knownTags(companyId) : [] });
+  } catch (error) {
+    logger.error('Error loading tags', { error });
+    res.status(500).json({ error: 'Failed to load the tags' });
+  }
+});
+
+/**
+ * Whether this operator is taking new conversations, and how many at once.
+ *
+ * Being connected and being available are not the same thing: someone can have
+ * the dashboard open while finishing a difficult conversation, or five minutes
+ * before they leave.
+ */
+router.put('/me/availability', async (req, res) => {
+  try {
+    const update = {};
+
+    if (req.body.acceptingChats !== undefined) {
+      update.acceptingChats = Boolean(req.body.acceptingChats);
+    }
+
+    if (req.body.maxConcurrentChats !== undefined) {
+      const max = parseInt(req.body.maxConcurrentChats, 10);
+      // Null clears the personal override and falls back to the company's cap.
+      if (req.body.maxConcurrentChats === null || Number.isNaN(max)) {
+        update.maxConcurrentChats = null;
+      } else if (max < 1 || max > 20) {
+        return res.status(400).json({ error: 'Choose a limit between 1 and 20' });
+      } else {
+        update.maxConcurrentChats = max;
+      }
+    }
+
+    const user = await User.findByIdAndUpdate(req.user.id, update, { new: true })
+      .select('acceptingChats maxConcurrentChats');
+
+    res.json({
+      acceptingChats: user.acceptingChats,
+      maxConcurrentChats: user.maxConcurrentChats
+    });
+  } catch (error) {
+    logger.error('Error updating availability', { error });
+    res.status(500).json({ error: 'Failed to update your availability' });
+  }
+});
+
+/**
+ * Take a conversation by hand.
+ *
+ * Auto-assignment does not replace this: somebody has to be able to pick up the
+ * one that has been sitting there, or reassign the one that went to the wrong
+ * person.
+ */
+router.post('/chat/:sessionId/claim', async (req, res) => {
+  try {
+    const conversation = await loadScopedConversation(req, res);
+    if (!conversation) {
+      return;
+    }
+
+    if (conversation.operatorId && String(conversation.operatorId) !== String(req.user.id)) {
+      return res.status(409).json({
+        error: `${conversation.operatorName || 'Another operator'} is already handling this conversation`
+      });
+    }
+
+    const result = await assignmentService.assign(conversation, {
+      id: req.user.id,
+      displayName: req.user.displayName || req.user.username
+    }, 'manual');
+
+    if (!result.assigned && !conversation.operatorId) {
+      return res.status(400).json({ error: result.reason });
+    }
+
+    res.json({ operatorName: conversation.operatorName });
+  } catch (error) {
+    logger.error('Error claiming conversation', { error });
+    res.status(500).json({ error: 'Failed to claim the conversation' });
+  }
+});
+
 router.post('/chat/:sessionId/notes', async (req, res) => {
   try {
     const conversation = await loadScopedConversation(req, res);

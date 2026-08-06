@@ -103,10 +103,20 @@ class WidgetUpdateService {
     logger.info(`Archiving current widget version: ${version}`);
 
     try {
-      // Create version directory
-      if (!fs.existsSync(versionDir)) {
-        fs.mkdirSync(versionDir, { recursive: true });
+      // An archive that can be rewritten is not an archive. This used to copy
+      // over whatever was already there, so a customer pinned to a version
+      // silently received different code and the recorded checksum changed
+      // under them - and the only copy of what that version actually was, was
+      // gone.
+      if (fs.existsSync(versionDir)) {
+        logger.warn(
+          `Refusing to overwrite the existing archive of ${version}. ` +
+          'Archived versions are immutable; a change needs a new version number.'
+        );
+        return false;
       }
+
+      fs.mkdirSync(versionDir, { recursive: true });
 
       // Copy all widget files to version directory
       this.copyDirectoryContents(this.widgetDir, versionDir);
@@ -210,8 +220,10 @@ class WidgetUpdateService {
       if (currentChecksum !== archivedChecksum) {
         logger.info('Widget files have been modified, creating new version');
 
-        // Create new version
-        const newVersion = this.incrementVersion(this.currentVersion);
+        // Skip past anything already archived. `incrementVersion` alone
+        // returned 1.0.1 while 1.0.1 through 1.0.4 already existed, so every
+        // source change clobbered the same archive.
+        const newVersion = this.nextFreeVersion(this.currentVersion);
         this.currentVersion = newVersion;
 
         // Archive new version
@@ -228,6 +240,28 @@ class WidgetUpdateService {
     } catch (error) {
       logger.error(`Update check failed: ${error.message}`);
     }
+  }
+
+  /**
+   * The next version number nothing has claimed yet.
+   *
+   * Bounded rather than looping until it finds a gap: if a thousand versions
+   * exist, something is wrong that a busy loop will not fix.
+   */
+  nextFreeVersion(from) {
+    let candidate = this.incrementVersion(from);
+
+    for (let attempt = 0; attempt < 1000; attempt += 1) {
+      const taken = this.versionInfo.versions.includes(candidate) ||
+        fs.existsSync(path.join(this.versionsDir, candidate));
+
+      if (!taken) {
+        return candidate;
+      }
+      candidate = this.incrementVersion(candidate);
+    }
+
+    throw new Error('Could not find a free widget version number');
   }
 
   /**

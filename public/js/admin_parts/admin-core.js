@@ -302,6 +302,9 @@ function initializeDashboard(token, user) {
   if (typeof setupContacts === 'function') {
     setupContacts();
   }
+  if (typeof setupRouting === 'function') {
+    setupRouting(socket);
+  }
   setupExport();
 
   // Check URL parameters for chat selection

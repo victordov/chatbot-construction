@@ -97,6 +97,16 @@ deflection, because a deflection rate on its own rewards a bot that is merely
 hard to escape. The headline is available on every plan; the per-operator split
 and the comments are part of the advanced report.
 
+**Routing and tags.** A visitor can ask for a person with a button rather than
+by hoping the bot notices, and the conversation goes to whoever is online and
+carrying the least, with the person who has waited longest going first when
+that ties. Nobody is handed more than their limit — the company's, or their own
+if they have one — and an operator can stop taking new work without
+disconnecting. Nobody available is a normal outcome: the conversation waits in
+the queue, and the visitor is told so rather than left watching an empty window.
+Conversations carry free-form tags, suggested from the ones already in use, and
+the queue can be filtered by them.
+
 **Operator tools.** Saved replies inserted from the composer with `/`, internal
 notes that never reach the visitor or the model, conversation transfer with a
 handover note, and a queue filtered by All / Mine / Waiting so several chats
@@ -138,7 +148,7 @@ content-hashed widget assets cached for a year with the loader on `no-cache`.
 
 ## Test suite
 
-`npm test` — 365 tests across 23 suites. An in-memory MongoDB starts
+`npm test` — 402 tests across 25 suites. An in-memory MongoDB starts
 automatically (`tests/globalSetup.js`), so no local `mongod` is needed.
 `tests/setup.js` blanks `OPENAI_API_KEY` so the suite never makes a real model
 call; the embedding and intent tests therefore assert on ranking and plumbing

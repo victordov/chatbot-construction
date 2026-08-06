@@ -4,6 +4,7 @@ const User = require('../models/user');
 const tenantService = require('../services/tenant');
 const availabilityService = require('../services/availability');
 const { auth, superadmin, admin, sameCompany } = require('../middleware/auth');
+const { logger } = require('../services/logging');
 const crypto = require('crypto');
 
 const router = express.Router();
@@ -220,6 +221,65 @@ router.put('/me/hours', requireOwnCompany, async (req, res) => {
  * Email channel settings, including the inbound webhook URL a tenant points
  * their mail provider at.
  */
+/**
+ * How conversations reach an operator.
+ */
+router.get('/me/routing', requireOwnCompany, async (req, res) => {
+  try {
+    const company = await Company.findById(req.user.company.id).select('routing').lean();
+
+    res.json({
+      routing: company?.routing || { autoAssign: false, maxConcurrent: 3, assignOnStart: false }
+    });
+  } catch (error) {
+    logger.error('Failed to load routing settings', { error: error.message });
+    res.status(500).json({ error: 'Failed to load the routing settings' });
+  }
+});
+
+router.put('/me/routing', requireOwnCompany, admin, async (req, res) => {
+  try {
+    const company = await Company.findById(req.user.company.id);
+
+    if (!company) {
+      return res.status(404).json({ error: 'Company not found' });
+    }
+
+    company.routing = company.routing || {};
+
+    if (req.body.autoAssign !== undefined) {
+      company.routing.autoAssign = Boolean(req.body.autoAssign);
+    }
+
+    if (req.body.assignOnStart !== undefined) {
+      company.routing.assignOnStart = Boolean(req.body.assignOnStart);
+    }
+
+    if (req.body.maxConcurrent !== undefined) {
+      const max = parseInt(req.body.maxConcurrent, 10);
+      // The cap is the point of the feature, so it is validated rather than
+      // clamped silently: an admin who typed 100 needs to know it was refused.
+      if (Number.isNaN(max) || max < 1 || max > 20) {
+        return res.status(400).json({ error: 'Choose a limit between 1 and 20 conversations' });
+      }
+      company.routing.maxConcurrent = max;
+    }
+
+    await company.save();
+
+    logger.info('Routing settings updated', {
+      companyId: String(company._id),
+      by: req.user.username,
+      autoAssign: company.routing.autoAssign
+    });
+
+    res.json({ routing: company.routing });
+  } catch (error) {
+    logger.error('Failed to update routing settings', { error: error.message });
+    res.status(500).json({ error: 'Failed to save the routing settings' });
+  }
+});
+
 router.get('/me/email', requireOwnCompany, async (req, res) => {
   try {
     const company = await Company.findById(req.user.company.id)

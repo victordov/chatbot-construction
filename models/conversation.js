@@ -146,6 +146,24 @@ const ConversationSchema = new mongoose.Schema({
     at: { type: Date }
   },
   /**
+   * Operator-applied labels: "billing", "vip", "bug-report".
+   *
+   * Deliberately free-form rather than a fixed list. Every business slices its
+   * conversations differently, and a schema that guessed the categories would
+   * be wrong for most of them. Existing tags are offered as suggestions, which
+   * is enough to stop "billing" and "Billing" both existing.
+   */
+  tags: [{ type: String, trim: true, lowercase: true }],
+  /**
+   * How this conversation reached the operator handling it. Kept so a manager
+   * can tell whether the queue is distributing work or whether people are
+   * cherry-picking.
+   */
+  assignment: {
+    method: { type: String, enum: ['auto', 'manual'] },
+    at: { type: Date }
+  },
+  /**
    * What the customer thought of it.
    *
    * The operator is copied in at rating time rather than looked up later,
@@ -211,6 +229,10 @@ ConversationSchema.index({ contact: 1, startedAt: -1 });
 // have seen on the thread.
 ConversationSchema.index({ 'email.messageIds': 1 });
 ConversationSchema.index({ company: 1, channel: 1, status: 1 });
+// Filtering the queue by tag.
+ConversationSchema.index({ company: 1, tags: 1, lastActivity: -1 });
+// Per-operator load: how many conversations someone currently holds.
+ConversationSchema.index({ company: 1, operatorId: 1, status: 1 });
 // CSAT reporting: rated conversations for a company over a period.
 ConversationSchema.index(
   { company: 1, 'rating.ratedAt': -1 },

@@ -1,6 +1,7 @@
 const socketIO = require('socket.io');
 const jwt = require('jsonwebtoken');
 const Conversation = require('./models/conversation');
+const Company = require('./models/company');
 const User = require('./models/user');
 const AIService = require('./services/ai');
 const EncryptionService = require('./services/encryption');
@@ -9,6 +10,7 @@ const usageService = require('./services/usage');
 const contactService = require('./services/contacts');
 const emailChannel = require('./services/email-channel');
 const csatService = require('./services/csat');
+const assignmentService = require('./services/assignment');
 const { operatorRoom, GLOBAL_OPERATOR_ROOM } = require('./socketManager');
 const { logger } = require('./services/logging');
 
@@ -219,6 +221,19 @@ function setupWebSockets(server) {
 
         // Metered once, at creation, so a long conversation counts as one.
         usageService.record(companyId, { conversations: 1 });
+
+        // Some teams run no bot at all, and for them a conversation that sits
+        // unassigned until somebody notices it is the whole problem. Saved
+        // first, because assignment needs a document with an id.
+        if (companyId) {
+          conversation.company = companyId;
+          await conversation.save();
+
+          const company = await Company.findById(companyId).select('routing').lean();
+          if (company?.routing?.autoAssign && company.routing.assignOnStart) {
+            await assignmentService.autoAssign(conversation);
+          }
+        }
       } else {
         // Backfill on conversations created before the tenant or origin was
         // known - for example by a `join` that arrived before `user-details`.
@@ -1282,6 +1297,55 @@ function setupWebSockets(server) {
         logger.error('Error ending chat:', { error });
       }
     });    /**
+     * A visitor asking for a person.
+     *
+     * Explicit rather than inferred. Guessing "this one wants a human" from the
+     * message text gets it wrong in both directions — it escalates people who
+     * were only being polite, and misses the ones who are quietly giving up.
+     */
+    socket.on('request-operator', async () => {
+      if (isOperator || !clientSessionId) {
+        return;
+      }
+
+      try {
+        const conversation = await Conversation.findOne({ sessionId: clientSessionId });
+
+        if (!conversation) {
+          return;
+        }
+
+        if (conversation.operatorId) {
+          return socket.emit('operator-requested', {
+            queued: false,
+            connected: true,
+            operatorName: conversation.operatorName
+          });
+        }
+
+        // Flagged whether or not anyone is free, so the queue shows who is
+        // waiting for a person rather than only who already has one.
+        conversation.botEnabled = false;
+        await conversation.save();
+
+        allOperators(conversation.company, 'operator-requested', {
+          sessionId: clientSessionId,
+          timestamp: new Date()
+        });
+
+        const result = await assignmentService.autoAssign(conversation);
+
+        socket.emit('operator-requested', {
+          queued: !result.assigned,
+          connected: result.assigned,
+          operatorName: result.assigned ? result.operator.displayName : null
+        });
+      } catch (error) {
+        logger.error('Error handling operator request:', { error: error.message });
+      }
+    });
+
+    /**
      * A visitor rating the conversation.
      *
      * The session is taken from the socket, never from the payload: a session

@@ -212,6 +212,21 @@
                                             Waiting <span class="badge bg-warning text-dark ms-1" id="waiting-count">0</span>
                                         </button>
                                     </div>
+
+                                    <!-- Tag filter. Only rendered once tags
+                                         exist: an empty control is clutter on
+                                         an account that does not use them. -->
+                                    <div id="queue-tag-filter" class="queue-tag-filter mt-2" style="display: none;"></div>
+
+                                    <!-- Whether the queue may hand this person
+                                         work. Being connected and being
+                                         available are not the same thing. -->
+                                    <div class="form-check form-switch mt-2 small">
+                                        <input class="form-check-input" type="checkbox" id="accepting-chats-toggle" checked>
+                                        <label class="form-check-label" for="accepting-chats-toggle">
+                                            Taking new conversations
+                                        </label>
+                                    </div>
                                 </div>
                                 <div class="list-group list-group-flush" id="active-chat-list">
                                     <div class="list-group-item empty-state">No active conversations</div>
@@ -263,6 +278,20 @@
                                                     </div>
                                                 </div>
                                             </div>
+                                        </div>
+                                    </div>
+
+                                    <!-- Tags. Above the transcript because they
+                                         are how the next person finds this
+                                         conversation again. -->
+                                    <div id="tags-panel" class="tags-panel mb-2" style="display: none;">
+                                        <div id="tag-chips" class="tag-chips"></div>
+                                        <div class="input-group input-group-sm mt-1" style="max-width: 22rem;">
+                                            <input type="text" class="form-control" id="tag-input"
+                                                   list="tag-suggestions" placeholder="Add a tag…"
+                                                   maxlength="40" aria-label="Add a tag">
+                                            <datalist id="tag-suggestions"></datalist>
+                                            <button class="btn btn-outline-secondary" id="add-tag-btn">Add</button>
                                         </div>
                                     </div>
 
@@ -1354,8 +1383,60 @@
                                 <li class="nav-item" role="presentation">
                                     <button class="nav-link" id="knowledge-tab" data-bs-toggle="tab" data-bs-target="#knowledge-pane" type="button" role="tab">Knowledge Base</button>
                                 </li>
+                                <li class="nav-item" role="presentation">
+                                    <button class="nav-link" id="routing-tab" data-bs-toggle="tab" data-bs-target="#routing-pane" type="button" role="tab">Routing</button>
+                                </li>
                             </ul>
                             <div class="tab-content">
+                                <div class="tab-pane fade" id="routing-pane" role="tabpanel">
+                                    <h5 class="mt-0">How conversations reach an operator</h5>
+                                    <p class="text-muted small">
+                                        Without this the queue is a free-for-all: whoever is watching
+                                        picks up what they fancy, and the visitor nobody fancied waits.
+                                    </p>
+
+                                    <div class="form-check form-switch mb-3">
+                                        <input class="form-check-input" type="checkbox" id="routing-auto-assign">
+                                        <label class="form-check-label" for="routing-auto-assign">
+                                            Assign conversations automatically
+                                        </label>
+                                        <div class="form-text">
+                                            Given to whoever is online and carrying the least, with the
+                                            person who has waited longest going first when that ties.
+                                        </div>
+                                    </div>
+
+                                    <div class="mb-3">
+                                        <label for="routing-max-concurrent" class="form-label">
+                                            Conversations per operator
+                                        </label>
+                                        <!-- The field is narrow because the value
+                                             is two digits; the guidance beside it
+                                             is not, so it reads as a sentence
+                                             rather than a column. -->
+                                        <input type="number" class="form-control" id="routing-max-concurrent"
+                                               min="1" max="20" value="3" style="max-width: 8rem;">
+                                        <div class="form-text">
+                                            Nobody is handed more than this at once. An operator juggling
+                                            nine chats is answering none of them well. Individuals can be
+                                            given their own limit.
+                                        </div>
+                                    </div>
+
+                                    <div class="form-check form-switch mb-3">
+                                        <input class="form-check-input" type="checkbox" id="routing-assign-on-start">
+                                        <label class="form-check-label" for="routing-assign-on-start">
+                                            Assign as soon as a conversation starts
+                                        </label>
+                                        <div class="form-text">
+                                            For teams with no bot in front. Otherwise a conversation is
+                                            assigned when the visitor asks for a person.
+                                        </div>
+                                    </div>
+
+                                    <button class="btn btn-primary" id="save-routing-btn">Save routing</button>
+                                </div>
+
                                 <div class="tab-pane fade show active" id="general-pane" role="tabpanel">
                                     <form id="settings-form">
                                         <h5 class="mt-0">Notifications</h5>
@@ -2095,6 +2176,7 @@
     <script src="/js/admin_parts/admin-notifications.js"></script>
     <script src="/js/admin_parts/admin-widget.js"></script>
     <script src="/js/admin_parts/admin-billing.js"></script>
+    <script src="/js/admin_parts/admin-routing.js"></script>
     <script src="/js/admin_parts/admin-analytics.js"></script>
     <script src="/js/admin_parts/admin-assistant.js"></script>
     <script src="/js/admin_parts/admin-operator-tools.js"></script>

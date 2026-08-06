@@ -548,6 +548,9 @@ function addChatToList(chat) {
   chatItem.href = '#';
   chatItem.className = 'list-group-item list-group-item-action';
   chatItem.setAttribute('data-session-id', chat.sessionId);
+  // Read by the tag filter, which hides rows in place rather than refetching a
+  // queue that is already live over the socket.
+  chatItem.dataset.tags = (chat.tags || []).join(',');
 
   const startTime = new Date(chat.startedAt || Date.now()).toLocaleTimeString();
 
@@ -578,6 +581,11 @@ function addChatToList(chat) {
       <span>·</span>
       <span class="text-truncate">${escapeHtml(chat.subject || chat.domain || 'Unknown source')}</span>
     </div>
+    ${(chat.tags || []).length ? `
+      <div class="tag-chips mt-1">
+        ${chat.tags.slice(0, 4).map(tag =>
+    `<span class="tag-chip">${escapeHtml(tag)}</span>`).join('')}
+      </div>` : ''}
     <div class="user-name small text-muted"></div>
     <div class="operator-name small text-muted mt-1">${hasOperator && chat.operatorName ? `Operator: ${escapeHtml(chat.operatorName)}` : ''}</div>
   `;
@@ -587,6 +595,9 @@ function addChatToList(chat) {
   // A new arrival must respect whichever filter the operator is working in.
   if (typeof applyChatFilter === 'function') {
     applyChatFilter();
+  }
+  if (typeof applyTagFilter === 'function') {
+    applyTagFilter();
   }
 
   // Add event listener
@@ -696,6 +707,11 @@ function loadChatMessages(sessionId) {
 
       // What the customer thought of it, if they said.
       displayRating(data.rating);
+
+      // Tags: how the next person finds this conversation again.
+      if (typeof renderConversationTags === 'function') {
+        renderConversationTags(data.tags || []);
+      }
 
       // Internal notes arrive with the conversation.
       if (typeof setConversationNotes === 'function') {

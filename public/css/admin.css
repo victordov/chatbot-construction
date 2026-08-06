@@ -727,3 +727,62 @@ th .col-resizer {
 .csat-comment .badge {
   flex-shrink: 0;
 }
+
+/* -------------------------------------------------------------- tagging
+   Chips rather than a comma-separated field: removing one should be a single
+   click, not an exercise in editing a string without breaking the others. */
+
+.tag-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  align-items: center;
+  min-height: 1.6rem;
+}
+
+.tag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.1rem 0.5rem;
+  border-radius: 1rem;
+  background: rgba(13, 110, 253, 0.1);
+  color: #0a58ca;
+  font-size: 0.78rem;
+}
+
+.tag-chip-remove {
+  border: none;
+  background: none;
+  padding: 0;
+  line-height: 1;
+  color: inherit;
+  opacity: 0.6;
+  cursor: pointer;
+}
+
+.tag-chip-remove:hover {
+  opacity: 1;
+}
+
+/* Hidden by the tag filter. A class rather than an inline style so the
+   All/Mine/Waiting filter can hide the same rows without the two fighting over
+   `display`. */
+.list-group-item.filtered-by-tag {
+  display: none !important;
+}
+
+.list-group-item.assigned-to-me {
+  border-left: 3px solid var(--bs-primary, #0d6efd);
+}
+
+.queue-tag-filter select {
+  font-size: 0.8rem;
+}
+
+/* On the selected queue row the background is the primary blue, and a blue chip
+   on it is unreadable. */
+.list-group-item.active .tag-chip {
+  background: rgba(255, 255, 255, 0.25);
+  color: #fff;
+}

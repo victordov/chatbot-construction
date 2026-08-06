@@ -430,3 +430,33 @@
   color: #198754;
   text-align: center;
 }
+
+/* Header actions: the escalation button sits beside the close button, so it is
+   reachable at any point in the conversation rather than only at the end. */
+
+.chat-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.chat-header .human-button {
+  padding: 3px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  border-radius: 12px;
+  background: transparent;
+  color: #fff;
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.chat-header .human-button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.chat-header .human-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

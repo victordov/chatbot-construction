@@ -290,7 +290,11 @@
     chatHeader.className = 'chat-header';
     chatHeader.innerHTML = `
       <h3>${config.chatbotName}</h3>
-      <button class="close-button">&times;</button>
+      <div class="chat-header-actions">
+        <button class="human-button" type="button"
+                title="Talk to a person">Talk to a person</button>
+        <button class="close-button">&times;</button>
+      </div>
     `;
 
     // Create chat messages container
@@ -637,6 +641,37 @@
         }
       });
 
+      /**
+       * The answer to "talk to a person".
+       *
+       * Says plainly whether somebody is coming. A silent queue is what makes
+       * people repeat themselves and then leave.
+       */
+      socket.on('operator-requested', (data = {}) => {
+        const humanButton = chatWindow.querySelector('.human-button');
+
+        if (data.connected) {
+          addSystemNotice(data.operatorName
+            ? `${data.operatorName} has joined the conversation.`
+            : 'You are connected to a member of the team.');
+          if (humanButton) {
+            humanButton.style.display = 'none';
+          }
+          return;
+        }
+
+        addSystemNotice(
+          'Nobody is free right now. Your conversation is in the queue and ' +
+          'someone will reply here as soon as they can.'
+        );
+
+        if (humanButton) {
+          // Re-enabled: they may want to ask again later, and a button that
+          // stays dead reads as broken.
+          humanButton.disabled = false;
+        }
+      });
+
       // Listen for read receipts
       socket.on('message-read', (data) => {
         // Update read status in the UI
@@ -720,6 +755,22 @@
     if (userDetailsFormElement) {
       userDetailsFormElement.addEventListener('submit', handleUserDetailsSubmit);
     }
+
+    /**
+     * Asking for a person.
+     *
+     * A button rather than a guess at the message text. Inferring "this one
+     * wants a human" gets it wrong in both directions: it escalates people
+     * being polite, and misses the ones quietly giving up.
+     */
+    const humanButton = chatWindow.querySelector('.human-button');
+    humanButton.addEventListener('click', () => {
+      if (!socket || !socket.connected) {
+        return;
+      }
+      humanButton.disabled = true;
+      socket.emit('request-operator');
+    });
 
     // Send message on button click.
     //
