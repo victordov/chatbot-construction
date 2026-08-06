@@ -28,6 +28,7 @@ const workflowRoutes = require('./routes/workflow');
 const workflowExecutionRoutes = require('./routes/workflow-execution');
 const widgetRoutes = require('./routes/widget');
 const uploadRoutes = require('./routes/upload');
+const billingRoutes = require('./routes/billing');
 const { apiLimiter, chatLimiter, authLimiter } = require('./middleware/rateLimiter');
 const DataRetentionService = require('./services/dataRetention');
 const { logger, httpLogger } = require('./services/logging');
@@ -266,6 +267,7 @@ app.use('/api/workflow-execution', workflowExecutionRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/widget', widgetRoutes);
 app.use('/api/upload', ensureSessionId, uploadRoutes);
+app.use('/api/billing', billingRoutes);
 
 app.get('/', (req, res) => {
   res.redirect('/admin/');

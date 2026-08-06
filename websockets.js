@@ -5,6 +5,7 @@ const User = require('./models/user');
 const AIService = require('./services/ai');
 const EncryptionService = require('./services/encryption');
 const tenantService = require('./services/tenant');
+const usageService = require('./services/usage');
 const { operatorRoom, GLOBAL_OPERATOR_ROOM } = require('./socketManager');
 const { logger } = require('./services/logging');
 
@@ -212,6 +213,9 @@ function setupWebSockets(server) {
           domain: origin,
           messages: []
         });
+
+        // Metered once, at creation, so a long conversation counts as one.
+        usageService.record(companyId, { conversations: 1 });
       } else {
         // Backfill on conversations created before the tenant or origin was
         // known - for example by a `join` that arrived before `user-details`.
@@ -502,6 +506,8 @@ function setupWebSockets(server) {
 
         toOperators(clientCompanyId, 'new-message', broadcastData);
 
+        usageService.record(clientCompanyId, { messages: 1 });
+
         // Only generate suggestions if there are operators and suggestions are enabled
         if (conversation.hasOperator) {
           // Check if suggestions are enabled for this conversation
@@ -601,6 +607,8 @@ function setupWebSockets(server) {
           }
 
           socket.emit('bot-message', responseData);
+
+          usageService.record(clientCompanyId, { aiResponses: 1, messages: 1 });
 
           toOperators(clientCompanyId, 'new-message', {
             sessionId,
@@ -832,6 +840,8 @@ function setupWebSockets(server) {
     });
 
     // Handle operator message
+    // Operator replies are metered separately from bot replies: they are what
+    // a "human hours" style plan would price on.
     socket.on('operator-message', async (data) => {
       if (!isOperator) {
         return;

@@ -4,6 +4,7 @@ const Conversation = require('../models/conversation');
 const User = require('../models/user');
 const Company = require('../models/company');
 const { auth, operator, admin } = require('../middleware/auth');
+const { enforceLimit } = require('../middleware/quota');
 const { logger } = require('../services/logging');
 const {
   containsRegex,
@@ -633,8 +634,9 @@ async function loadManagedOperator(req, res) {
   return target;
 }
 
-// Create a new operator
-router.post('/operators', async (req, res) => {
+// Create a new operator. Seats are a billable resource, so the plan's limit
+// is checked before the account is created rather than after.
+router.post('/operators', enforceLimit('operators'), async (req, res) => {
   try {
     const { username, email, password, confirmPassword, name, displayName, companyId } = req.body;
     const currentUser = req.user;

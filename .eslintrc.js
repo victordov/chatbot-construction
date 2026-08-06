@@ -66,6 +66,7 @@ module.exports = {
         showTaskList: 'readonly',
         setupNotifications: 'readonly',
         setupWidgetSection: 'readonly',
+        setupBillingSection: 'readonly',
         removeChatFromList: 'readonly',
         updateActiveChatCount: 'readonly',
         displayUserContactInfo: 'readonly',

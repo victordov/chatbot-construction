@@ -10,6 +10,7 @@ const { auth: authMiddleware } = require('../middleware/auth');
 const { logger } = require('../services/logging');
 const socketManager = require('../socketManager');
 const runtimeRegistry = require('../services/runtime-registry');
+const { enforceLimit, requireFeature } = require('../middleware/quota');
 
 /** Knowledge source types the compiler knows how to query. */
 const SUPPORTED_KNOWLEDGE_SOURCE_TYPES = ['google_sheets', 'pdf', 'url', 'vector_store'];
@@ -110,7 +111,7 @@ router.get('/:id', authMiddleware, checkWorkflowAccess, async (req, res) => {
 });
 
 // Create new workflow
-router.post('/', authMiddleware, checkWorkflowAccess, async (req, res) => {
+router.post('/', authMiddleware, checkWorkflowAccess, requireFeature('workflows'), enforceLimit('workflows'), async (req, res) => {
   try {
     const { name, description, nodes = [], edges = [] } = req.body;
 

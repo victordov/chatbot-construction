@@ -4,6 +4,7 @@ const socketManager = require('../socketManager');
 const AIService = require('../services/ai');
 const tenantService = require('../services/tenant');
 const { logger } = require('../services/logging');
+const usageService = require('../services/usage');
 
 const router = express.Router();
 const aiService = new AIService();
@@ -83,6 +84,8 @@ router.post('/message', async (req, res) => {
         domain: origin || 'unknown',
         messages: []
       });
+
+      usageService.record(companyId, { conversations: 1 });
     }
 
     if (conversation.status === 'ended') {
@@ -106,6 +109,8 @@ router.post('/message', async (req, res) => {
       sender: 'user',
       timestamp: new Date()
     });
+
+    usageService.record(companyId, { messages: 1 });
 
     // A human has the conversation: don't talk over them.
     if (conversation.hasOperator) {
@@ -144,6 +149,8 @@ router.post('/message', async (req, res) => {
       sender: 'bot',
       timestamp: new Date()
     });
+
+    usageService.record(companyId, { aiResponses: 1, messages: 1 });
 
     res.json({
       success: true,

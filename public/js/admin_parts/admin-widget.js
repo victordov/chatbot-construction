@@ -162,6 +162,18 @@
       return;
     }
 
+    // A superadmin belongs to no tenant, so there is no widget of their own to
+    // configure. Say so rather than erroring on a request that cannot succeed.
+    if (!user.company) {
+      const snippet = document.getElementById('embed-snippet');
+      if (snippet) {
+        snippet.textContent =
+          'Widget installation is configured per company. Open a company from the ' +
+          'Companies section to manage its widget.';
+      }
+      return;
+    }
+
     document.getElementById('copy-snippet-btn')?.addEventListener('click', copySnippet);
     document.getElementById('rotate-widget-key-btn')?.addEventListener('click', rotateKey);
     document.getElementById('add-domain-btn')?.addEventListener('click', addDomain);

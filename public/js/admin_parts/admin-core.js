@@ -287,6 +287,9 @@ function initializeDashboard(token, user) {
   if (typeof setupWidgetSection === 'function') {
     setupWidgetSection();
   }
+  if (typeof setupBillingSection === 'function') {
+    setupBillingSection();
+  }
   setupExport();
 
   // Check URL parameters for chat selection

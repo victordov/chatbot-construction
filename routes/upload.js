@@ -26,6 +26,7 @@ const tenantService = require('../services/tenant');
 const { auth, operator } = require('../middleware/auth');
 const { canAccessCompany } = require('../utils/query');
 const { logger } = require('../services/logging');
+const usageService = require('../services/usage');
 
 const router = express.Router();
 
@@ -98,6 +99,17 @@ router.post('/', upload.single('file'), async (req, res) => {
       }
     }
 
+    // The uploader is an anonymous visitor, so the plan is resolved from the
+    // conversation's tenant rather than from req.user, and the quota
+    // middleware (which reads req.user) cannot be used here.
+    if (companyId && !(await usageService.hasFeature(companyId, 'fileUploads'))) {
+      return res.status(402).json({
+        success: false,
+        error: 'File uploads are not available on this plan',
+        code: 'FEATURE_NOT_IN_PLAN'
+      });
+    }
+
     const fileId = crypto.randomBytes(16).toString('hex');
     const companyDir = path.join(UPLOAD_ROOT, companyId ? companyId.toString() : 'unassigned');
     fs.mkdirSync(companyDir, { recursive: true });
@@ -117,6 +129,8 @@ router.post('/', upload.single('file'), async (req, res) => {
     });
     conversation.lastActivity = new Date();
     await conversation.save();
+
+    usageService.record(companyId, { filesUploaded: 1, fileBytes: req.file.size });
 
     logger.info('File uploaded', {
       fileId,
