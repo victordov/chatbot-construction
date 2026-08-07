@@ -118,11 +118,36 @@
                     </div>
                 </div>
 
+                <!-- Trying the flow out. Docked to the canvas rather than a
+                     modal so the path lighting up is visible while you chat —
+                     watching the run move through the nodes is the point. -->
+                <div class="wf-preview" id="wf-preview" hidden>
+                    <div class="wf-preview-head">
+                        <div>
+                            <strong class="small">Try it</strong>
+                            <div class="wf-preview-note">
+                                Reads run for real. Nothing is written, tagged, emailed or ticketed.
+                            </div>
+                        </div>
+                        <div class="d-flex gap-1">
+                            <button class="btn btn-sm btn-link p-0 me-2" id="wf-preview-restart">Restart</button>
+                            <button class="btn-close btn-sm" id="wf-preview-close" aria-label="Close"></button>
+                        </div>
+                    </div>
+                    <div class="wf-preview-transcript" id="wf-preview-transcript"></div>
+                    <div class="wf-preview-input">
+                        <input type="text" class="form-control form-control-sm"
+                               id="wf-preview-message" placeholder="Say something a visitor would…">
+                        <button class="btn btn-primary btn-sm" id="wf-preview-send">Send</button>
+                    </div>
+                </div>
+
                 <div class="wf-canvas-controls">
                     <button class="btn btn-sm btn-light" id="wf-zoom-out" title="Zoom out"><i data-feather="minus"></i></button>
                     <span class="wf-zoom-label" id="wf-zoom-label">100%</span>
                     <button class="btn btn-sm btn-light" id="wf-zoom-in" title="Zoom in"><i data-feather="plus"></i></button>
                     <button class="btn btn-sm btn-light" id="wf-fit" title="Fit to view"><i data-feather="maximize"></i></button>
+                    <button class="btn btn-sm btn-light" id="wf-try" title="Try this workflow"><i data-feather="play"></i></button>
                 </div>
 
                 <div class="wf-problems-panel">

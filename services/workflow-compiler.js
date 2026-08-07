@@ -709,6 +709,8 @@ class WorkflowCompilerService {
     let awaiting = null;
     const visited = [];
     const actionRuns = [];
+    // What a preview run declined to do for real. Empty on a live run.
+    const simulated = [];
 
     // Resume, if the last turn stopped at a question.
     //
@@ -777,7 +779,13 @@ class WorkflowCompilerService {
         // The call the whole node exists for. Its result becomes variables the
         // rest of the walk can use, so a downstream reply can say "your order
         // shipped on Tuesday" rather than "let me look into that".
-        const result = await workflowActions.execute(step.data, variables);
+        const result = await workflowActions.execute(step.data, variables, {
+          simulate: context.simulate
+        });
+
+        if (result.simulated) {
+          simulated.push(...result.simulated);
+        }
 
         Object.assign(variables, result.variables);
         variables.action_status = result.ok ? 'success' : 'failed';
@@ -815,10 +823,15 @@ class WorkflowCompilerService {
           companyId: tenantId,
           sessionId: context.sessionId,
           conversationId: context.conversationId,
+          simulate: context.simulate,
           render: template => this.renderTemplate(template, variables)
         });
 
         Object.assign(variables, outcome.variables || {});
+
+        if (outcome.simulated) {
+          simulated.push(...outcome.simulated);
+        }
 
         if (outcome.response) {
           response = outcome.response;
@@ -853,6 +866,15 @@ class WorkflowCompilerService {
         escalate = { enabled: true, type: 'operator' };
         response = this.renderTemplate(step.data.message, variables) ||
             'Let me connect you with a member of our team.';
+
+        if (context.simulate) {
+          // Nothing is assigned here even on a live run — the socket layer does
+          // that — but the author still needs to see that the flow reached a
+          // handover, because "the bot went quiet" is what it looks like
+          // otherwise.
+          simulated.push({ description: 'Hand the conversation to an operator' });
+        }
+
         nextId = null;
         break;
 
@@ -905,6 +927,8 @@ class WorkflowCompilerService {
       escalation: escalate,
       // Buttons for the widget to render, when the last node offered any.
       choices,
+      // Only populated on a preview run: what was declined rather than done.
+      simulated,
       // Handed back to the caller to persist on the conversation. Without it
       // the next message would start the workflow again from the top.
       state: {

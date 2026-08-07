@@ -29,6 +29,22 @@ const { logger } = require('./logging');
 const MAX_ASK_ATTEMPTS = 3;
 
 /**
+ * Report what a node would have done, instead of doing it.
+ *
+ * Used when a flow is being tried out from the editor. A preview that raises
+ * real tasks, tags real conversations and emails a real team is worse than no
+ * preview at all: an author testing a branch six times leaves six tickets
+ * behind, and stops testing.
+ *
+ * The note is shown to the author beside the transcript, so a dry run is still
+ * informative — "would have raised a task titled X" tells them the wiring is
+ * right without anybody's queue paying for it.
+ */
+function wouldHave(description, extra = {}) {
+  return { simulated: [{ description, ...extra }] };
+}
+
+/**
  * Answer formats worth checking before accepting.
  *
  * Validation exists so a workflow does not carry "asdf" forward into an API
@@ -317,7 +333,15 @@ async function runTag(step, context) {
     (step.data?.tags || []).map(tag => context.render(tag))
   );
 
-  if (tags.length === 0 || !context.sessionId) {
+  if (tags.length === 0) {
+    return {};
+  }
+
+  if (context.simulate) {
+    return wouldHave(`Tag the conversation: ${tags.join(', ')}`);
+  }
+
+  if (!context.sessionId) {
     return {};
   }
 
@@ -343,6 +367,15 @@ async function runTag(step, context) {
  */
 async function runTask(step, context) {
   const data = step.data || {};
+
+  if (context.simulate) {
+    return {
+      // A believable id, so a later step that renders {{task_id}} shows
+      // something of the right shape rather than a blank.
+      variables: { task_id: 'preview-task' },
+      ...wouldHave(`Raise a ${data.priority || 'medium'} task: "${context.render(data.title || '')}"`)
+    };
+  }
 
   if (!context.companyId) {
     return {};
@@ -422,6 +455,12 @@ async function runNotify(step, context) {
     return {};
   }
 
+  if (context.simulate) {
+    return wouldHave(
+      `Email ${to} with the subject "${context.render(data.subject || '')}"`
+    );
+  }
+
   const transport = emailChannel.buildTransport();
 
   if (!transport) {
@@ -463,6 +502,7 @@ module.exports = {
   runNotify,
   matchChoice,
   validateAnswer,
+  wouldHave,
   COMPARATORS,
   VALIDATORS,
   MAX_ASK_ATTEMPTS

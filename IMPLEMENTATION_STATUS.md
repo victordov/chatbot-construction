@@ -49,6 +49,20 @@ what nearly every real condition turns out to be. There is deliberately no code
 node: running tenant-supplied JavaScript in this process would need a sandbox
 that does not exist here, and clauses cover what people reach for it for.
 
+**Trying a workflow before publishing it.** Until this existed, the only way to
+find out whether a twelve-node flow worked was to publish it to real visitors
+and watch — which is how bad bots ship. The editor now runs the graph on the
+canvas, saved or not, as a real multi-turn conversation, and lights up the nodes
+it passes through so "why did it say that" is answered by looking rather than by
+reading the graph backwards. The canvas follows the run, because a flow ends on
+the right and that is where the panel sits.
+
+Previews read but do not write. A GET really happens — that is what makes the
+branches worth testing, since they are being tried against what the API actually
+returns — but a POST, a task, a tag and an email are declined and reported as
+"would have". An author testing a branch six times must not leave six tickets
+behind, or they stop testing.
+
 **Workflow templates.** Eight complete flows a tenant can start from — order
 status, returns, front-desk triage, lead qualification, appointment booking,
 verified account lookup, cancellation, and complaint handling — rather than a
@@ -211,7 +225,7 @@ content-hashed widget assets cached for a year with the loader on `no-cache`.
 
 ## Test suite
 
-`npm test` — 544 tests across 28 suites. An in-memory MongoDB starts
+`npm test` — 561 tests across 29 suites. An in-memory MongoDB starts
 automatically (`tests/globalSetup.js`), so no local `mongod` is needed.
 `tests/setup.js` blanks `OPENAI_API_KEY` so the suite never makes a real model
 call; the embedding and intent tests therefore assert on ranking and plumbing

@@ -626,3 +626,122 @@ body {
 }
 
 .wf-clause svg { width: 12px; height: 12px; }
+
+/* ------------------------------------------------------------------ preview
+   Docked to the canvas rather than shown as a modal: the run lights up the
+   nodes it passes through, and covering the canvas to chat would hide the one
+   thing that makes trying it here better than trying it in the widget. */
+
+.wf-preview {
+  position: absolute;
+  right: 1rem;
+  bottom: 1rem;
+  z-index: 15;
+  width: min(22rem, calc(100% - 2rem));
+  max-height: min(30rem, 70%);
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  border: 1px solid #dee2e6;
+  border-radius: 0.6rem;
+  box-shadow: 0 0.75rem 2rem rgba(0, 0, 0, 0.18);
+  overflow: hidden;
+}
+
+.wf-preview[hidden] { display: none; }
+
+.wf-preview-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  gap: 0.5rem;
+  padding: 0.6rem 0.75rem;
+  border-bottom: 1px solid #e9ecef;
+  background: #f8f9fa;
+}
+
+.wf-preview-note {
+  font-size: 0.7rem;
+  color: #6c757d;
+  line-height: 1.3;
+}
+
+.wf-preview-transcript {
+  flex: 1;
+  min-height: 6rem;
+  overflow-y: auto;
+  padding: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.wf-preview-msg {
+  max-width: 85%;
+  padding: 0.4rem 0.6rem;
+  border-radius: 0.6rem;
+  font-size: 0.82rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.wf-preview-msg.visitor {
+  align-self: flex-end;
+  background: var(--bs-primary, #0d6efd);
+  color: #fff;
+}
+
+.wf-preview-msg.bot {
+  align-self: flex-start;
+  background: #f1f3f5;
+  color: #212529;
+}
+
+/* What the run declined to do. Styled as a note rather than a message, because
+   it is the tool talking, not the bot. */
+.wf-preview-note-line {
+  align-self: stretch;
+  font-size: 0.72rem;
+  color: #6c757d;
+  border-left: 2px solid #ced4da;
+  padding: 0.15rem 0 0.15rem 0.5rem;
+}
+
+.wf-preview-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  align-self: flex-start;
+}
+
+.wf-preview-choice {
+  padding: 0.2rem 0.55rem;
+  border: 1px solid var(--bs-primary, #0d6efd);
+  border-radius: 1rem;
+  background: #fff;
+  color: var(--bs-primary, #0d6efd);
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.wf-preview-choice:hover {
+  background: var(--bs-primary, #0d6efd);
+  color: #fff;
+}
+
+.wf-preview-input {
+  display: flex;
+  gap: 0.4rem;
+  padding: 0.6rem;
+  border-top: 1px solid #e9ecef;
+}
+
+/* The node the run passed through. Fades after each turn so the most recent
+   path is the one that stands out rather than every node ever visited. */
+.wf-node.wf-visited {
+  box-shadow: 0 0 0 3px rgba(25, 135, 84, 0.35);
+}
+
+.wf-node.wf-visited-last {
+  box-shadow: 0 0 0 3px rgba(25, 135, 84, 0.9);
+}

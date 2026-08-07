@@ -516,6 +516,82 @@ router.post('/actions/test', authMiddleware, checkWorkflowAccess, async (req, re
   }
 });
 
+/**
+ * Try a workflow without publishing it.
+ *
+ * The graph comes in the request rather than from the database, because the
+ * whole point is to try the thing on the canvas — including changes that have
+ * not been saved. Until this existed, the only way to find out whether a
+ * twelve-node flow worked was to publish it to real visitors and watch, which
+ * is how bad bots ship.
+ *
+ * Runs in simulate mode: reads happen, writes do not. See services/workflow-
+ * nodes.js for what each node declines to do.
+ */
+router.post('/preview', authMiddleware, checkWorkflowAccess, async (req, res) => {
+  try {
+    const { nodes = [], edges = [], message = '', state = {}, variables = {} } = req.body;
+
+    if (!Array.isArray(nodes) || nodes.length === 0) {
+      return res.status(400).json({ success: false, error: 'There is nothing on the canvas to try' });
+    }
+
+    const WorkflowCompilerService = require('../services/workflow-compiler');
+    const compiler = new WorkflowCompilerService();
+
+    const validation = compiler.validateWorkflow(nodes, edges);
+
+    if (!validation.valid) {
+      // Reported as a 200 with the problems listed: an invalid draft is a
+      // normal state while building, not a failed request.
+      return res.json({
+        success: false,
+        invalid: true,
+        errors: validation.errors,
+        warnings: validation.warnings
+      });
+    }
+
+    const tenantId = req.user.company?.id || null;
+
+    // Compiled fresh from the request every turn. Caching it would mean an
+    // author editing a node mid-conversation keeps testing the old one.
+    const compiled = await compiler.compileWorkflow(nodes, edges, tenantId);
+
+    const result = await compiler.executeWorkflow(
+      compiled.compiledChain,
+      message,
+      Array.isArray(req.body.history) ? req.body.history.slice(-10) : [],
+      {
+        simulate: true,
+        state,
+        variables,
+        // No session and no conversation: nothing here is attached to a real
+        // one, which is also why the side-effecting nodes have nothing to
+        // write to even if the simulate flag were missed.
+        sessionId: null,
+        conversationId: null
+      }
+    );
+
+    res.json({
+      success: true,
+      response: result.response,
+      choices: result.choices || null,
+      escalation: result.escalation || null,
+      state: result.state,
+      simulated: result.simulated || [],
+      // The nodes the run passed through, so the editor can light up the path.
+      path: result.metadata?.path || [],
+      actions: result.metadata?.actions || [],
+      warnings: validation.warnings
+    });
+  } catch (error) {
+    logger.error('Workflow preview failed:', error);
+    res.status(400).json({ success: false, error: error.message });
+  }
+});
+
 // Get workflow execution stats
 router.get('/:id/stats', authMiddleware, checkWorkflowAccess, async (req, res) => {
   try {

@@ -96,7 +96,9 @@ function readPath(source, path) {
  *
  * @param {object} config the node's `data`
  * @param {object} variables the run's variables, for templating
- * @param {object} [options] `includeBody` returns a truncated raw response.
+ * @param {object} [options] `simulate` refuses anything that would change the
+ *        tenant's data — see below. `includeBody` returns a truncated raw
+ *        response.
  *        Only ever set from the editor's "Test" button, where a tenant admin is
  *        deliberately inspecting their own API to find the right field paths -
  *        never during a conversation, where the body would reach the model.
@@ -113,6 +115,27 @@ async function execute(config = {}, variables = {}, options = {}) {
 
   if (!ALLOWED_METHODS.has(method)) {
     return fail(`${method} is not an allowed method`);
+  }
+
+  // Trying a flow out from the editor performs reads but refuses writes.
+  //
+  // A GET is what makes a preview worth having: real order data flows through
+  // the branches, so the author is testing the flow they will actually ship.
+  // A POST is a refund issued, a ticket opened, a record changed — testing a
+  // branch six times must not do that six times to somebody's live system.
+  if (options.simulate && method !== 'GET') {
+    return {
+      ok: true,
+      simulated: [{
+        description: `Send ${method} to ${config.url}`,
+        detail: 'Not sent — previews do not write to your systems.'
+      }],
+      // Reported as success so the flow carries on down the branch the author
+      // is trying to test. Stopping at the error branch would tell them their
+      // wiring is broken when it is not.
+      variables: {},
+      durationMs: 0
+    };
   }
 
   const rendered = fill(config.url, variables, true);

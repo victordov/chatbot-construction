@@ -482,6 +482,9 @@
       this.selectedEdgeId = null;
       this.dirty = false;
       this.validationErrors = [];
+      // Where the preview conversation has got to. Reset when the panel is
+      // restarted or the canvas changes shape underneath it.
+      this.previewState = null;
       // Stand-in values for an action node's placeholders, keyed by node id.
       // Scaffolding for the "Try it" button, deliberately not persisted.
       this.testValues = {};
@@ -544,7 +547,10 @@
         zoomLabel: byId('wf-zoom-label'),
         emptyHint: byId('wf-empty-hint'),
         templatePicker: byId('wf-template-picker'),
-        templateList: byId('wf-template-list')
+        templateList: byId('wf-template-list'),
+        preview: byId('wf-preview'),
+        previewTranscript: byId('wf-preview-transcript'),
+        previewMessage: byId('wf-preview-message')
       };
     }
 
@@ -1148,6 +1154,8 @@
             ${ports.join('')}
           </div>`;
       }).join('');
+
+      this.repaintPath();
     }
 
     /** One-line preview of a node's configuration, shown on the node itself. */
@@ -1990,6 +1998,217 @@
       });
     }
 
+    // -- preview ----------------------------------------------------------
+
+    openPreview() {
+      this.el.preview.hidden = false;
+
+      if (!this.el.previewTranscript.children.length) {
+        this.addPreviewNote(
+          'Say something a visitor might say. The nodes it passes through light up on the canvas.'
+        );
+      }
+
+      this.el.previewMessage.focus();
+    }
+
+    restartPreview() {
+      this.previewState = null;
+      this.el.previewTranscript.innerHTML = '';
+      this.clearPath();
+      this.addPreviewNote('Started again from the top.');
+    }
+
+    addPreviewMessage(text, who) {
+      const el = document.createElement('div');
+      el.className = `wf-preview-msg ${who}`;
+      el.textContent = text;
+      this.el.previewTranscript.appendChild(el);
+      this.el.previewTranscript.scrollTop = this.el.previewTranscript.scrollHeight;
+      return el;
+    }
+
+    addPreviewNote(text) {
+      const el = document.createElement('div');
+      el.className = 'wf-preview-note-line';
+      el.textContent = text;
+      this.el.previewTranscript.appendChild(el);
+      this.el.previewTranscript.scrollTop = this.el.previewTranscript.scrollHeight;
+    }
+
+    /**
+     * Buttons a choices node offered, so they can be tapped rather than typed.
+     *
+     * Tapping is how a visitor will answer, so testing by typing the label
+     * would be testing a path most people never take.
+     */
+    addPreviewChoices(choices) {
+      const group = document.createElement('div');
+      group.className = 'wf-preview-choices';
+
+      choices.forEach(choice => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'wf-preview-choice';
+        button.textContent = choice.label;
+        button.addEventListener('click', () => {
+          group.remove();
+          this.sendPreview(choice.label);
+        });
+        group.appendChild(button);
+      });
+
+      this.el.previewTranscript.appendChild(group);
+      this.el.previewTranscript.scrollTop = this.el.previewTranscript.scrollHeight;
+    }
+
+    clearPath(forget = true) {
+      if (forget) {
+        this.lastPath = null;
+      }
+      this.el.nodeLayer.querySelectorAll('.wf-visited, .wf-visited-last').forEach(el => {
+        el.classList.remove('wf-visited', 'wf-visited-last');
+      });
+    }
+
+    /** Re-apply the last run's path after the node layer has been rebuilt. */
+    repaintPath() {
+      if (this.lastPath && !this.el.preview.hidden) {
+        this.showPath(this.lastPath);
+      }
+    }
+
+    /**
+     * Light up the nodes the run passed through.
+     *
+     * The reason to try a flow here rather than in the widget: seeing which
+     * branch it actually took answers "why did it say that" without reading
+     * the graph backwards.
+     */
+    showPath(path) {
+      // Remembered because renderNodes rebuilds the layer from scratch — after
+      // dragging a node the highlight would otherwise vanish mid-conversation,
+      // which reads as the preview having lost its place.
+      this.clearPath(false);
+      this.lastPath = path;
+
+      path.forEach((nodeId, index) => {
+        const el = this.el.nodeLayer.querySelector(`[data-node-id="${nodeId}"]`);
+        if (el) {
+          el.classList.add(index === path.length - 1 ? 'wf-visited-last' : 'wf-visited');
+        }
+      });
+
+      this.followRun(path[path.length - 1]);
+    }
+
+    /**
+     * Keep the node the run just reached in view.
+     *
+     * A flow reads left to right and ends on the right, which is exactly where
+     * the preview panel sits — without this, the interesting node is behind the
+     * panel for the last half of every conversation. Only pans when the node is
+     * actually out of sight, so the canvas does not lurch on every turn.
+     */
+    followRun(nodeId) {
+      const node = this.nodeById(nodeId);
+
+      if (!node) {
+        return;
+      }
+
+      const rect = this.el.canvas.getBoundingClientRect();
+      const panelWidth = this.el.preview.hidden
+        ? 0
+        : this.el.preview.getBoundingClientRect().width + 32;
+
+      // Where the node currently sits in the viewport.
+      const x = node.position.x * this.view.zoom + this.view.x;
+      const y = node.position.y * this.view.zoom + this.view.y;
+      const width = NODE_WIDTH * this.view.zoom;
+      const height = NODE_HEIGHT * this.view.zoom;
+
+      const margin = 40;
+      const visibleRight = rect.width - panelWidth - margin;
+
+      let dx = 0;
+      let dy = 0;
+
+      if (x + width > visibleRight) {
+        dx = visibleRight - (x + width);
+      } else if (x < margin) {
+        dx = margin - x;
+      }
+
+      if (y + height > rect.height - margin) {
+        dy = (rect.height - margin) - (y + height);
+      } else if (y < margin) {
+        dy = margin - y;
+      }
+
+      if (dx === 0 && dy === 0) {
+        return;
+      }
+
+      this.view.x += dx;
+      this.view.y += dy;
+      this.applyTransform();
+    }
+
+    async sendPreview(text) {
+      const message = (text !== undefined ? text : this.el.previewMessage.value).trim();
+
+      if (!message) {
+        return;
+      }
+
+      this.addPreviewMessage(message, 'visitor');
+      this.el.previewMessage.value = '';
+
+      const thinking = this.addPreviewMessage('…', 'bot');
+
+      try {
+        const result = await this.api('/preview', {
+          method: 'POST',
+          body: JSON.stringify({
+            // The canvas as it stands, saved or not — trying the unsaved thing
+            // is the whole point.
+            nodes: this.nodes,
+            edges: this.edges,
+            message,
+            state: this.previewState || {}
+          })
+        });
+
+        thinking.remove();
+
+        if (result.invalid) {
+          this.addPreviewNote(`Cannot run yet: ${result.errors.join(' · ')}`);
+          return;
+        }
+
+        this.addPreviewMessage(result.response || '(the flow ended without saying anything)', 'bot');
+        this.previewState = result.state;
+
+        (result.simulated || []).forEach(note => {
+          this.addPreviewNote(`Would have: ${note.description}${note.detail ? ` — ${note.detail}` : ''}`);
+        });
+
+        if (result.escalation) {
+          this.addPreviewNote('The conversation would now go to an operator.');
+        }
+
+        if (result.choices && result.choices.length) {
+          this.addPreviewChoices(result.choices);
+        }
+
+        this.showPath(result.path || []);
+      } catch (error) {
+        thinking.remove();
+        this.addPreviewNote(error.message);
+      }
+    }
+
     // -- templates --------------------------------------------------------
 
     /**
@@ -2083,6 +2302,21 @@
 
     bindToolbar() {
       const on = (id, handler) => document.getElementById(id)?.addEventListener('click', handler);
+
+      on('wf-try', () => this.openPreview());
+      on('wf-preview-close', () => {
+        this.el.preview.hidden = true;
+        this.clearPath();
+      });
+      on('wf-preview-restart', () => this.restartPreview());
+      on('wf-preview-send', () => this.sendPreview());
+
+      this.el.previewMessage?.addEventListener('keydown', event => {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          this.sendPreview();
+        }
+      });
 
       on('wf-open-templates', () => this.openTemplates());
       on('wf-template-close', () => {
