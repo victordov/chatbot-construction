@@ -31,7 +31,10 @@ const FLOW_NODES = new Set([
   'start', 'knowledge', 'knowledge-source', 'llm',
   'response', 'router', 'fallback', 'operator-handoff', 'action',
   // Nodes that make a workflow a conversation rather than a single reply.
-  'ask', 'buttons', 'condition', 'set', 'business-hours', 'tag', 'task', 'notify'
+  'ask', 'buttons', 'condition', 'set', 'business-hours', 'tag', 'task', 'notify',
+  // Calls into the tenant's own systems through the connector SDK, with shapes
+  // we know rather than JSON we guess at.
+  'capability'
 ]);
 
 /** Nodes that stop the walk and wait for the visitor to answer. */
@@ -48,6 +51,7 @@ const BRANCHING_NODES = new Map([
   ['action', ['success', 'error']],
   ['condition', ['true', 'false']],
   ['business-hours', ['open', 'closed']],
+  ['capability', ['success', 'error']],
   // One output per choice, plus a fallback for an answer that matched none.
   ['buttons', null],
   // An answer that fails validation too many times takes its own path.
@@ -706,6 +710,9 @@ class WorkflowCompilerService {
     let response = null;
     let escalate = null;
     let choices = null;
+    // Structured results — products, appointment times — for the widget to
+    // render properly rather than describe in a sentence.
+    let cards = null;
     let awaiting = null;
     const visited = [];
     const actionRuns = [];
@@ -816,7 +823,8 @@ class WorkflowCompilerService {
       case 'business-hours':
       case 'tag':
       case 'task':
-      case 'notify': {
+      case 'notify':
+      case 'capability': {
         const outcome = await this.runNode(step.type, step, {
           currentId,
           variables,
@@ -838,6 +846,9 @@ class WorkflowCompilerService {
         }
         if (outcome.choices) {
           choices = outcome.choices;
+        }
+        if (outcome.cards) {
+          cards = outcome.cards;
         }
 
         if (outcome.awaiting) {
@@ -927,6 +938,7 @@ class WorkflowCompilerService {
       escalation: escalate,
       // Buttons for the widget to render, when the last node offered any.
       choices,
+      cards,
       // Only populated on a preview run: what was declined rather than done.
       simulated,
       // Handed back to the caller to persist on the conversation. Without it
@@ -962,7 +974,8 @@ class WorkflowCompilerService {
       'business-hours': nodes.runBusinessHours,
       tag: nodes.runTag,
       task: nodes.runTask,
-      notify: nodes.runNotify
+      notify: nodes.runNotify,
+      capability: nodes.runCapability
     };
 
     const handler = handlers[type];

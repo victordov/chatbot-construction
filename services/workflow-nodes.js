@@ -22,6 +22,8 @@ const Company = require('../models/company');
 const Task = require('../models/task');
 const emailChannel = require('./email-channel');
 const availability = require('./availability');
+const connector = require('./connector');
+const capabilityContract = require('../config/capabilities');
 const assignmentService = require('./assignment');
 const { logger } = require('./logging');
 
@@ -491,6 +493,115 @@ async function runNotify(step, context) {
   return {};
 }
 
+/**
+ * Use one of the capabilities the tenant implemented in their connector.
+ *
+ * The difference between this and the Call an API node is that the result has a
+ * known shape. A product has a title and an image; a slot has a time. So the
+ * results can be offered as buttons, rendered as cards in the widget, and
+ * referred to by name in a later step — none of which is possible with
+ * arbitrary JSON pulled apart by hand.
+ *
+ * Two outputs, like the API node: what to do when it worked, and what to do
+ * when it did not or found nothing. "Found nothing" is deliberately the same
+ * branch as "failed", because from the visitor's point of view they are the
+ * same situation — the flow could not help — and making an author wire three
+ * paths for two outcomes is how flows end up with dead ends.
+ */
+async function runCapability(step, context) {
+  const data = step.data || {};
+  const capabilityId = data.capability;
+  const capability = capabilityContract.byId(capabilityId);
+
+  if (!capability) {
+    return { branch: 'error', variables: { capability_error: 'No capability chosen' } };
+  }
+
+  // The inputs are templates, so a search can use something collected earlier.
+  const input = {};
+  Object.keys(capability.input).forEach(field => {
+    const raw = (data.input || {})[field];
+    if (raw !== undefined && raw !== '') {
+      input[field] = context.render(String(raw));
+    }
+  });
+
+  const result = await connector.call(context.companyId, capabilityId, input, {
+    simulate: context.simulate,
+    maxItems: parseInt(data.limit, 10) || undefined
+  });
+
+  if (result.simulated) {
+    // A write declined by the preview. Reported as success so the author is
+    // testing the branch they meant to, exactly as the API node does.
+    return { branch: 'success', simulated: result.simulated };
+  }
+
+  if (!result.ok) {
+    return {
+      branch: 'error',
+      variables: { capability_error: result.error || 'The connector could not answer' }
+    };
+  }
+
+  const value = result.value;
+  const isList = Boolean(capability.returns.list);
+  const items = isList ? (value || []) : (value ? [value] : []);
+
+  if (items.length === 0) {
+    // Nothing found is the error branch on purpose: the visitor asked for
+    // something and the flow has nothing to say, which is the same problem to
+    // solve as the connector being down.
+    return { branch: 'error', variables: { capability_error: 'Nothing found' } };
+  }
+
+  const variables = { result_count: String(items.length) };
+
+  // The first result flattened into variables, so a Fixed Reply can say
+  // "{{result_title}} costs {{result_price}}" without anyone learning a path
+  // syntax. The full list travels separately for the widget to render.
+  Object.entries(items[0]).forEach(([field, fieldValue]) => {
+    variables[`result_${field}`] = String(fieldValue);
+  });
+
+  return {
+    branch: 'success',
+    variables,
+    // Rendered as cards by the widget rather than described in a sentence.
+    cards: { type: capability.returns.list || capability.returns.one, items },
+    choices: data.offerAsChoices
+      ? items.slice(0, 6).map(item => ({
+        id: item.id,
+        label: item.title || item.label || formatSlotLabel(item),
+        value: item.id
+      }))
+      : undefined
+  };
+}
+
+/**
+ * A slot as somebody would say it out loud.
+ *
+ * Used when a slot has no label of its own — "Thursday, 2:30 pm" is a button
+ * somebody can tap with confidence; an ISO timestamp is not.
+ */
+function formatSlotLabel(slot) {
+  if (!slot || !slot.startsAt) {
+    return 'This time';
+  }
+
+  const date = new Date(slot.startsAt);
+
+  if (Number.isNaN(date.getTime())) {
+    return String(slot.startsAt);
+  }
+
+  return date.toLocaleString('en-GB', {
+    weekday: 'long', day: 'numeric', month: 'short',
+    hour: 'numeric', minute: '2-digit'
+  });
+}
+
 module.exports = {
   runAsk,
   runButtons,
@@ -500,6 +611,8 @@ module.exports = {
   runTag,
   runTask,
   runNotify,
+  runCapability,
+  formatSlotLabel,
   matchChoice,
   validateAnswer,
   wouldHave,

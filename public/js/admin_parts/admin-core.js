@@ -311,6 +311,9 @@ function initializeDashboard(token, user) {
   if (typeof setupWebhooks === 'function') {
     setupWebhooks();
   }
+  if (typeof setupConnector === 'function') {
+    setupConnector();
+  }
   setupExport();
 
   // Check URL parameters for chat selection

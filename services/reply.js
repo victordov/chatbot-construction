@@ -87,6 +87,7 @@ async function tryWorkflow({ conversation, companyId, message, history }) {
     return {
       text: result.response,
       choices: result.choices || null,
+      cards: result.cards || null,
       escalate: result.escalation || null,
       source: 'workflow',
       metadata: result.metadata

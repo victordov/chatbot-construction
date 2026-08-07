@@ -188,6 +188,18 @@
         { key: 'dueInDays', label: 'Due in (days)', type: 'text', placeholder: '3' }
       ]
     },
+    capability: {
+      label: 'Use Your Data', icon: 'box', color: '#6610f2',
+      description: 'Search your catalogue, offer appointment times',
+      inputs: 1, outputs: 2,
+      fields: [
+        { key: 'capability', label: 'What to do', type: 'capability', required: true },
+        { key: 'input', label: 'Inputs', type: 'capability-input' },
+        { key: 'offerAsChoices', label: 'Offer the results as buttons', type: 'select',
+          options: ['no', 'yes'],
+          help: 'A visitor tapping a product or a time is unambiguous in a way typing is not.' }
+      ]
+    },
     notify: {
       label: 'Email the Team', icon: 'mail', color: '#d63384',
       description: 'Send an email when the flow gets here',
@@ -260,6 +272,7 @@
       clauses: [{ left: '', operator: 'equals', right: '' }]
     },
     notify: { label: 'Email the Team', to: '', subject: '', body: '' },
+    capability: { label: 'Use Your Data', capability: '', input: {}, offerAsChoices: 'yes' },
     set: { label: 'Set a Value', assignments: [] },
     'business-hours': { label: 'Open or Closed', requireOperator: 'an operator is online' },
     tag: { label: 'Add a Tag', tags: [] },
@@ -422,6 +435,17 @@
       ];
     }
 
+    if (node.type === 'capability') {
+      // "Found nothing" shares the failure branch on purpose: from the
+      // visitor's side an empty result and an unreachable connector are the
+      // same problem, and wiring three paths for two outcomes is how flows
+      // grow dead ends.
+      return [
+        { handle: 'success', label: 'Found something' },
+        { handle: 'error', label: 'Nothing found or failed' }
+      ];
+    }
+
     if (node.type === 'business-hours') {
       return [
         { handle: 'open', label: 'Open' },
@@ -507,6 +531,11 @@
       }
 
       this.cacheElements();
+
+      // Before the palette, so the Use Your Data node knows what this tenant
+      // has actually implemented the first time somebody opens it.
+      await this.loadCapabilities();
+
       this.bindPalette();
       this.bindCanvas();
       this.bindToolbar();
@@ -749,7 +778,7 @@
         'Answering': ['knowledge', 'llm', 'response'],
         'Asking': ['ask', 'buttons'],
         'Control flow': ['router', 'condition', 'business-hours', 'fallback', 'operator-handoff'],
-        'Doing': ['action', 'set', 'tag', 'task', 'notify'],
+        'Doing': ['capability', 'action', 'set', 'tag', 'task', 'notify'],
         'Safety': ['moderation']
       };
 
@@ -1185,6 +1214,10 @@
           : first;
       }
       case 'notify': return d.to || 'No recipient set';
+      case 'capability': {
+        const known = (window.WF_CAPABILITIES || []).find(c => c.id === d.capability);
+        return known ? known.label : 'Nothing chosen yet';
+      }
       case 'set': return `${(d.assignments || []).length} value(s)`;
       case 'business-hours': return 'Branch on availability';
       case 'tag': return (d.tags || []).length ? d.tags.join(', ') : 'No tags set';
@@ -1374,6 +1407,12 @@
 
       case 'clauses':
         return this.renderClauses(node);
+
+      case 'capability':
+        return this.renderCapabilityPicker(node);
+
+      case 'capability-input':
+        return this.renderCapabilityInput(node);
 
       case 'preset':
         return this.renderActionPresets(node);
@@ -1671,6 +1710,86 @@
         </div>`;
     }
 
+    /**
+     * Which of the tenant's capabilities this node uses.
+     *
+     * Only the ones their connector actually implements are offered. Listing
+     * capabilities they have not built would let somebody wire a flow that can
+     * never work and only find out in front of a customer.
+     */
+    renderCapabilityPicker(node) {
+      const available = window.WF_CAPABILITIES || [];
+      const implemented = new Set(window.WF_CONNECTOR_CAPABILITIES || []);
+
+      if (available.length === 0) {
+        return `
+          <div class="alert alert-warning py-2 px-3 small">
+            No connector is set up yet. Add one under
+            <strong>Settings → Your data</strong> to use your own catalogue and
+            appointment times here.
+          </div>`;
+      }
+
+      return `
+        <div class="mb-3">
+          <label class="form-label" for="wf-capability">What to do <span class="text-danger">*</span></label>
+          <select class="form-select form-select-sm" id="wf-capability" data-field="capability">
+            <option value="">Choose…</option>
+            ${available.map(capability => {
+    const ready = implemented.has(capability.id);
+    return `<option value="${escapeHtml(capability.id)}"
+                        ${capability.id === node.data.capability ? 'selected' : ''}
+                        ${ready ? '' : 'disabled'}>
+                  ${escapeHtml(capability.label)}${ready ? '' : ' — not implemented yet'}
+                </option>`;
+  }).join('')}
+          </select>
+          ${node.data.capability ? `
+            <div class="form-text">
+              ${escapeHtml((available.find(c => c.id === node.data.capability) || {}).description || '')}
+            </div>` : ''}
+        </div>`;
+    }
+
+    /**
+     * The inputs the chosen capability takes.
+     *
+     * Built from the contract rather than typed by hand, so an author cannot
+     * misspell a field name and get silence.
+     */
+    renderCapabilityInput(node) {
+      const capability = (window.WF_CAPABILITIES || [])
+        .find(entry => entry.id === node.data.capability);
+
+      if (!capability) {
+        return '';
+      }
+
+      const values = node.data.input || {};
+
+      return `
+        <div class="mb-3">
+          <label class="form-label">Inputs</label>
+          <div class="form-text mb-2">
+            Placeholders such as <code>{{user_input}}</code> are filled in.
+          </div>
+          ${Object.entries(capability.input).map(([field, spec]) => {
+    const optional = spec.endsWith('?');
+    return `
+              <div class="mb-2">
+                <label class="form-label small mb-1" for="wf-cap-${field}">
+                  ${escapeHtml(field)}${optional ? '' : ' <span class="text-danger">*</span>'}
+                  <span class="text-muted">${escapeHtml(spec.replace('?', ''))}</span>
+                </label>
+                <input class="form-control form-control-sm" id="wf-cap-${field}"
+                       data-capability-input="${escapeHtml(field)}"
+                       value="${escapeHtml(values[field] || '')}"
+                       placeholder="${field === 'query' ? '{{user_input}}' : ''}">
+              </div>`;
+  }).join('')}
+        </div>`;
+    }
+
     renderConditions(node) {
       const conditions = node.data.conditions || [];
       return `
@@ -1714,14 +1833,14 @@
           // Only the fields that change the node's appearance need a repaint.
           if (['label', 'sourceType', 'prompt', 'template', 'message', 'strictness',
             'url', 'method', 'question', 'variable', 'left', 'operator', 'right',
-            'title'].includes(e.target.dataset.field)) {
+            'title', 'capability'].includes(e.target.dataset.field)) {
             this.renderNodes();
             if (window.feather) {
               window.feather.replace();
             }
           }
           // Changing the method shows or hides the request body field.
-          if (['sourceType', 'method', 'operator'].includes(e.target.dataset.field)) {
+          if (['sourceType', 'method', 'operator', 'capability'].includes(e.target.dataset.field)) {
             this.renderProperties();
           }
 
@@ -1851,6 +1970,14 @@
                 });
               });
           });
+      });
+
+      this.el.properties.querySelectorAll('[data-capability-input]').forEach(input => {
+        input.addEventListener('input', event => {
+          node.data.input = node.data.input || {};
+          node.data.input[event.target.dataset.capabilityInput] = event.target.value;
+          this.markDirty();
+        });
       });
 
       this.el.properties.querySelectorAll('[data-taglist]').forEach(input => {
@@ -2217,6 +2344,32 @@
      * Loaded on demand rather than at start-up: most sessions are edits to an
      * existing workflow and never open this.
      */
+    /**
+     * The contract, and which parts of it this tenant has built.
+     *
+     * Loaded once at start-up rather than per node, and failing quietly: a
+     * tenant with no connector still has a fully working editor, they simply
+     * do not see the Use Your Data node offering anything.
+     */
+    async loadCapabilities() {
+      try {
+        const response = await fetch('/api/companies/me/connector', {
+          headers: { 'x-auth-token': this.token }
+        });
+
+        if (!response.ok) {
+          return;
+        }
+
+        const body = await response.json();
+        window.WF_CAPABILITIES = body.contract || [];
+        window.WF_CONNECTOR_CAPABILITIES = (body.connector && body.connector.capabilities) || [];
+      } catch {
+        window.WF_CAPABILITIES = [];
+        window.WF_CONNECTOR_CAPABILITIES = [];
+      }
+    }
+
     async openTemplates() {
       this.el.templatePicker.hidden = false;
       this.el.templateList.innerHTML = '<p class="text-muted">Loading…</p>';

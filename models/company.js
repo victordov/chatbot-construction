@@ -106,6 +106,26 @@ const CompanySchema = new mongoose.Schema({
   },
 
   /**
+   * The tenant's own systems, reachable through the connector SDK.
+   *
+   * One URL where they have mounted the SDK handler, and the secret we sign
+   * calls with so their connector can prove the request is ours. `capabilities`
+   * is what discovery found they implement — cached so a conversation does not
+   * pay for a discovery round trip, and refreshed when they ask us to re-check.
+   */
+  connector: {
+    enabled: { type: Boolean, default: false },
+    url: { type: String, trim: true },
+    // Never needed for a listing, and a field you have to ask for is a field
+    // that does not leak by accident. Encrypted at rest.
+    secret: { type: String, select: false },
+    capabilities: [{ type: String }],
+    sdkVersion: { type: String },
+    lastCheckedAt: { type: Date },
+    lastError: { type: String }
+  },
+
+  /**
    * How conversations reach an operator.
    *
    * Without this a queue is a free-for-all: whoever is watching picks up what

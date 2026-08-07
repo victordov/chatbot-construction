@@ -1,0 +1,10 @@
+{
+  "name": "@chatbot-platform/connector-sdk",
+  "version": "0.1.0",
+  "description": "Implement a handful of methods and your chatbot can search your catalogue, offer appointment times and book them.",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "files": ["index.js", "index.d.ts", "README.md"],
+  "license": "MIT",
+  "engines": { "node": ">=18" }
+}

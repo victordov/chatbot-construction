@@ -494,6 +494,12 @@
 
         addBotMessage(messageText, true, sender);
 
+        // Products or appointment times, rendered properly rather than
+        // described in a sentence. This is what knowing the shape buys.
+        if (message.cards && Array.isArray(message.cards.items) && message.cards.items.length) {
+          addCards(message.cards);
+        }
+
         // Quick replies, when the workflow offered a set of choices.
         if (Array.isArray(message.choices) && message.choices.length > 0) {
           addQuickReplies(message.choices);
@@ -544,6 +550,12 @@
         const sender = message.senderName || 'Operator';
 
         addBotMessage(messageText, true, sender);
+
+        // Products or appointment times, rendered properly rather than
+        // described in a sentence. This is what knowing the shape buys.
+        if (message.cards && Array.isArray(message.cards.items) && message.cards.items.length) {
+          addCards(message.cards);
+        }
 
         // Quick replies, when the workflow offered a set of choices.
         if (Array.isArray(message.choices) && message.choices.length > 0) {
@@ -1285,6 +1297,97 @@
   }
 
   // Set typing indicator visibility
+  /**
+   * Products and appointment times, shown rather than described.
+   *
+   * A product with its picture and price answers "do you have waterproof
+   * panniers?" in a way no paragraph does, and a time on a button is something
+   * somebody taps rather than retypes. Both are only possible because the
+   * connector contract fixes the shape.
+   */
+  function addCards(cards) {
+    const container = document.createElement('div');
+    container.className = `chat-cards chat-cards-${cards.type === 'Slot' ? 'slots' : 'products'}`;
+
+    cards.items.slice(0, 8).forEach(item => {
+      const card = document.createElement(cards.type === 'Slot' ? 'button' : 'div');
+      card.className = 'chat-card';
+
+      if (cards.type === 'Slot') {
+        card.type = 'button';
+        card.textContent = item.label || formatSlot(item.startsAt);
+        if (item.staff) {
+          const staff = document.createElement('span');
+          staff.className = 'chat-card-staff';
+          staff.textContent = item.staff;
+          card.appendChild(staff);
+        }
+        // Tapping sends the id, which is what the booking step needs; the
+        // transcript shows the readable time so it still reads as a
+        // conversation.
+        card.addEventListener('click', () => {
+          container.remove();
+          chatInput.value = item.label || formatSlot(item.startsAt);
+          sendMessage();
+        });
+      } else {
+        if (item.image) {
+          const image = document.createElement('img');
+          image.className = 'chat-card-image';
+          image.src = item.image;
+          image.alt = '';
+          // A broken image should leave a card that still works, not a
+          // browser's broken-image icon in somebody's chat.
+          image.addEventListener('error', () => image.remove());
+          card.appendChild(image);
+        }
+
+        const title = document.createElement('div');
+        title.className = 'chat-card-title';
+        title.textContent = item.title;
+        card.appendChild(title);
+
+        if (item.price) {
+          const price = document.createElement('div');
+          price.className = 'chat-card-price';
+          price.textContent = item.price;
+          card.appendChild(price);
+        }
+
+        if (item.url) {
+          const link = document.createElement('a');
+          link.className = 'chat-card-link';
+          link.href = item.url;
+          link.target = '_blank';
+          // The widget sits on the tenant's own site, but these URLs come from
+          // their API rather than from us, so the usual precautions apply.
+          link.rel = 'noopener noreferrer';
+          link.textContent = 'View';
+          card.appendChild(link);
+        }
+      }
+
+      container.appendChild(card);
+    });
+
+    chatMessages.appendChild(container);
+    scrollToBottom();
+  }
+
+  /** A time as somebody would say it, not as a machine stores it. */
+  function formatSlot(value) {
+    const date = new Date(value);
+
+    if (isNaN(date.getTime())) {
+      return String(value);
+    }
+
+    return date.toLocaleString(undefined, {
+      weekday: 'short', day: 'numeric', month: 'short',
+      hour: 'numeric', minute: '2-digit'
+    });
+  }
+
   /**
    * Buttons for a question with a known set of answers.
    *

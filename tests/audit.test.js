@@ -180,6 +180,13 @@ describe('Audit log', () => {
   });
 
   describe('reading it', () => {
+    // Audit writes are deliberately fire-and-forget — a sign-in must not wait
+    // on the log — so an entry from an earlier test can land after this
+    // block's cleanup. Every assertion here therefore counts only the actions
+    // this block seeded, rather than everything the company has.
+    const SEEDED = ['operator.deactivated', 'plan.changed', 'superadmin.created'];
+    const seeded = entries => entries.filter(entry => SEEDED.includes(entry.action));
+
     beforeEach(async () => {
       await AuditLog.create([
         { company: acme._id, action: 'operator.deactivated', actor: { username: 'audit-dana' }, at: new Date() },
@@ -195,7 +202,7 @@ describe('Audit log', () => {
         .set('x-auth-token', danaToken);
 
       expect(response.status).toBe(200);
-      expect(response.body.entries).toHaveLength(2);
+      expect(seeded(response.body.entries)).toHaveLength(2);
       expect(response.body.entries.every(e => String(e.company) === String(acme._id))).toBe(true);
     });
 
@@ -204,8 +211,8 @@ describe('Audit log', () => {
         .get('/api/admin/audit')
         .set('x-auth-token', rivalToken);
 
-      expect(response.body.entries).toHaveLength(1);
-      expect(response.body.entries[0].actor.username).toBe('audit-rival');
+      expect(seeded(response.body.entries)).toHaveLength(1);
+      expect(seeded(response.body.entries)[0].actor.username).toBe('audit-rival');
     });
 
     test('platform-level entries are for superadmins only', async () => {
@@ -230,7 +237,7 @@ describe('Audit log', () => {
         .get('/api/admin/audit')
         .set('x-auth-token', danaToken);
 
-      expect(response.body.entries[0].action).toBe('operator.deactivated');
+      expect(seeded(response.body.entries)[0].action).toBe('operator.deactivated');
     });
 
     test('filtering by action prefix finds a family of events', async () => {
@@ -247,8 +254,8 @@ describe('Audit log', () => {
         .get(`/api/admin/audit?since=${new Date(Date.now() - 3600000).toISOString()}`)
         .set('x-auth-token', danaToken);
 
-      expect(response.body.entries).toHaveLength(1);
-      expect(response.body.entries[0].action).toBe('operator.deactivated');
+      expect(seeded(response.body.entries)).toHaveLength(1);
+      expect(seeded(response.body.entries)[0].action).toBe('operator.deactivated');
     });
 
     test('the page size is capped', async () => {
@@ -264,7 +271,9 @@ describe('Audit log', () => {
         .get('/api/admin/audit/actions')
         .set('x-auth-token', danaToken);
 
-      expect(response.body.actions).toEqual(['operator.deactivated', 'plan.changed']);
+      expect(response.body.actions).toEqual(expect.arrayContaining([
+        'operator.deactivated', 'plan.changed'
+      ]));
       expect(response.body.actions).not.toContain('superadmin.created');
     });
   });

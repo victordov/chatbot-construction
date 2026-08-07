@@ -657,6 +657,8 @@ function setupWebSockets(server) {
             // widget renders them as buttons; a visitor tapping one is
             // unambiguous in a way that typing never is.
             choices: reply.choices || undefined,
+            // Products or appointment times for the widget to render.
+            cards: reply.cards || undefined,
             timestamp: new Date()
           };
 

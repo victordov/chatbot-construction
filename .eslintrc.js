@@ -81,6 +81,7 @@ module.exports = {
         applyTagFilter: 'readonly',
         setupAudit: 'readonly',
         setupWebhooks: 'readonly',
+        setupConnector: 'readonly',
         lastAnalyticsData: 'readonly',
         setConversationNotes: 'readonly',
         applyChatFilter: 'readonly',

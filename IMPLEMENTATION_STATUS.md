@@ -63,6 +63,24 @@ returns — but a POST, a task, a tag and an email are declined and reported as
 "would have". An author testing a branch six times must not leave six tickets
 behind, or they stop testing.
 
+**A tenant's own data, through the connector SDK.** `sdk/` is a package a
+tenant installs. They implement the methods that apply to their business —
+search the catalogue, get a product, list free appointment times, book one —
+and expose the result at one URL. Everything fiddly is handled for them:
+verifying the request came from us in constant time with a five-minute window,
+answering discovery so nobody maintains a list by hand, and shaping what their
+methods return so a mistake is a clear message at their end rather than a blank
+card at ours.
+
+The point of fixed shapes rather than another Call an API node is what becomes
+possible once we know what we are holding: the widget renders product cards with
+pictures and prices, and appointment times as buttons somebody taps. Reads are
+cached briefly and may run in a preview; writes never do, because testing a
+booking branch six times must not fill somebody's diary. The URL is one a tenant
+typed, so it goes through the same address-checked transport as everything else
+— and when that refuses a localhost address, it says to use a tunnel rather than
+just refusing.
+
 **Workflow templates.** Eight complete flows a tenant can start from — order
 status, returns, front-desk triage, lead qualification, appointment booking,
 verified account lookup, cancellation, and complaint handling — rather than a
@@ -214,6 +232,14 @@ content-hashed widget assets cached for a year with the loader on `no-cache`.
   not reach a "refund" intent.
 - **Topic analysis is term frequency**, not clustering. It answers "what are
   people asking about" but will not group synonyms.
+- **The connector covers catalogue and appointments only.** Carts, checkout and
+  order lookup are the obvious next capabilities; the contract and SDK are
+  shaped so adding one is a new entry in `config/capabilities.js` and a method
+  in the SDK rather than new plumbing.
+- **The assistant cannot yet choose a capability by itself.** A workflow author
+  wires the Use Your Data node explicitly. Handing the capabilities to the model
+  as tools is the step that would let it decide to search the catalogue without
+  anybody drawing that branch.
 - **There is no public read API.** Outbound webhooks push events as they
   happen, and workflow action nodes call out, but a tenant cannot yet pull
   their conversations or contacts programmatically — for a backfill, or into a
@@ -225,7 +251,7 @@ content-hashed widget assets cached for a year with the loader on `no-cache`.
 
 ## Test suite
 
-`npm test` — 561 tests across 29 suites. An in-memory MongoDB starts
+`npm test` — 589 tests across 30 suites. An in-memory MongoDB starts
 automatically (`tests/globalSetup.js`), so no local `mongod` is needed.
 `tests/setup.js` blanks `OPENAI_API_KEY` so the suite never makes a real model
 call; the embedding and intent tests therefore assert on ranking and plumbing

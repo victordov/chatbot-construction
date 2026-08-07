@@ -5,6 +5,11 @@ const tenantService = require('../services/tenant');
 const availabilityService = require('../services/availability');
 const { auth, superadmin, admin, sameCompany } = require('../middleware/auth');
 const { logger } = require('../services/logging');
+const connectorService = require('../services/connector');
+const capabilityContract = require('../config/capabilities');
+const safeHttp = require('../services/safe-http');
+const secrets = require('../services/secrets');
+const audit = require('../services/audit');
 const crypto = require('crypto');
 
 const router = express.Router();
@@ -221,6 +226,161 @@ router.put('/me/hours', requireOwnCompany, async (req, res) => {
  * Email channel settings, including the inbound webhook URL a tenant points
  * their mail provider at.
  */
+/**
+ * The tenant's own systems, through the connector SDK.
+ */
+router.get('/me/connector', requireOwnCompany, async (req, res) => {
+  try {
+    const company = await Company.findById(req.user.company.id)
+      .select('+connector.secret').lean();
+
+    const connector = company?.connector || {};
+
+    res.json({
+      connector: {
+        enabled: Boolean(connector.enabled),
+        url: connector.url || '',
+        // Whether one exists, never the value. It was shown once when it was
+        // generated; showing it again only widens who can read it.
+        hasSecret: Boolean(connector.secret),
+        capabilities: connector.capabilities || [],
+        sdkVersion: connector.sdkVersion,
+        lastCheckedAt: connector.lastCheckedAt,
+        lastError: connector.lastError
+      },
+      // The contract, so the dashboard does not carry its own copy that can
+      // drift from what the platform actually accepts.
+      contract: capabilityContract.CAPABILITIES
+    });
+  } catch (error) {
+    logger.error('Failed to load connector settings', { error: error.message });
+    res.status(500).json({ error: 'Failed to load the connector settings' });
+  }
+});
+
+router.put('/me/connector', requireOwnCompany, admin, async (req, res) => {
+  try {
+    const company = await Company.findById(req.user.company.id).select('+connector.secret');
+
+    if (!company) {
+      return res.status(404).json({ error: 'Company not found' });
+    }
+
+    company.connector = company.connector || {};
+    let freshSecret = null;
+
+    if (req.body.url !== undefined) {
+      const url = String(req.body.url).trim();
+
+      if (url) {
+        // The same address check as everywhere else we fetch a URL somebody
+        // typed: a connector pointed at the metadata service would be an SSRF
+        // hole with a friendlier name.
+        const check = safeHttp.validateUrl(url);
+        if (!check.valid) {
+          return res.status(400).json({
+            error: connectorService.explainAddress(check.error, url)
+          });
+        }
+      }
+
+      // Changing where we call means the old answers are meaningless.
+      if (url !== company.connector.url) {
+        company.connector.capabilities = [];
+        company.connector.lastCheckedAt = undefined;
+        company.connector.lastError = undefined;
+        connectorService.clearCache(company._id);
+      }
+
+      company.connector.url = url;
+    }
+
+    if (req.body.enabled !== undefined) {
+      company.connector.enabled = Boolean(req.body.enabled);
+    }
+
+    // Minted here rather than accepted: a secret the caller chose is one they
+    // may have reused, and this one is ours to guarantee the strength of.
+    if (req.body.rotateSecret || (!company.connector.secret && company.connector.url)) {
+      freshSecret = connectorService.generateSecret();
+      company.connector.secret = secrets.encrypt(freshSecret);
+      connectorService.clearCache(company._id);
+    }
+
+    await company.save();
+
+    audit.record({
+      req,
+      action: 'connector.updated',
+      target: { type: 'company', id: String(company._id), label: company.name },
+      details: { url: company.connector.url, enabled: company.connector.enabled }
+    });
+
+    res.json({
+      connector: {
+        enabled: Boolean(company.connector.enabled),
+        url: company.connector.url || '',
+        hasSecret: Boolean(company.connector.secret),
+        capabilities: company.connector.capabilities || []
+      },
+      secret: freshSecret,
+      secretNotice: freshSecret
+        ? 'Copy this into your connector now — it is not shown again.'
+        : undefined
+    });
+  } catch (error) {
+    logger.error('Failed to save connector settings', { error: error.message });
+    res.status(500).json({ error: 'Failed to save the connector settings' });
+  }
+});
+
+/**
+ * Ask the connector what it implements.
+ *
+ * Run on demand rather than on a schedule: a tenant knows when they have
+ * deployed something new, and polling somebody else's server for a change that
+ * happens twice a year is rude.
+ */
+router.post('/me/connector/check', requireOwnCompany, admin, async (req, res) => {
+  try {
+    const company = await Company.findById(req.user.company.id);
+
+    if (!company?.connector?.url) {
+      return res.status(400).json({ error: 'Set the connector URL first' });
+    }
+
+    const result = await connectorService.discover(company.connector.url);
+
+    company.connector.lastCheckedAt = new Date();
+    company.connector.lastError = result.ok ? undefined : result.error;
+
+    if (result.ok) {
+      company.connector.capabilities = result.capabilities;
+      company.connector.sdkVersion = result.version;
+    }
+
+    await company.save();
+    connectorService.clearCache(company._id);
+
+    res.json({
+      ok: result.ok,
+      error: result.error,
+      capabilities: result.capabilities || [],
+      unknown: result.unknown || [],
+      signed: result.signed,
+      version: result.version,
+      // Said plainly: a connector without a secret will serve a tenant's
+      // product data to anyone who finds the URL.
+      warning: result.ok && !result.signed
+        ? 'Your connector reports that it has no signing secret, so it cannot tell our requests from anyone else\'s. Set CHATBOT_CONNECTOR_SECRET and redeploy.'
+        : undefined
+    });
+  } catch (error) {
+    logger.error('Connector check failed', { error: error.message });
+    res.status(500).json({ error: 'Failed to reach the connector' });
+  }
+});
+
 /**
  * How conversations reach an operator.
  */
