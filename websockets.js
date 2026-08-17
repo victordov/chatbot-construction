@@ -506,6 +506,17 @@ function setupWebSockets(server) {
           conversation.status = 'active';
           conversation.endedAt = null;
 
+          // A reopened conversation is a fresh one, so whatever was true about
+          // who owned it no longer is. Without this a visitor who was escalated,
+          // never picked up, and had the chat closed came back days later to a
+          // bot that had been switched off for them and an operator who was long
+          // gone — silence from their first message.
+          if (!conversation.operatorId) {
+            conversation.hasOperator = false;
+            conversation.botEnabled = true;
+            conversation.awaitingOperatorSince = undefined;
+          }
+
           // Notify operators that this chat has been reactivated
           toOperators(clientCompanyId, 'chat-reactivated', {
             sessionId,
@@ -1372,9 +1383,9 @@ function setupWebSockets(server) {
           });
         }
 
-        // Flagged whether or not anyone is free, so the queue shows who is
-        // waiting for a person rather than only who already has one.
-        conversation.botEnabled = false;
+        // Marked as waiting so the queue shows who has asked for a person, not
+        // only who already has one.
+        conversation.awaitingOperatorSince = new Date();
         await conversation.save();
 
         allOperators(conversation.company, 'operator-requested', {
@@ -1383,6 +1394,19 @@ function setupWebSockets(server) {
         });
 
         const result = await assignmentService.autoAssign(conversation);
+
+        // The bot steps aside only once a person has actually taken the
+        // conversation.
+        //
+        // This used to switch the bot off the moment somebody *asked* for a
+        // human. If nobody ever claimed it, the bot would not answer and no
+        // operator would either: every further message was stored and silently
+        // left unanswered, with no timeout and no way back. Somebody who asked
+        // for help got less help than if they had never asked.
+        if (result.assigned) {
+          conversation.botEnabled = false;
+          await conversation.save();
+        }
 
         socket.emit('operator-requested', {
           queued: !result.assigned,

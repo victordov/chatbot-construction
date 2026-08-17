@@ -164,6 +164,17 @@ const ConversationSchema = new mongoose.Schema({
     at: { type: Date }
   },
   /**
+   * When the visitor asked for a person and nobody was free.
+   *
+   * Kept separately from `hasOperator` so the queue can distinguish "waiting for
+   * someone" from "nobody has looked at this", and cleared once a person takes
+   * it. The bot keeps answering while this is set — being in a queue is not a
+   * reason to stop helping somebody.
+   */
+  awaitingOperatorSince: {
+    type: Date
+  },
+  /**
    * Where the published workflow got to.
    *
    * A workflow that asks a question has to survive until the answer arrives,

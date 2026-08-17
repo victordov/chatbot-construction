@@ -200,6 +200,8 @@ async function assign(conversation, operator, method = 'auto') {
   conversation.operatorName = operator.displayName;
   conversation.hasOperator = true;
   conversation.assignment = { method, at: new Date() };
+  // No longer waiting: a person has it.
+  conversation.awaitingOperatorSince = undefined;
 
   await conversation.save();
 
