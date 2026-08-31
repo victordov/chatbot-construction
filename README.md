@@ -74,8 +74,31 @@ still set to the built-in development value. Generate them with:
 node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 ```
 
-Behind a reverse proxy, set `TRUST_PROXY=1` so secure cookies and per-IP rate
-limiting see the real client address.
+Behind a reverse proxy, set `TRUST_PROXY=1` so secure cookies and rate limiting
+see the real client address.
+
+### Taking payment
+
+Card details never reach this server. The customer pays on Stripe's own page —
+a Checkout Session or a Payment Link — and Stripe posts the result to
+`POST /api/billing/webhook/stripe`, which is what moves the tenant onto the
+plan they bought.
+
+1. Set `STRIPE_WEBHOOK_SECRET` to the signing secret of that endpoint. Without
+   it every delivery is refused: the signature is the only authentication a
+   public endpoint has.
+2. Map each Stripe price to a plan with `STRIPE_PRICE_BASIC`,
+   `STRIPE_PRICE_PROFESSIONAL` and `STRIPE_PRICE_ENTERPRISE`. A price with no
+   mapping leaves the tenant's plan alone rather than guessing.
+3. Tell Stripe which tenant is paying: `metadata.companyId` on the Checkout
+   Session, or `client_reference_id`, which is the field a Payment Link can
+   carry. Renewals and cancellations afterwards are matched by the Stripe
+   customer, so they need no metadata at all.
+
+A failed payment sets the subscription to `past_due`, which still entitles the
+tenant — cutting off a support desk the moment a card expires punishes the
+tenant's customers rather than the tenant. Suspension stays a decision somebody
+makes.
 
 ---
 
@@ -108,7 +131,13 @@ An in-memory MongoDB starts automatically, so no local `mongod` is required.
 ## 5. Features & Endpoints
 - **Frontend widget**: Embeddable via `public/widget/js/widget-loader.js`.
 - **Admin dashboard**: Available at `/admin`.
-- **API endpoints**: See `routes/` for available endpoints (chat, session, admin, auth, gdpr, operations).
+- **API endpoints**: See `routes/` — auth, admin, chat, session, widget, upload,
+  companies, contacts, tasks, notifications, workflows, workflow-execution,
+  knowledge, templates, billing, webhooks, email, google, gdpr and operations.
+- **Knowledge base**: **Settings → Knowledge Base** in the dashboard. Import a
+  web page or PDF, or paste text in; it is chunked, embedded and searched by the
+  assistant on every question and by any workflow knowledge node. The same
+  screen has a "try a question" box for checking what the bot will find.
 - **Google knowledge import**: Connect your Google account from the admin dashboard to load spreadsheet data as knowledge documents.
 - **Monitoring**: Prometheus metrics at `/metrics`.
 
@@ -133,8 +162,6 @@ The snippet's `data-widget-key` is what attributes incoming chats to the
 company. Without it, a conversation is only matched if the page's origin is
 registered under **Allowed domains**.
 
-This script will find all users with the role 'admin' and update them to 'superadmin'.
-
 ### Creating a Superadmin
 
 To create the first superadmin user:
@@ -149,21 +176,13 @@ This will create a superadmin user with the default credentials (username: admin
 
 ## 7. Additional Notes
 - **Static files** are served from the `public/` directory.
-- **Logs** are stored in the `logs/` directory.
-- **Backups** are stored in the `backups/` directory.
-- **Widget versions** are managed in the `widget-versions/` directory.
+- **Logs**, **backups** and **widget versions** are written at runtime to
+  `logs/`, `backups/` and `widget-versions/`. All three are generated, not
+  source, and are gitignored.
 
 ---
 
-## 8. Testing
-Run all tests with:
-```sh
-npm test
-```
-
----
-
-## 9. Troubleshooting
+## 8. Troubleshooting
 - Ensure all required environment variables are set.
 - Check `logs/` for error logs.
 - MongoDB must be running and accessible.

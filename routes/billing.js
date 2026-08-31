@@ -1,22 +1,26 @@
 /**
  * Plans, usage and subscription management.
  *
- * Payment collection is deliberately not implemented here. Taking money needs
- * a processor account, webhook verification and PCI scope decisions that are
- * the operator's to make. What this owns is entitlement: which plan a tenant
- * is on and what that permits. `PATCH /subscription` is the single seam a
- * processor's webhook handler calls once a payment succeeds.
+ * What this owns is entitlement: which plan a tenant is on and what that
+ * permits. Card details never reach this server — the customer enters them on
+ * Stripe's own page — so the PCI surface stays where it belongs.
+ *
+ * Two things change a subscription: a superadmin using the dashboard, and
+ * Stripe telling us a payment succeeded, failed or was cancelled. Both go
+ * through `services/billing.js#applySubscriptionChange`, because two
+ * implementations of "what a plan change means" would eventually disagree
+ * about what a customer is allowed to do and what they are charged.
  */
 
 const express = require('express');
 const router = express.Router();
 
-const Company = require('../models/company');
-const Subscription = require('../models/subscription');
 const Usage = require('../models/usage');
 const usageService = require('../services/usage');
+const billingService = require('../services/billing');
+const stripe = require('../services/stripe');
 const audit = require('../services/audit');
-const { listPlans, PLANS } = require('../config/plans');
+const { listPlans } = require('../config/plans');
 const { auth, admin, superadmin } = require('../middleware/auth');
 const { logger } = require('../services/logging');
 
@@ -99,57 +103,10 @@ router.patch('/companies/:companyId/subscription', auth, superadmin, async (req,
     const { planId, status, overageAllowed, currentPeriodEnd, limitOverrides,
       externalCustomerId, externalSubscriptionId } = req.body;
 
-    const company = await Company.findById(companyId);
-    if (!company) {
-      return res.status(404).json({ error: 'Company not found' });
-    }
-
-    if (planId && !PLANS[planId]) {
-      return res.status(400).json({
-        error: `Unknown plan "${planId}". Valid plans: ${Object.keys(PLANS).join(', ')}`
-      });
-    }
-
-    const subscription = await Subscription.forCompany(companyId);
-
-    if (planId) {
-      subscription.planId = planId;
-      // Moving off the trial onto a real plan should clear the trial clock,
-      // otherwise isEntitled() keeps checking an expiry that no longer applies.
-      if (planId !== 'trial' && subscription.status === 'trialing') {
-        subscription.status = 'active';
-        subscription.trialEndsAt = undefined;
-      }
-    }
-
-    if (status) {
-      subscription.status = status;
-    }
-    if (overageAllowed !== undefined) {
-      subscription.overageAllowed = Boolean(overageAllowed);
-    }
-    if (currentPeriodEnd) {
-      subscription.currentPeriodEnd = new Date(currentPeriodEnd);
-    }
-    if (externalCustomerId !== undefined) {
-      subscription.externalCustomerId = externalCustomerId;
-    }
-    if (externalSubscriptionId !== undefined) {
-      subscription.externalSubscriptionId = externalSubscriptionId;
-    }
-
-    if (limitOverrides && typeof limitOverrides === 'object') {
-      subscription.limitOverrides = new Map(
-        Object.entries(limitOverrides)
-          .filter(([, value]) => Number.isFinite(Number(value)))
-          .map(([key, value]) => [key, Number(value)])
-      );
-    }
-
-    await subscription.save();
-    // The service caches subscriptions for 30s; a plan change must take effect
-    // immediately rather than after the cache expires.
-    usageService.invalidateSubscription(companyId);
+    const { subscription, company } = await billingService.applySubscriptionChange(companyId, {
+      planId, status, overageAllowed, currentPeriodEnd, limitOverrides,
+      externalCustomerId, externalSubscriptionId
+    });
 
     logger.info('Subscription updated', {
       companyId,
@@ -184,8 +141,97 @@ router.patch('/companies/:companyId/subscription', auth, superadmin, async (req,
       }
     });
   } catch (error) {
+    if (error instanceof billingService.UnknownCompanyError) {
+      return res.status(404).json({ error: 'Company not found' });
+    }
+    if (error instanceof billingService.UnknownPlanError) {
+      return res.status(400).json({ error: error.message });
+    }
+
     logger.error('Failed to update subscription', { error: error.message });
     res.status(500).json({ error: 'Failed to update the subscription' });
+  }
+});
+
+/**
+ * Stripe telling us what happened to somebody's money.
+ *
+ * Public by necessity, so the signature is the authentication: the raw body is
+ * verified against `STRIPE_WEBHOOK_SECRET` before anything is read out of it.
+ * A body that has been through `JSON.parse` and back cannot be verified —
+ * re-serialising produces different bytes — so `server.js` keeps the original
+ * buffer for this path alone.
+ *
+ * Every reply is a 200 unless the signature itself is wrong. An event we have
+ * no opinion about, or one naming a customer we cannot place, is acknowledged
+ * rather than refused: Stripe disables an endpoint that keeps failing, and
+ * losing the events that *do* matter is a far worse outcome than ignoring one
+ * that does not.
+ */
+router.post('/webhook/stripe', async (req, res) => {
+  let event;
+
+  try {
+    event = stripe.verifyEvent(
+      req.rawBody || req.body,
+      req.headers['stripe-signature'],
+      process.env.STRIPE_WEBHOOK_SECRET
+    );
+  } catch (error) {
+    logger.warn('Rejected a Stripe webhook', { error: error.message });
+    return res.status(400).json({ error: 'Signature verification failed' });
+  }
+
+  try {
+    const translated = stripe.translate(event);
+
+    if (!translated) {
+      return res.json({ received: true, handled: false, reason: 'event not relevant' });
+    }
+
+    const companyId = await billingService.findCompanyForExternal(translated.lookup);
+
+    if (!companyId) {
+      // Somebody paid and we cannot tell who they are. Acknowledged so Stripe
+      // stops retrying, and logged loudly because it needs a person.
+      logger.error('Stripe event could not be matched to a tenant', {
+        type: event.type,
+        customer: translated.lookup.customerId,
+        subscription: translated.lookup.subscriptionId
+      });
+      return res.json({ received: true, handled: false, reason: 'no matching tenant' });
+    }
+
+    const { subscription, applied } = await billingService.applySubscriptionChange(
+      companyId,
+      translated.changes
+    );
+
+    logger.info('Applied a Stripe event', {
+      type: event.type,
+      companyId,
+      planId: subscription.planId,
+      status: subscription.status,
+      applied
+    });
+
+    // Entitlement changed because of something outside this system, so the
+    // actor is Stripe rather than a person — which is precisely what somebody
+    // reading the log later needs to see.
+    audit.record({
+      action: 'plan.changed',
+      actor: { username: 'stripe', displayName: 'Stripe webhook', role: 'system' },
+      company: companyId,
+      target: { type: 'company', id: companyId },
+      details: { event: event.type, planId: subscription.planId, status: subscription.status, applied }
+    });
+
+    res.json({ received: true, handled: true, applied });
+  } catch (error) {
+    // A verified event we failed to process is worth retrying, so this one is
+    // allowed to be a 500.
+    logger.error('Failed to process a Stripe event', { type: event.type, error: error.message });
+    res.status(500).json({ error: 'Failed to process the event' });
   }
 });
 

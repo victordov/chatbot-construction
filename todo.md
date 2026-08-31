@@ -16,16 +16,12 @@ What is left is below.
 
 ## Money
 
-- [ ] **Take payment.** Plans, limits, metering and enforcement are complete and
-      nothing charges anybody. The single seam is
-      `PATCH /api/billing/companies/:id/subscription` — a processor's webhook
-      calls it once a payment succeeds. Choosing the processor involves
-      PCI-scope decisions that belong to whoever operates this.
-- [ ] **A superadmin cannot change a tenant's plan from the dashboard.** The
-      route above exists and `admin-billing.js` never calls it, so the billing
-      design's one seam has no UI.
 - [ ] **Charge for overage.** `overageAllowed` is honoured by the quota check
       but nothing bills for what it lets through.
+- [ ] **Nothing starts a checkout from inside the product.** Stripe tells us
+      what happened once somebody pays, but the tenant has to reach Stripe by a
+      Payment Link somebody sent them. An "upgrade" button that creates a
+      Checkout Session would close that loop.
 - [ ] Automated invoicing, payment reminders, revenue and churn reporting.
 
 ## Support and SLA

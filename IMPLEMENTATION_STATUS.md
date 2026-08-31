@@ -228,6 +228,28 @@ Outside them the widget stops implying someone is about to answer. Whether an
 operator is actually connected is read from the socket rooms, so it cannot
 drift from reality.
 
+**Taking money.** Plans, limits, metering and enforcement were complete and
+nothing charged anybody. Stripe now does: the customer pays on Stripe's own
+page, so card details never reach this server and the PCI surface stays where
+it belongs, and `POST /api/billing/webhook/stripe` moves the tenant onto the
+plan they bought. There is no Stripe library — verifying a signature and
+reading five event types is less code than keeping a dependency current — and
+the signature is the whole authentication for a public endpoint, so it is
+checked against the raw bytes Stripe signed (the parsed-and-reserialised body
+can never match, which is the classic way this is got wrong, and it fails
+closed). Replays outside a five-minute window are refused, and an event older
+than one already applied is ignored, so a redelivered "payment failed" from
+Tuesday cannot land after Wednesday's "payment succeeded" and suspend a tenant
+who is paid up. A price with no configured plan leaves the tenant where they
+are rather than guessing; an unrecognised event and an unmatchable customer are
+acknowledged rather than refused, because an endpoint that keeps failing gets
+disabled by Stripe and takes the events that do matter with it. A failed
+payment is `past_due`, which still entitles the tenant — cutting off a support
+desk the moment a card expires punishes their customers, not them. Both the
+webhook and the superadmin's plan dialog go through one function, because two
+implementations of what a plan change means would eventually disagree about
+what somebody is charged.
+
 **A backup that can restore one customer.** `mongodump` answers "we lost the
 server"; it answers "one customer lost their data" appallingly, because rolling
 every tenant back to last night to undo one company's mistake trades their bad
@@ -289,13 +311,11 @@ content-hashed widget assets cached for a year with the loader on `no-cache`.
 
 ## Known gaps
 
-- **Payment collection is not implemented.** Plans, limits and enforcement are
-  complete, but nothing takes money. Integrating a processor means adding a
-  webhook handler that calls
-  `PATCH /api/billing/companies/:id/subscription` once a payment succeeds —
-  that route is the single seam, and it is superadmin-only so a tenant cannot
-  grant themselves a plan. Choosing a processor involves PCI-scope decisions
-  that belong to whoever operates this.
+- **Nothing starts a checkout from inside the product.** Stripe tells us what
+  happened once somebody has paid, but the tenant reaches Stripe by a Payment
+  Link somebody sent them rather than by an upgrade button here.
+- **Nothing bills for overage.** `overageAllowed` lets a tenant exceed their
+  plan and nothing charges for what it let through.
 - **Scanned PDFs yield no text.** `pdf-parse` reads a PDF's text layer; a
   scanned document has none. OCR would need an additional service.
 - **In-process vector ranking scans a tenant's chunks** rather than using an

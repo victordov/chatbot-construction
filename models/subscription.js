@@ -56,8 +56,16 @@ const SubscriptionSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   },
-  externalCustomerId: { type: String },
-  externalSubscriptionId: { type: String },
+  externalCustomerId: { type: String, index: true },
+  externalSubscriptionId: { type: String, index: true },
+  /**
+   * When the last processor event we acted on was raised.
+   *
+   * Processors retry, and retries arrive out of order. Without this, a
+   * redelivered "payment failed" from Tuesday can land after Wednesday's
+   * "payment succeeded" and suspend a tenant who is paid up.
+   */
+  externalEventAt: { type: Date },
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 });

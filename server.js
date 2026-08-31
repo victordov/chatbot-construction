@@ -106,7 +106,18 @@ app.use(helmet({
 }));
 
 app.use(compression());
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json({
+  limit: '1mb',
+  // Stripe signs the bytes it sent, so a body that has been parsed and
+  // re-serialised can never be verified. Kept for that one path rather than
+  // for every request, since holding a copy of every body is a memory cost
+  // paid on the hot path for the benefit of one endpoint.
+  verify: (req, res, buffer) => {
+    if (req.originalUrl && req.originalUrl.startsWith('/api/billing/webhook')) {
+      req.rawBody = buffer;
+    }
+  }
+}));
 app.use(express.urlencoded({ extended: false, limit: '1mb' }));
 app.use(httpLogger);
 app.use(metricsMiddleware);
