@@ -7,7 +7,21 @@ const Conversation = require('../models/conversation');
 const User = require('../models/user');
 const ActivityService = require('./activity');
 const { logger } = require('./logging');
-const { escapeRegex } = require('../utils/query');
+const { escapeRegex, companyScope } = require('../utils/query');
+
+/**
+ * "Not found" is an answer, not a failure.
+ *
+ * Every method here threw `Error('Task not found')` inside its own try block,
+ * where its own catch immediately relabelled it "Failed to ...". The routes
+ * match on the original message to answer 404, so a missing task - including a
+ * deliberate probe for another tenant's - came back as a 500 instead.
+ */
+function rethrowNotFound(error) {
+  if (error && /not found$/i.test(error.message || '')) {
+    throw error;
+  }
+}
 
 class TaskService {
   constructor() {
@@ -25,10 +39,7 @@ class TaskService {
     try {
       const query = {};
 
-      // Apply company filter for multi-tenancy (skip for super admin)
-      if (userRole !== 'superadmin' && userCompanyId) {
-        query.company = userCompanyId;
-      }
+      Object.assign(query, companyScope(userCompanyId, userRole));
 
       // Apply filters if provided
       if (filters.status) {
@@ -102,10 +113,7 @@ class TaskService {
     try {
       const query = { _id: taskId };
 
-      // Apply company filter for multi-tenancy (skip for super admin)
-      if (userRole !== 'superadmin' && userCompanyId) {
-        query.company = userCompanyId;
-      }
+      Object.assign(query, companyScope(userCompanyId, userRole));
 
       const task = await Task.findOne(query)
         .populate('assignee', 'username email displayName')
@@ -123,6 +131,7 @@ class TaskService {
 
       return task;
     } catch (error) {
+      rethrowNotFound(error);
       logger.error(`Error getting task with ID ${taskId}`, { error });
       throw new Error('Failed to get task');
     }
@@ -202,10 +211,7 @@ class TaskService {
       }
 
       const query = { _id: taskId };
-      // Apply company filter for regular users (skip for super admin)
-      if (userRole !== 'superadmin' && userCompanyId) {
-        query.company = userCompanyId;
-      }
+      Object.assign(query, companyScope(userCompanyId, userRole));
 
       const task = await Task.findOneAndUpdate(
         query,
@@ -265,6 +271,7 @@ class TaskService {
 
       return task;
     } catch (error) {
+      rethrowNotFound(error);
       logger.error(`Error updating task with ID ${taskId}`, { error });
       throw new Error('Failed to update task');
     }
@@ -279,10 +286,8 @@ class TaskService {
     try {
       const query = { _id: taskId };
 
-      // Apply company filter for multi-tenancy
-      if (userCompanyId) {
-        query.company = userCompanyId;
-      }
+      // This one takes the whole user rather than a role, so read it off them.
+      Object.assign(query, companyScope(userCompanyId, user && user.role));
 
       const task = await Task.findOne(query);
 
@@ -290,12 +295,18 @@ class TaskService {
         throw new Error('Task not found');
       }
 
-      // Log activity before deletion
+      // Log activity before deletion.
+      //
+      // This used to send `action: 'deleted'` and no `userName`. Neither is
+      // valid - the schema's enum has `task_deleted` and requires a name - so
+      // every deletion threw inside `logActivity`, which logs and swallows.
+      // Deleting a task was the one action that left no trace of who did it.
       if (user) {
         await this.activityService.logActivity({
           taskId: task._id,
           userId: user.id,
-          action: 'deleted',
+          userName: user.displayName || user.username,
+          action: 'task_deleted',
           details: `Task "${task.title}" was deleted`,
           company: task.company
         });
@@ -313,6 +324,7 @@ class TaskService {
 
       return task; // Return the deleted task for reference
     } catch (error) {
+      rethrowNotFound(error);
       logger.error(`Error deleting task with ID ${taskId}`, { error });
       throw new Error('Failed to delete task');
     }
@@ -347,6 +359,7 @@ class TaskService {
 
       return task;
     } catch (error) {
+      rethrowNotFound(error);
       logger.error(`Error assigning task with ID ${taskId}`, { error });
       throw new Error('Failed to assign task');
     }
@@ -373,18 +386,33 @@ class TaskService {
 
   /**
    * Create a follow-up task
+   *
+   * The scope arguments are not optional in practice. A follow-up inherits its
+   * parent's company, conversation and contact details, so looking the parent
+   * up unscoped - as this did - let an operator at one company hang a task off
+   * another company's task, write it onto their board, and inherit the
+   * customer's name, email and phone number on the way.
+   *
    * @param {string} parentTaskId - Parent task ID
    * @param {Object} taskData - Task data
    * @param {Object} createdByUser - User who created the task
+   * @param {string} userCompanyId - Caller's company, for access control
+   * @param {string} userRole - Caller's role
    * @returns {Promise<Object>} - Created follow-up task
    */
-  async createFollowUpTask(parentTaskId, taskData, createdByUser = null) {
+  async createFollowUpTask(parentTaskId, taskData, createdByUser = null, userCompanyId = null, userRole = null) {
     try {
-      // Get the parent task
-      const parentTask = await this.getTaskById(parentTaskId);
+      let parentTask;
 
-      if (!parentTask) {
-        throw new Error('Parent task not found');
+      try {
+        parentTask = await this.getTaskById(parentTaskId, userCompanyId, userRole);
+      } catch (error) {
+        // Out of the caller's tenant and never created are the same answer,
+        // and have to look the same from outside.
+        if (/not found$/i.test(error.message || '')) {
+          throw new Error('Parent task not found');
+        }
+        throw error;
       }
 
       // Set the parent task ID
@@ -410,6 +438,11 @@ class TaskService {
 
       return task;
     } catch (error) {
+      // The route answers 404 by matching this message; relabelling it turned
+      // every missing parent into a 500.
+      if (/not found$/i.test(error.message || '')) {
+        throw error;
+      }
       logger.error(`Error creating follow-up task for parent task ${parentTaskId}`, { error });
       throw new Error('Failed to create follow-up task');
     }
@@ -443,10 +476,7 @@ class TaskService {
         ]
       };
 
-      // Apply company filter for multi-tenancy (skip for super admin)
-      if (userRole !== 'superadmin' && userCompanyId) {
-        query.company = userCompanyId;
-      }
+      Object.assign(query, companyScope(userCompanyId, userRole));
 
       // Search in title, description, and contact info
       const tasks = await Task.find(query)

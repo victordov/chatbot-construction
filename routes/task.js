@@ -9,7 +9,9 @@ const { auth, operator } = require('../middleware/auth');
 const TaskService = require('../services/task');
 const CommentService = require('../services/comment');
 const Conversation = require('../models/conversation');
+const User = require('../models/user');
 const socketManager = require('../socketManager');
+const { canAccessCompany } = require('../utils/query');
 const { logger } = require('../services/logging');
 
 // Initialize services
@@ -208,8 +210,10 @@ router.put('/:id', auth, operator, async (req, res) => {
 // Delete a task
 router.delete('/:id', auth, operator, async (req, res) => {
   try {
-    // Delete the task with user context for activity logging
-    await taskService.deleteTask(req.params.id, req.user.company, req.user);
+    // `.id`, not the whole company object: passing `{ id, name }` where an
+    // ObjectId is expected made mongoose cast it to "[object Object]", so
+    // deleting a task failed with a 500 every single time.
+    await taskService.deleteTask(req.params.id, req.user.company?.id, req.user);
 
     socketManager.emitToOperators(req.user.company?.id, 'task-deleted', { taskId: req.params.id });
 
@@ -236,6 +240,15 @@ router.post('/:id/assign', auth, operator, async (req, res) => {
     }
 
     await taskService.getTaskById(req.params.id, req.user.company?.id, req.user.role);
+
+    // The task was checked against the caller's tenant; the assignee was not.
+    // Without this, `userId` straight from the body hands one company's work to
+    // a stranger at another - and the conversation behind the task with it.
+    const assignee = await User.findById(userId).select('company').lean();
+
+    if (!assignee || !canAccessCompany(req.user, assignee.company)) {
+      return res.status(404).json({ error: 'User not found' });
+    }
 
     // Assign the task
     const task = await taskService.assignTask(req.params.id, userId, userName);
@@ -421,8 +434,15 @@ router.post('/:id/follow-ups', auth, operator, async (req, res) => {
       company: req.user.company?.id
     };
 
-    // Create the follow-up task
-    const task = await taskService.createFollowUpTask(req.params.id, taskData, req.user);
+    // Create the follow-up task, scoped to the caller's tenant: the parent is
+    // where the company, the conversation and the contact details come from.
+    const task = await taskService.createFollowUpTask(
+      req.params.id,
+      taskData,
+      req.user,
+      req.user.company?.id,
+      req.user.role
+    );
 
     socketManager.emitToOperators(req.user.company?.id, 'task-created', { task });
 

@@ -345,8 +345,20 @@ session id, or by the legacy `userId`; an identifier that matches nobody is a
 
 ## Test suite
 
-`npm test` — 644 tests across 37 suites. An in-memory MongoDB starts
+`npm test` — 731 tests across 39 suites. An in-memory MongoDB starts
 automatically (`tests/globalSetup.js`), so no local `mongod` is needed.
 `tests/setup.js` blanks `OPENAI_API_KEY` so the suite never makes a real model
 call; the embedding and intent tests therefore assert on ranking and plumbing
 rather than on semantic quality.
+
+The socket layer and the task feature are covered directly now. `websockets.js`
+had four tests that mocked the database, the encryption service, the model and
+JWT, and the last of them called `done()` from a one-second timeout — it passed
+whether or not the server replied at all. Its replacement runs a real server
+against a real database with real end-to-end encryption, and stubs only what the
+model would say. Tasks had no direct tests at all, and writing them turned up
+two defects: a follow-up looked its parent up unscoped, so an operator at one
+company could hang a task off another company's — inheriting that company, their
+conversation and the customer's name, email and phone number — and every task
+deletion threw inside the activity logger and was swallowed, so the one action
+most worth a trace left none.

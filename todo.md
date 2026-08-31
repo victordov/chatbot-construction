@@ -67,11 +67,9 @@ What is left is below.
 
 ## Things that need tests
 
-- [ ] `websockets.js` is the largest file in the application and the primary
-      request path; four tests cover it.
-- [ ] `services/task.js` and `routes/task.js` — the whole task, follow-up,
-      comment and activity feature, plus a 1,300-line UI, with no direct tests.
 - [ ] `services/backup.js`, `services/scheduler.js` — the operational surface.
+      (`services/tenant-backup.js` is covered; the mongodump-based whole-database
+      backup is not.)
 
 ## Housekeeping
 
