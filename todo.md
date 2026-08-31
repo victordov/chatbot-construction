@@ -28,13 +28,6 @@ What is left is below.
       but nothing bills for what it lets through.
 - [ ] Automated invoicing, payment reminders, revenue and churn reporting.
 
-## Per-tenant operations
-
-This service is still global, from before multi-tenancy:
-
-- [ ] **Backups** — `services/backup.js` is all-or-nothing, so there is no way
-      to restore one tenant.
-
 ## Support and SLA
 
 - [ ] `prioritySupport` is a boolean in `config/plans.js` that nothing reads.

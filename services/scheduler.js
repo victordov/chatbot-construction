@@ -5,14 +5,49 @@
 const cron = require('node-cron');
 const NotificationService = require('./notification');
 const webhookService = require('./webhooks');
+const TenantBackupService = require('./tenant-backup');
+const Company = require('../models/company');
 const { logger } = require('./logging');
 const socketManager = require('../socketManager');
 
 class SchedulerService {
   constructor() {
     this.notificationService = new NotificationService();
+    this.tenantBackupService = new TenantBackupService();
     this.initialized = false;
     this.jobs = [];
+  }
+
+  /**
+   * Back up every active tenant, one at a time.
+   *
+   * Sequential on purpose: this runs against the same database serving
+   * conversations, and a backup job that makes the product slow at 2am is a
+   * backup job somebody switches off.
+   *
+   * One tenant failing must not cost the others their backup — the night a
+   * backup matters is the night one tenant's data is in a state nothing else
+   * expected.
+   */
+  async runTenantBackups() {
+    try {
+      const companies = await Company.find({ isActive: true }).select('_id name').lean();
+      let succeeded = 0;
+
+      for (const company of companies) {
+        try {
+          await this.tenantBackupService.backupCompany(company._id);
+          succeeded += 1;
+        } catch (error) {
+          logger.error('Tenant backup failed', { company: company.name, error: error.message });
+        }
+      }
+
+      const { removed } = this.tenantBackupService.cleanup();
+      logger.info('Tenant backups complete', { succeeded, of: companies.length, expired: removed });
+    } catch (error) {
+      logger.error('Tenant backup sweep failed', { error: error.message });
+    }
   }
 
   /**
@@ -68,6 +103,14 @@ class SchedulerService {
 
     // Hourly sweep during working hours keeps due-today reminders timely.
     this.jobs.push(cron.schedule('0 8-18 * * *', () => this.runDeadlineCheck('hourly deadline check')));
+
+    // Nightly per-tenant backups. Opt-in, because writing every tenant's
+    // documents to local disk is a decision about where data lives, and
+    // whoever operates this has to make it rather than inherit it.
+    if (process.env.TENANT_BACKUPS_ENABLED === 'true') {
+      this.jobs.push(cron.schedule('30 2 * * *', () => this.runTenantBackups()));
+      logger.info('Nightly per-tenant backups scheduled');
+    }
 
     this.initialized = true;
     logger.info('Scheduler service initialized');

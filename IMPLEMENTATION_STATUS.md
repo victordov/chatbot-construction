@@ -228,6 +228,26 @@ Outside them the widget stops implying someone is about to answer. Whether an
 operator is actually connected is read from the socket rooms, so it cannot
 drift from reality.
 
+**A backup that can restore one customer.** `mongodump` answers "we lost the
+server"; it answers "one customer lost their data" appallingly, because rolling
+every tenant back to last night to undo one company's mistake trades their bad
+day for everybody else's. Alongside it there is now a document-level export of
+one company — written as EJSON, so ids and dates come back as ids and dates
+rather than as strings. What belongs to a tenant is read from the schemas
+rather than from a list, so a new tenant-scoped model is covered the day it is
+added; what hangs off a parent instead (a comment on a task, a version of a
+workflow) is declared, and anything in neither category is named in the
+manifest as uncovered, because a backup whose edges you cannot see is not one
+to rely on. Restoring merges by default and so cannot itself delete anything;
+the mode that makes a tenant match the backup exactly has to be asked for with
+the company's name typed out. The audit log is exported and never restored — a
+restore that could rewrite the record of what happened is not an audit log. Two
+things are checked because the tool is used on somebody's worst day: a backup
+carrying another company's id is refused, and every query is scoped to the one
+tenant, so a restore cannot reach a neighbour. Nightly backups are opt-in
+(`TENANT_BACKUPS_ENABLED`), since deciding where a tenant's data gets written
+belongs to whoever operates the platform.
+
 **Retention each tenant sets for themselves.** There was one number for the
 whole platform, so a tenant who had promised their customers ninety days could
 not honour it, and a tenant obliged to keep seven years lost the data anyway. A
