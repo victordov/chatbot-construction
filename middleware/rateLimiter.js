@@ -172,12 +172,12 @@ async function planLimit(req, fallback) {
   }
 }
 
-function buildLimiter({ prefix, windowMs, limit, message }) {
+function buildLimiter({ prefix, windowMs, limit, message, keyGenerator }) {
   return rateLimit({
     windowMs,
     limit,
     store: new MongoRateLimitStore({ prefix, windowMs }),
-    keyGenerator: tenantKey,
+    keyGenerator: keyGenerator || tenantKey,
     // Superadmins operate the platform. Throttling them is how an incident
     // becomes an incident nobody can log in to fix.
     skip: req => identify(req).role === 'superadmin',
@@ -232,10 +232,36 @@ const chatLimiter = buildLimiter({
   message: 'Too many messages sent, please slow down.'
 });
 
+/**
+ * The public read API, limited per key rather than per tenant.
+ *
+ * A key is a program, and one program looping is not a reason to throttle the
+ * tenant's own dashboard. The allowance still comes from their plan.
+ */
+const publicApiLimiter = buildLimiter({
+  prefix: 'papi',
+  windowMs: 60 * 1000,
+  limit: async req => {
+    if (!req.apiCompanyId) {
+      return envInt('RATE_LIMIT_API_MAX', 100);
+    }
+    try {
+      const subscription = await usageService.getSubscription(req.apiCompanyId);
+      const limit = subscription.limitFor('apiRequestsPerMinute');
+      return limit === null ? Number.MAX_SAFE_INTEGER : limit;
+    } catch {
+      return envInt('RATE_LIMIT_API_MAX', 100);
+    }
+  },
+  keyGenerator: req => (req.apiKey ? `key:${req.apiKey._id}` : `ip:${addressKey(req)}`),
+  message: 'Too many API requests. Please slow down.'
+});
+
 module.exports = {
   apiLimiter,
   authLimiter,
   chatLimiter,
+  publicApiLimiter,
   // Exported for tests and for anything that needs to reason about the key.
   tenantKey,
   addressKey,

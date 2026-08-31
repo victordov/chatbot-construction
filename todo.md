@@ -39,10 +39,6 @@ What is left is below.
 
 ## Product gaps worth doing next
 
-- [ ] **A public read API.** Outbound webhooks push events as they happen and
-      action nodes call out, but a tenant cannot pull their own conversations or
-      contacts — for a backfill, or into a warehouse. Needs API keys with their
-      own scoping and rate limits.
 - [ ] **Let the assistant choose a capability itself.** `config/capabilities.js`
       and the connector SDK give the platform typed access to a tenant's
       catalogue and diary, but only a workflow author can invoke it by wiring a

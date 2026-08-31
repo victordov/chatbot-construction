@@ -1552,6 +1552,12 @@
                                 <li class="nav-item" role="presentation">
                                     <button class="nav-link" id="connector-tab" data-bs-toggle="tab" data-bs-target="#connector-pane" type="button" role="tab">Your data</button>
                                 </li>
+                                <li class="nav-item" role="presentation">
+                                    <button class="nav-link" id="retention-tab" data-bs-toggle="tab" data-bs-target="#retention-pane" type="button" role="tab">Data retention</button>
+                                </li>
+                                <li class="nav-item" role="presentation">
+                                    <button class="nav-link" id="api-keys-tab" data-bs-toggle="tab" data-bs-target="#api-keys-pane" type="button" role="tab">API keys</button>
+                                </li>
                             </ul>
                             <div class="tab-content">
                                 <div class="tab-pane fade" id="connector-pane" role="tabpanel">
@@ -1601,6 +1607,93 @@
                                                  available without reading documentation. -->
                                             <div id="connector-capabilities"></div>
                                         </div>
+                                    </div>
+                                </div>
+
+                                <div class="tab-pane fade" id="retention-pane" role="tabpanel">
+                                    <h5 class="mt-0">How long conversations are kept</h5>
+                                    <p class="text-muted small">
+                                        Your obligations are yours, not ours. Anonymising strips
+                                        the transcript, the addresses and the rating comment while
+                                        keeping the timings and scores your reports are built from;
+                                        deleting removes the conversation entirely. Both are counted
+                                        in days since a conversation was last active.
+                                    </p>
+
+                                    <div class="row g-3">
+                                        <div class="col-lg-6">
+                                            <div class="mb-3">
+                                                <label class="form-label" for="retention-anonymize">Anonymise after</label>
+                                                <div class="input-group input-group-sm">
+                                                    <input class="form-control" id="retention-anonymize" type="number" min="0" placeholder="Platform default">
+                                                    <span class="input-group-text">days</span>
+                                                </div>
+                                                <div class="form-text">0 means never. Leave empty to follow the platform default.</div>
+                                            </div>
+
+                                            <div class="mb-3">
+                                                <label class="form-label" for="retention-delete">Delete after</label>
+                                                <div class="input-group input-group-sm">
+                                                    <input class="form-control" id="retention-delete" type="number" min="0" placeholder="Platform default">
+                                                    <span class="input-group-text">days</span>
+                                                </div>
+                                                <div class="form-text">Must not be sooner than anonymising.</div>
+                                            </div>
+
+                                            <button class="btn btn-primary btn-sm" id="retention-save">Save policy</button>
+                                        </div>
+
+                                        <div class="col-lg-6">
+                                            <!-- What the policy would do tonight, shown before it
+                                                 is saved rather than discovered afterwards. -->
+                                            <div class="alert alert-light border" id="retention-impact">
+                                                <div class="text-muted small">Loading…</div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="tab-pane fade" id="api-keys-pane" role="tabpanel">
+                                    <h5 class="mt-0">Read your data from your own systems</h5>
+                                    <p class="text-muted small">
+                                        A key reads conversations, contacts or tasks over
+                                        <code>/api/v1</code> — for a backfill, a warehouse, or a
+                                        report of your own. Read-only, scoped to what you choose,
+                                        and revocable. Give each integration its own key.
+                                    </p>
+
+                                    <div id="api-keys-unavailable" class="alert alert-warning d-none">
+                                        API access is not included in your plan.
+                                    </div>
+
+                                    <div class="row g-3 align-items-end mb-3" id="api-keys-form">
+                                        <div class="col-md-4">
+                                            <label class="form-label" for="api-key-name">What is it for?</label>
+                                            <input class="form-control form-control-sm" id="api-key-name" placeholder="Warehouse sync">
+                                        </div>
+                                        <div class="col-md-5">
+                                            <label class="form-label d-block">It may read</label>
+                                            <div class="d-flex gap-3 flex-wrap" id="api-key-scopes"></div>
+                                        </div>
+                                        <div class="col-md-3">
+                                            <button class="btn btn-primary btn-sm w-100" id="api-key-create">Create key</button>
+                                        </div>
+                                    </div>
+
+                                    <!-- Shown once. There is no second chance, so it does not
+                                         disappear on its own. -->
+                                    <div id="api-key-reveal"></div>
+
+                                    <div class="table-responsive">
+                                        <table class="table table-sm align-middle">
+                                            <thead>
+                                                <tr>
+                                                    <th>Name</th><th>Key</th><th>Scopes</th>
+                                                    <th>Last used</th><th></th>
+                                                </tr>
+                                            </thead>
+                                            <tbody id="api-keys-table"></tbody>
+                                        </table>
                                     </div>
                                 </div>
 
@@ -1668,14 +1761,69 @@
                                             <input type="checkbox" class="form-check-input" id="sound-notifications">
                                             <label class="form-check-label" for="sound-notifications">Enable sound notifications</label>
                                         </div>
-                                        <div class="mb-3">
-                                            <label for="auto-refresh" class="form-label">Auto-refresh interval (seconds)</label>
-                                            <input type="number" class="form-control" id="auto-refresh" min="5" value="30">
-                                        </div>
                                         <button type="submit" class="btn btn-primary">Save settings</button>
                                     </form>
                                 </div>
                                 <div class="tab-pane fade" id="knowledge-pane" role="tabpanel">
+                                    <!--
+                                      What the bot can actually draw on. Everything
+                                      added here is embedded and searched by the
+                                      assistant on every question, and by any
+                                      workflow with a knowledge node.
+                                    -->
+                                    <div id="kb-sources" class="mb-4">
+                                        <div class="d-flex mb-2 align-items-center">
+                                            <h6 class="me-auto mb-0">What your bot knows</h6>
+                                            <!--
+                                              Knowledge belongs to a tenant, and a superadmin has
+                                              no company of their own, so they pick one. Hidden
+                                              for everybody else, who have exactly one.
+                                            -->
+                                            <select class="form-select form-select-sm w-auto me-2 d-none" id="kb-company">
+                                                <option value="">Choose a company…</option>
+                                            </select>
+                                            <span class="badge bg-secondary me-2" id="kb-stats"></span>
+                                            <button type="button" class="btn btn-sm btn-outline-secondary" id="kb-reload">Refresh</button>
+                                        </div>
+                                        <div class="alert alert-warning py-2 small d-none" id="kb-note"></div>
+                                        <ul class="list-group mb-3" id="kb-source-list"></ul>
+
+                                        <div class="row g-3">
+                                            <div class="col-md-6">
+                                                <h6>Add a page or document</h6>
+                                                <div class="input-group input-group-sm mb-2">
+                                                    <input type="url" class="form-control" id="kb-url"
+                                                           placeholder="https://example.com/returns-policy">
+                                                    <button class="btn btn-primary" type="button" id="kb-add-url">Import</button>
+                                                </div>
+                                                <div class="form-text">A web page or a PDF. We fetch it and index the text.</div>
+                                            </div>
+                                            <div class="col-md-6">
+                                                <h6>Or paste something in</h6>
+                                                <input type="text" class="form-control form-control-sm mb-2" id="kb-title"
+                                                       placeholder="Title, e.g. Returns policy">
+                                                <textarea class="form-control form-control-sm mb-2" id="kb-text" rows="3"
+                                                          placeholder="Returns are accepted within 30 days of delivery..."></textarea>
+                                                <button class="btn btn-primary btn-sm" type="button" id="kb-add-text">Add</button>
+                                            </div>
+                                        </div>
+
+                                        <hr>
+
+                                        <h6>Try a question</h6>
+                                        <p class="form-text mt-0">
+                                            See what your bot will find before a customer does.
+                                        </p>
+                                        <div class="input-group input-group-sm mb-2 w-75">
+                                            <input type="text" class="form-control" id="kb-test-query"
+                                                   placeholder="What is your returns policy?">
+                                            <button class="btn btn-outline-primary" type="button" id="kb-test">Search</button>
+                                        </div>
+                                        <div id="kb-test-results"></div>
+                                    </div>
+
+                                    <hr>
+
                                     <div id="knowledge-management" class="mb-4">
                                         <div class="d-flex mb-2 align-items-center">
                                             <h6 class="me-auto mb-0">Saved Spreadsheets</h6>
@@ -2396,9 +2544,11 @@
     <script src="/js/admin_parts/admin-audit.js"></script>
     <script src="/js/admin_parts/admin-webhooks.js"></script>
     <script src="/js/admin_parts/admin-connector.js"></script>
+    <script src="/js/admin_parts/admin-knowledge.js"></script>
     <script src="/js/admin_parts/admin-analytics.js"></script>
     <script src="/js/admin_parts/admin-assistant.js"></script>
     <script src="/js/admin_parts/admin-operator-tools.js"></script>
     <script src="/js/admin_parts/admin-contacts.js"></script>
+    <script src="/js/admin_parts/admin-data-controls.js"></script>
 </body>
 </html>

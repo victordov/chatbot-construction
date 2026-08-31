@@ -40,7 +40,9 @@ describe('Rate limiting', () => {
   });
 
   afterEach(async () => {
-    await RateLimitCounter.deleteMany({});
+    // Scoped to this suite's own prefixes: another suite may be counting into
+    // the same collection at the same time.
+    await RateLimitCounter.deleteMany({ _id: /^(test-|api:|auth:)/ });
   });
 
   afterAll(async () => {

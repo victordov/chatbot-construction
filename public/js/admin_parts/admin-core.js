@@ -143,6 +143,44 @@ style.textContent = `
 `;
 document.head.appendChild(style);
 
+/**
+ * Notice when the session has expired, wherever it happens.
+ *
+ * A token lasts eight hours, which is exactly one shift, and the only place
+ * that checked for a 401 was the verify call at boot. Past expiry an operator
+ * got no error and no prompt: Send did nothing, notes silently failed to save,
+ * the queue stopped refreshing, and the first sign of trouble was a customer
+ * asking why nobody had replied.
+ *
+ * Wrapping fetch once catches every call site, including the forty or so that
+ * build their own request by hand.
+ */
+(function watchForExpiry() {
+  const original = window.fetch;
+  let redirecting = false;
+
+  window.fetch = async function(resource, options) {
+    const response = await original.call(this, resource, options);
+    const url = typeof resource === 'string' ? resource : (resource && resource.url) || '';
+
+    // Only our own API, and never the login or verify calls - a failed login
+    // is a wrong password, not an expired session.
+    const isOurApi = url.startsWith('/api/') || url.includes(`${window.location.origin}/api/`);
+    const isAuthCall = url.includes('/api/auth/login') || url.includes('/api/auth/verify');
+
+    if (response.status === 401 && isOurApi && !isAuthCall && !redirecting) {
+      redirecting = true;
+      localStorage.removeItem('chatbot-auth-token');
+
+      // `?expired=1` so the login page can say why they are back there, rather
+      // than looking like a random logout.
+      window.location.href = '/admin/login.html?expired=1';
+    }
+
+    return response;
+  };
+})();
+
 document.addEventListener('DOMContentLoaded', function() {
   // Check if user is logged in
   const token = localStorage.getItem('chatbot-auth-token');
@@ -313,6 +351,12 @@ function initializeDashboard(token, user) {
   }
   if (typeof setupConnector === 'function') {
     setupConnector();
+  }
+  if (typeof setupKnowledge === 'function') {
+    setupKnowledge();
+  }
+  if (typeof setupDataControls === 'function') {
+    setupDataControls();
   }
   setupExport();
 

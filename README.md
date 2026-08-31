@@ -140,6 +140,38 @@ An in-memory MongoDB starts automatically, so no local `mongod` is required.
   screen has a "try a question" box for checking what the bot will find.
 - **Google knowledge import**: Connect your Google account from the admin dashboard to load spreadsheet data as knowledge documents.
 - **Monitoring**: Prometheus metrics at `/metrics`.
+- **Public read API**: `/api/v1`, authenticated by an API key a company admin
+  creates under **Settings → API keys**. See below.
+
+---
+
+## 6. The public read API
+
+Outbound webhooks push events as they happen; this is for pulling — a backfill,
+a warehouse load, or a report of your own. Read-only.
+
+```sh
+curl -H "Authorization: Bearer ck_..." \
+  "https://your-host/api/v1/conversations?limit=100&since=2026-01-01"
+```
+
+- `GET /api/v1/me` — what the key is and which scopes it has. Start here.
+- `GET /api/v1/conversations` — `status`, `tag`, `since`, `until`, `limit`, `cursor`.
+- `GET /api/v1/conversations/:sessionId` — one conversation with its transcript.
+- `GET /api/v1/contacts` — `email`, `externalId`, `since`, `until`.
+- `GET /api/v1/tasks` — `status`, `since`, `until`.
+
+Paging is by cursor, not page number: pass back the `nextCursor` you were
+given. An offset would shift under you while new conversations arrive, and a
+sync that skips rows is worse than one that fails.
+
+Keys are scoped per resource (`conversations:read`, `contacts:read`,
+`tasks:read`), rate limited per key against the tenant's plan, and shown once
+at creation — only a hash is stored. Revoking is immediate; the row stays in
+the list, because after an incident the record that the key existed and when it
+was last used is the point. The API requires a plan that includes `apiAccess`,
+checked per request, so a downgrade takes effect rather than leaving old keys
+working forever.
 
 ---
 

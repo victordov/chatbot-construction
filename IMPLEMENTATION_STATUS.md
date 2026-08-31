@@ -228,6 +228,23 @@ Outside them the widget stops implying someone is about to answer. Whether an
 operator is actually connected is read from the socket rooms, so it cannot
 drift from reality.
 
+**A public read API.** Webhooks push events as they happen; nothing let a
+tenant pull their own data — for a backfill, into a warehouse, or for a report
+of their own. `/api/v1` does, read-only, authenticated by keys a company admin
+creates for themselves. Scopes are per resource, because a warehouse sync that
+needs conversations has no business holding a credential that also reads
+contacts. A key is shown once and stored as a hash, so a database dump is not a
+set of live credentials; revoked keys stay in the list, since after an incident
+the record that a key existed and when it was last used is exactly the point.
+Paging is by cursor rather than page number: an offset shifts while new
+conversations arrive, and a sync that silently skips rows is worse than one
+that fails. Records are shaped explicitly rather than handed over as stored
+documents, so no future migration adds a field to the API by accident. The
+plan's `apiAccess` is checked per request rather than at creation, so a
+downgrade takes effect instead of leaving old keys working forever, and the
+limiter counts per key — one program looping is not a reason to throttle the
+tenant's own dashboard.
+
 **Taking money.** Plans, limits, metering and enforcement were complete and
 nothing charged anybody. Stripe now does: the customer pays on Stripe's own
 page, so card details never reach this server and the PCI surface stays where
@@ -334,10 +351,6 @@ content-hashed widget assets cached for a year with the loader on `no-cache`.
   wires the Use Your Data node explicitly. Handing the capabilities to the model
   as tools is the step that would let it decide to search the catalogue without
   anybody drawing that branch.
-- **There is no public read API.** Outbound webhooks push events as they
-  happen, and workflow action nodes call out, but a tenant cannot yet pull
-  their conversations or contacts programmatically — for a backfill, or into a
-  warehouse. That needs API keys with their own scoping and rate limits.
 - **A workflow cannot call another workflow**, and there is no loop construct.
   Both are deliberate for now: cycles are rejected at design time because the
   executor walks the graph, and a conversation that loops is almost always a

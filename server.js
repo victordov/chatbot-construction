@@ -305,6 +305,12 @@ app.get('/ready', (req, res) => {
 // Routes
 // ---------------------------------------------------------------------------
 
+// The public read API. Versioned, and mounted ahead of the general limiter
+// because it has its own: a key on an enterprise plan syncing a warehouse
+// should not be held to the per-address allowance meant for traffic that has
+// not said who it is.
+app.use('/api/v1', require('./routes/public-api'));
+
 // Rate limiters were defined but never applied, leaving login open to
 // unlimited brute force and the chat endpoint open to flooding.
 app.use('/api/auth/login', authLimiter);
@@ -331,6 +337,7 @@ app.use('/api/templates', templateRoutes);
 app.use('/api/knowledge', knowledgeRoutes);
 app.use('/api/contacts', contactRoutes);
 app.use('/api/email', emailRoutes);
+app.use('/api/api-keys', require('./routes/api-keys'));
 
 app.get('/', (req, res) => {
   res.redirect('/admin/');
