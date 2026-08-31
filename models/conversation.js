@@ -234,6 +234,15 @@ const ConversationSchema = new mongoose.Schema({
     ref: 'Company'
   },
   /**
+   * When identifying detail was stripped from this conversation by the
+   * retention sweep. Recorded rather than inferred so a second pass does not
+   * re-scrub an already-scrubbed transcript, and so the dashboard can say why
+   * an old conversation reads as empty instead of looking broken.
+   */
+  anonymizedAt: {
+    type: Date
+  },
+  /**
    * The person behind this conversation. Lets an operator see everything the
    * same customer has asked before, across sessions and devices.
    */
@@ -242,6 +251,55 @@ const ConversationSchema = new mongoose.Schema({
     ref: 'Contact'
   }
 });
+
+/**
+ * Strip everything that identifies the person, keeping the shape of the
+ * conversation.
+ *
+ * The distinction retention policies rest on: after the retention window a
+ * tenant may no longer hold what a customer said or who they were, but the
+ * fact that a conversation happened - when, how long, who answered, how it was
+ * rated - is what every report is built from, and deleting that silently
+ * rewrites a tenant's history.
+ *
+ * Message text goes because people type addresses, order numbers and card
+ * details into chat windows; there is no reliable way to keep the text and
+ * claim the record is anonymous.
+ */
+ConversationSchema.methods.anonymize = async function() {
+  if (this.anonymizedAt) {
+    return this;
+  }
+
+  this.userId = undefined;
+  this.domain = undefined;
+  this.contact = undefined;
+
+  if (this.email) {
+    this.email.from = undefined;
+    this.email.to = undefined;
+    this.email.subject = undefined;
+    this.email.messageIds = [];
+    this.email.lastMessageId = undefined;
+  }
+
+  this.messages.forEach(message => {
+    message.content = '[removed]';
+    message.fileId = undefined;
+    message.fileName = undefined;
+    message.attachments = [];
+    message.emailMessageId = undefined;
+    message.encrypted = false;
+  });
+
+  if (this.rating && this.rating.comment) {
+    // A free-text comment is as likely to name somebody as a message is.
+    this.rating.comment = undefined;
+  }
+
+  this.anonymizedAt = new Date();
+  return this.save();
+};
 
 // Indexes tuned for the dashboard's access patterns.
 // `sessionId` is already indexed by its `unique: true` constraint.

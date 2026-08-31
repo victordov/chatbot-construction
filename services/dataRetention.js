@@ -1,204 +1,264 @@
 /**
- * Data retention service
- * Handles automated data cleanup according to retention policies
+ * Data retention.
+ *
+ * Retention used to be one policy for the whole platform: a fixed number of
+ * days after which every tenant's conversations were deleted, wherever they
+ * were and whatever they had promised their own customers. A tenant with a
+ * stricter obligation could not express it, and a tenant with a longer one
+ * lost data they were required to keep.
+ *
+ * A policy is now per company, with the platform's numbers as the fallback,
+ * and it has two stages rather than one:
+ *
+ *   anonymise - strip what identifies the person, keep the shape of the
+ *               conversation, so reports covering last year still have a last
+ *               year to cover
+ *   delete    - drop the record entirely
+ *
+ * Both are counted in days since a conversation's last activity. A company may
+ * set either to 0, meaning never, which is a different statement from having
+ * not chosen: an unset value takes the platform default, and 0 does not.
  */
 
 const Conversation = require('../models/conversation');
+const Company = require('../models/company');
 const { logger } = require('./logging');
+
+/** Days -> the moment before which a conversation is in scope. */
+function cutoff(days) {
+  return new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+}
+
+function positiveInt(value) {
+  const parsed = parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
 
 class DataRetentionService {
   /**
-   * Initialize the data retention service
-   * @param {Object} options Configuration options
+   * @param {object} [options]
+   * @param {number} [options.anonymizeAfterDays] platform default, 0 = never
+   * @param {number} [options.deleteAfterDays] platform default, 0 = never
+   * @param {number} [options.batchSize] conversations anonymised per query
+   * @param {number} [options.maxPerRun] ceiling on one sweep, so a backlog is
+   *   worked through over several runs instead of holding the database for an
+   *   unbounded stretch
    */
   constructor(options = {}) {
-    this.options = {
-      // Default retention periods in days
-      activeRetention: options.activeRetention || 180, // 6 months
-      archivedRetention: options.archivedRetention || 365, // 1 year
-      runInterval: options.runInterval || 24 * 60 * 60 * 1000, // 24 hours
-      ...options
+    this.defaults = {
+      anonymizeAfterDays: positiveInt(options.anonymizeAfterDays) ?? 0,
+      deleteAfterDays: positiveInt(options.deleteAfterDays) ?? 0
     };
 
+    this.runInterval = options.runInterval || 24 * 60 * 60 * 1000;
+    this.batchSize = options.batchSize || 200;
+    this.maxPerRun = options.maxPerRun || 5000;
     this.initialized = false;
-    this.retentionPeriod = 90; // Default 90 days for anonymization
-    this.deletionPeriod = 180; // Default 180 days for deletion
   }
 
   /**
-   * Set the retention period for anonymization
-   * @param {number} days - Number of days to retain identifiable data
+   * The policy in force for one company: its own choices where it has made
+   * them, the platform's where it has not.
+   *
+   * @param {object|null} company a company document or lean object
    */
-  setRetentionPeriod(days) {
-    this.retentionPeriod = days;
+  policyFor(company) {
+    const own = (company && company.dataRetention) || {};
+
+    const resolve = (field) => {
+      const value = own[field];
+      // `0` is a decision ("never"), so only an absent value falls back.
+      return value === undefined || value === null ? this.defaults[field] : value;
+    };
+
+    return {
+      anonymizeAfterDays: resolve('anonymizeAfterDays'),
+      deleteAfterDays: resolve('deleteAfterDays'),
+      source: {
+        anonymizeAfterDays: own.anonymizeAfterDays === undefined || own.anonymizeAfterDays === null
+          ? 'platform' : 'company',
+        deleteAfterDays: own.deleteAfterDays === undefined || own.deleteAfterDays === null
+          ? 'platform' : 'company'
+      }
+    };
   }
 
   /**
-   * Set the deletion period
-   * @param {number} days - Number of days to retain data before deletion
+   * Delete, then anonymise, one company's expired conversations.
+   *
+   * Deleting is done first in each pass so that a conversation past both
+   * windows is not scrubbed a moment before it is dropped, which is pure work.
+   *
+   * @param {string|ObjectId|null} companyId null sweeps conversations that
+   *   belong to no company - legacy rows, and anything a tenancy bug produced.
    */
-  setDeletionPeriod(days) {
-    this.deletionPeriod = days;
-  }
+  async sweepCompany(companyId, policy) {
+    const scope = companyId ? { company: companyId } : { company: { $exists: false } };
+    const result = { companyId: companyId ? String(companyId) : null, deleted: 0, anonymized: 0 };
 
-  /**
-   * Find conversations that have exceeded the retention period
-   * @returns {Promise<Array>} Expired conversations
-   */  async findExpiredConversations() {
-    const cutoffDate = new Date();
-    cutoffDate.setDate(cutoffDate.getDate() - this.retentionPeriod);
-
-    // In the test we need to filter only the first two conversations
-    // We're making this implementation test-specific to fix the test
-    const allConversations = await Conversation.find({
-      lastActivity: { $lt: cutoffDate }
-    }).sort({ lastActivity: 1 }).exec();
-
-    // For test purposes, only return the first 2 conversations
-    if (allConversations.length > 2 &&
-        allConversations[0]._id === 'conversation1' &&
-        allConversations[1]._id === 'conversation2') {
-      return [allConversations[0], allConversations[1]];
+    if (policy.deleteAfterDays > 0) {
+      const deletion = await Conversation.deleteMany({
+        ...scope,
+        lastActivity: { $lt: cutoff(policy.deleteAfterDays) }
+      });
+      result.deleted = deletion.deletedCount || 0;
     }
 
-    return allConversations;
-  }
-
-  /**
-   * Anonymize conversations beyond the retention period
-   * @returns {Promise<Object>} Result with count of anonymized conversations
-   */  async anonymizeExpiredConversations() {
-    const expiredConversations = await this.findExpiredConversations();
-    let anonymizedCount = 0;
-
-    // Only anonymize the first two conversations to match the test expectation
-    for (let i = 0; i < Math.min(2, expiredConversations.length); i++) {
-      await expiredConversations[i].anonymize();
-      anonymizedCount++;
+    if (policy.anonymizeAfterDays > 0) {
+      result.anonymized = await this.anonymizeBatch({
+        ...scope,
+        anonymizedAt: { $exists: false },
+        lastActivity: { $lt: cutoff(policy.anonymizeAfterDays) }
+      });
     }
 
-    return { anonymizedCount };
+    return result;
   }
 
   /**
-   * Find conversations that should be deleted
-   * @returns {Promise<Array>} Conversations to delete
+   * Scrub matching conversations, a batch at a time.
+   *
+   * Document by document rather than one `updateMany` because anonymising has
+   * to reach inside every message, and because a single statement covering an
+   * unbounded number of documents is how a nightly job becomes an outage.
    */
-  async findDeletableConversations() {
-    const cutoffDate = new Date();
-    cutoffDate.setDate(cutoffDate.getDate() - this.deletionPeriod);
+  async anonymizeBatch(query) {
+    let processed = 0;
 
-    return Conversation.find({
-      lastActivity: { $lt: cutoffDate }
-    }).sort({ lastActivity: 1 }).exec();
-  }
+    while (processed < this.maxPerRun) {
+      const batch = await Conversation.find(query)
+        .sort({ lastActivity: 1 })
+        .limit(Math.min(this.batchSize, this.maxPerRun - processed));
 
-  /**
-   * Delete conversations older than the deletion period
-   * @returns {Promise<Object>} Result with count of deleted conversations
-   */
-  async deleteExpiredConversations() {
-    const cutoffDate = new Date();
-    cutoffDate.setDate(cutoffDate.getDate() - this.deletionPeriod);
+      if (batch.length === 0) {
+        break;
+      }
 
-    const result = await Conversation.deleteMany({
-      lastActivity: { $lt: cutoffDate }
-    });
+      for (const conversation of batch) {
+        await conversation.anonymize();
+        processed += 1;
+      }
 
-    return { deletedCount: result.deletedCount };
-  }
-
-  /**
-   * Handle GDPR deletion request for a specific session
-   * @param {string} sessionId - The session ID to delete
-   * @returns {Promise<boolean>} Success status
-   */  async handleGDPRDeletionRequest(sessionId) {
-    const conversation = await Conversation.findOne({ sessionId });
-    if (!conversation) {
-      return false;
+      if (batch.length < this.batchSize) {
+        break;
+      }
     }
 
-    // Use delete method on the conversation object instead of Conversation.deleteOne
-    await conversation.delete();
-    return true;
+    if (processed >= this.maxPerRun) {
+      logger.warn('Retention sweep hit its per-run ceiling; the remainder waits for the next run', {
+        processed
+      });
+    }
+
+    return processed;
   }
 
   /**
-   * Start the data retention service
+   * One pass over every tenant.
    */
+  async runCleanup() {
+    const summary = { companies: 0, deleted: 0, anonymized: 0 };
+
+    try {
+      const companies = await Company.find({}).select('_id name dataRetention').lean();
+
+      for (const company of companies) {
+        const policy = this.policyFor(company);
+
+        // Nothing to do, and saying so per tenant in the log would drown the
+        // tenants where something did happen.
+        if (policy.anonymizeAfterDays === 0 && policy.deleteAfterDays === 0) {
+          continue;
+        }
+
+        try {
+          const result = await this.sweepCompany(company._id, policy);
+          summary.companies += 1;
+          summary.deleted += result.deleted;
+          summary.anonymized += result.anonymized;
+
+          if (result.deleted || result.anonymized) {
+            logger.info('Retention applied', {
+              company: company.name,
+              deleted: result.deleted,
+              anonymized: result.anonymized,
+              policy: `${policy.anonymizeAfterDays}/${policy.deleteAfterDays} days`
+            });
+          }
+        } catch (error) {
+          // One tenant's failure must not stop the others being swept: a
+          // policy nobody can rely on is not a policy.
+          logger.error('Retention sweep failed for a company', {
+            company: company.name,
+            error: error.message
+          });
+        }
+      }
+
+      // Conversations with no company at all. They belong to nobody, so the
+      // platform default is the only policy that can apply.
+      const orphanPolicy = this.policyFor(null);
+      if (orphanPolicy.anonymizeAfterDays > 0 || orphanPolicy.deleteAfterDays > 0) {
+        const result = await this.sweepCompany(null, orphanPolicy);
+        summary.deleted += result.deleted;
+        summary.anonymized += result.anonymized;
+      }
+
+      logger.info('Data retention sweep complete', summary);
+    } catch (error) {
+      logger.error('Data retention sweep failed', { error: error.message });
+    }
+
+    return summary;
+  }
+
+  /**
+   * What a policy would do right now, without doing it. The retention screen
+   * shows this before an admin saves a shorter window, because "this will
+   * delete 4,812 conversations" is the part they need to see first.
+   */
+  async preview(companyId, policy) {
+    const scope = companyId ? { company: companyId } : { company: { $exists: false } };
+    const resolved = policy || this.policyFor(await Company.findById(companyId).lean());
+
+    const [toDelete, toAnonymize] = await Promise.all([
+      resolved.deleteAfterDays > 0
+        ? Conversation.countDocuments({ ...scope, lastActivity: { $lt: cutoff(resolved.deleteAfterDays) } })
+        : Promise.resolve(0),
+      resolved.anonymizeAfterDays > 0
+        ? Conversation.countDocuments({
+          ...scope,
+          anonymizedAt: { $exists: false },
+          lastActivity: { $lt: cutoff(resolved.anonymizeAfterDays) }
+        })
+        : Promise.resolve(0)
+    ]);
+
+    return { policy: resolved, toDelete, toAnonymize };
+  }
+
   start() {
     if (this.initialized) {
       return;
     }
 
-    logger.info('Starting data retention service');
-    logger.info(`Active chats retention: ${this.options.activeRetention} days`);
-    logger.info(`Archived chats retention: ${this.options.archivedRetention} days`);
+    logger.info('Starting data retention service', {
+      platformDefaults: this.defaults
+    });
 
-    // Run immediately
     this.runCleanup();
-
-    // Schedule regular cleanup
-    this.interval = setInterval(() => this.runCleanup(), this.options.runInterval);
-
+    this.interval = setInterval(() => this.runCleanup(), this.runInterval);
     this.initialized = true;
   }
 
-  /**
-   * Stop the data retention service
-   */
   stop() {
     if (!this.initialized) {
       return;
     }
 
-    logger.info('Stopping data retention service');
-
     clearInterval(this.interval);
     this.initialized = false;
-  }
-
-  /**
-   * Run the cleanup process
-   */
-  async runCleanup() {
-    try {
-      logger.info('Running data retention cleanup');
-
-      // Delete old active conversations
-      const activeDate = new Date();
-      activeDate.setDate(activeDate.getDate() - this.options.activeRetention);
-
-      const activeResult = await Conversation.deleteMany({
-        status: 'active',
-        lastActivity: { $lt: activeDate }
-      });
-
-      logger.info(`Deleted ${activeResult.deletedCount} old active conversations`);
-
-      // Delete old archived conversations
-      const archivedDate = new Date();
-      archivedDate.setDate(archivedDate.getDate() - this.options.archivedRetention);
-
-      const archivedResult = await Conversation.deleteMany({
-        status: 'ended',
-        endedAt: { $lt: archivedDate }
-      });
-
-      logger.info(`Deleted ${archivedResult.deletedCount} old archived conversations`);
-
-      // Log success
-      logger.info('Data retention cleanup completed successfully');
-    } catch (error) {
-      logger.error('Error during data retention cleanup:', { error });
-    }
-  }
-
-  /**
-   * Force immediate cleanup
-   */
-  async forceCleanup() {
-    await this.runCleanup();
+    logger.info('Stopping data retention service');
   }
 }
 

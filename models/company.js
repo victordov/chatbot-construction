@@ -151,6 +151,30 @@ const CompanySchema = new mongoose.Schema({
   },
 
   /**
+   * How long this company keeps its conversations.
+   *
+   * Retention used to be one number for the whole platform, which is fine
+   * until a tenant is subject to a policy of their own - and a tenant who has
+   * promised their customers ninety days cannot honour that on someone else's
+   * schedule. Both fields are days since a conversation's last activity:
+   *
+   *   a positive number - act after that many days
+   *   0                 - never (an explicit choice, not an oversight)
+   *   unset             - fall back to the platform default
+   *
+   * Anonymising first and deleting later is the usual shape: the transcript
+   * stops being personal data long before the row is dropped, so reporting
+   * still has a history to draw on.
+   */
+  dataRetention: {
+    anonymizeAfterDays: { type: Number, min: 0 },
+    deleteAfterDays: { type: Number, min: 0 },
+    /** Who last changed this, for the audit trail's benefit. */
+    updatedAt: { type: Date },
+    updatedBy: { type: String }
+  },
+
+  /**
    * Tenant-specific widget branding, surfaced to the widget at bootstrap.
    */
   widgetSettings: {

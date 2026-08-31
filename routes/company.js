@@ -10,9 +10,21 @@ const capabilityContract = require('../config/capabilities');
 const safeHttp = require('../services/safe-http');
 const secrets = require('../services/secrets');
 const audit = require('../services/audit');
+const DataRetentionService = require('../services/dataRetention');
 const crypto = require('crypto');
 
 const router = express.Router();
+
+/**
+ * A retention service configured exactly as the running sweep is, so what this
+ * screen says the platform default is cannot drift from what the sweep does.
+ */
+function retentionService() {
+  return new DataRetentionService({
+    anonymizeAfterDays: process.env.RETENTION_ANONYMIZE_DAYS,
+    deleteAfterDays: process.env.RETENTION_DELETE_DAYS || process.env.ARCHIVED_RETENTION_DAYS
+  });
+}
 
 // Helper function to generate a random password
 function generateRandomPassword(length = 12) {
@@ -226,6 +238,119 @@ router.put('/me/hours', requireOwnCompany, async (req, res) => {
  * Email channel settings, including the inbound webhook URL a tenant points
  * their mail provider at.
  */
+/**
+ * How long this company keeps its conversations.
+ *
+ * A tenant's own obligations are not the platform's, so the policy belongs to
+ * them; the platform's numbers are only what applies until they choose. The
+ * counts come back with it because "delete after 30 days" means nothing to
+ * somebody who cannot see that it would drop four thousand conversations
+ * tonight.
+ */
+router.get('/me/retention', requireOwnCompany, async (req, res) => {
+  try {
+    const company = await Company.findById(req.user.company.id).select('dataRetention').lean();
+
+    if (!company) {
+      return res.status(404).json({ error: 'Company not found' });
+    }
+
+    const service = retentionService();
+    const policy = service.policyFor(company);
+    const preview = await service.preview(req.user.company.id, policy);
+
+    res.json({
+      dataRetention: company.dataRetention || {},
+      effective: policy,
+      platformDefaults: service.defaults,
+      impact: { toDelete: preview.toDelete, toAnonymize: preview.toAnonymize }
+    });
+  } catch (error) {
+    logger.error('Error loading retention policy', { error: error.message });
+    res.status(500).json({ error: 'Failed to load retention policy' });
+  }
+});
+
+router.put('/me/retention', requireOwnCompany, async (req, res) => {
+  try {
+    const company = await Company.findById(req.user.company.id);
+
+    if (!company) {
+      return res.status(404).json({ error: 'Company not found' });
+    }
+
+    // `null` means "follow the platform default" and 0 means "never". Both are
+    // choices, and conflating them would make one of them unsayable.
+    const parse = (value, label) => {
+      if (value === null || value === undefined || value === '') {
+        return null;
+      }
+      const days = Number(value);
+      if (!Number.isInteger(days) || days < 0) {
+        throw new Error(`${label} must be a whole number of days, or 0 for never`);
+      }
+      if (days > 3650) {
+        throw new Error(`${label} cannot be more than 3650 days`);
+      }
+      return days;
+    };
+
+    let anonymizeAfterDays;
+    let deleteAfterDays;
+
+    try {
+      anonymizeAfterDays = parse(req.body.anonymizeAfterDays, 'Anonymise after');
+      deleteAfterDays = parse(req.body.deleteAfterDays, 'Delete after');
+    } catch (validationError) {
+      return res.status(400).json({ error: validationError.message });
+    }
+
+    if (anonymizeAfterDays > 0 && deleteAfterDays > 0 && deleteAfterDays < anonymizeAfterDays) {
+      return res.status(400).json({
+        error: 'Conversations cannot be deleted before they are anonymised. '
+          + 'Either raise the deletion window or lower the anonymisation one.'
+      });
+    }
+
+    const previous = company.dataRetention ? company.dataRetention.toObject() : {};
+
+    company.dataRetention = {
+      anonymizeAfterDays,
+      deleteAfterDays,
+      updatedAt: new Date(),
+      updatedBy: req.user.displayName || req.user.username
+    };
+
+    await company.save();
+
+    // Shortening a retention window destroys data on a schedule. Who chose it
+    // and when is exactly the sort of thing somebody has to answer for later.
+    await audit.record({
+      action: 'company.retention_changed',
+      req,
+      target: { type: 'company', id: String(company._id), label: company.name },
+      details: {
+        from: { anonymizeAfterDays: previous.anonymizeAfterDays, deleteAfterDays: previous.deleteAfterDays },
+        to: { anonymizeAfterDays, deleteAfterDays }
+      }
+    });
+
+    const service = retentionService();
+    const policy = service.policyFor(company);
+    const preview = await service.preview(company._id, policy);
+
+    res.json({
+      success: true,
+      dataRetention: company.dataRetention,
+      effective: policy,
+      impact: { toDelete: preview.toDelete, toAnonymize: preview.toAnonymize }
+    });
+  } catch (error) {
+    logger.error('Error saving retention policy', { error: error.message });
+    res.status(500).json({ error: 'Failed to save retention policy' });
+  }
+});
+
 /**
  * The tenant's own systems, through the connector SDK.
  */

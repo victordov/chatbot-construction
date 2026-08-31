@@ -228,6 +228,22 @@ Outside them the widget stops implying someone is about to answer. Whether an
 operator is actually connected is read from the socket rooms, so it cannot
 drift from reality.
 
+**Retention each tenant sets for themselves.** There was one number for the
+whole platform, so a tenant who had promised their customers ninety days could
+not honour it, and a tenant obliged to keep seven years lost the data anyway. A
+company now sets its own two windows — anonymise after so many days, delete
+after so many more — with the platform's numbers as the fallback and 0 meaning
+never, which is a different statement from not having chosen. Anonymising is
+the stage that was missing: `Conversation.anonymize()` did not exist, so the
+one code path that called it would have thrown the first time it ran. It now
+strips the transcript, the addresses, the contact link and the free-text rating
+comment while keeping timings, roles and scores, because a report covering last
+year still needs a last year to cover. The screen shows what a policy would
+delete tonight before it is saved, deleting before anonymising is refused as
+incoherent, and a change is written to the audit log — shortening a window
+destroys data on a schedule, and somebody has to answer for having chosen it.
+One tenant's failure does not stop the sweep reaching the others.
+
 **Rate limiting that survives a second instance.** Counts live in MongoDB
 rather than in each process's memory, so "5 login attempts an hour" does not
 quietly become fifteen behind three replicas — the limits used to multiply by

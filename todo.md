@@ -30,10 +30,8 @@ What is left is below.
 
 ## Per-tenant operations
 
-These two services are still global, from before multi-tenancy:
+This service is still global, from before multi-tenancy:
 
-- [ ] **Retention** — `services/dataRetention.js` has one `retentionPeriod` for
-      the whole platform. A tenant with a stricter policy cannot express it.
 - [ ] **Backups** — `services/backup.js` is all-or-nothing, so there is no way
       to restore one tenant.
 

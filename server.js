@@ -31,6 +31,7 @@ const widgetRoutes = require('./routes/widget');
 const uploadRoutes = require('./routes/upload');
 const billingRoutes = require('./routes/billing');
 const templateRoutes = require('./routes/templates');
+const knowledgeRoutes = require('./routes/knowledge');
 const contactRoutes = require('./routes/contacts');
 const emailRoutes = require('./routes/email');
 const { apiLimiter, chatLimiter, authLimiter } = require('./middleware/rateLimiter');
@@ -130,10 +131,27 @@ app.use(async (req, res, next) => {
     return next();
   }
 
+  // A monitoring probe that happens to send an Origin header must still be
+  // able to ask whether the process is alive. These answer no tenant data.
+  if (req.path === '/health' || req.path === '/ready') {
+    return next();
+  }
+
   try {
     // Tenant domains live in the database, so onboarding a customer no longer
     // requires editing ALLOWED_DOMAINS and redeploying.
-    const allowed = await tenantService.isOriginAllowed(origin);
+    let allowed = await tenantService.isOriginAllowed(origin);
+
+    // A valid widget key is the higher-confidence signal - it is the thing the
+    // tenant deliberately pasted onto their page, whereas the domain list is
+    // something they have to remember to fill in separately. Without this, a
+    // correct install on an unregistered domain got a hard 403 whose helpful
+    // message the browser never showed, because a 403 carries no
+    // Access-Control-Allow-Origin header and the fetch fails as a generic CORS
+    // error. That is the "the widget just doesn't load" ticket.
+    if (!allowed && req.query.key) {
+      allowed = Boolean(await tenantService.resolveCompanyId({ widgetKey: req.query.key }));
+    }
 
     if (!allowed) {
       logger.warn('Blocked cross-origin request', { origin, path: req.path });
@@ -145,7 +163,9 @@ app.use(async (req, res, next) => {
 
     res.header('Access-Control-Allow-Origin', origin);
     res.header('Vary', 'Origin');
-    res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    // The API has PUT, PATCH and DELETE routes throughout; advertising only
+    // GET and POST fails the preflight for every one of them.
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
     res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, x-auth-token');
     res.header('Access-Control-Allow-Credentials', 'true');
     res.header('Access-Control-Max-Age', '86400');
@@ -297,6 +317,7 @@ app.use('/api/widget', widgetRoutes);
 app.use('/api/upload', ensureSessionId, uploadRoutes);
 app.use('/api/billing', billingRoutes);
 app.use('/api/templates', templateRoutes);
+app.use('/api/knowledge', knowledgeRoutes);
 app.use('/api/contacts', contactRoutes);
 app.use('/api/email', emailRoutes);
 
@@ -338,9 +359,14 @@ const io = setupWebSockets(server);
 socketManager.setIo(io);
 workflowExecutionRoutes.initializeServices(socketManager);
 
+// Platform defaults only: a company's own policy overrides these, and the
+// default of both is "never". Deleting a tenant's history because nobody set
+// an environment variable is not a decision the platform should make for them.
+// `ARCHIVED_RETENTION_DAYS` is honoured so deployments that had set it keep
+// the behaviour they had.
 const dataRetention = new DataRetentionService({
-  activeRetention: process.env.ACTIVE_RETENTION_DAYS || 180,
-  archivedRetention: process.env.ARCHIVED_RETENTION_DAYS || 365
+  anonymizeAfterDays: process.env.RETENTION_ANONYMIZE_DAYS,
+  deleteAfterDays: process.env.RETENTION_DELETE_DAYS || process.env.ARCHIVED_RETENTION_DAYS
 });
 dataRetention.start();
 
