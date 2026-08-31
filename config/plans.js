@@ -23,7 +23,8 @@ const PLANS = {
       aiResponsesPerMonth: 500,
       operators: 2,
       knowledgeChunks: 500,
-      workflows: 1
+      workflows: 1,
+      apiRequestsPerMinute: 60
     },
     features: {
       workflows: true,
@@ -48,7 +49,8 @@ const PLANS = {
       aiResponsesPerMonth: 2000,
       operators: 1,
       knowledgeChunks: 2000,
-      workflows: 1
+      workflows: 1,
+      apiRequestsPerMinute: 120
     },
     features: {
       workflows: true,
@@ -73,7 +75,8 @@ const PLANS = {
       aiResponsesPerMonth: 25000,
       operators: 10,
       knowledgeChunks: 25000,
-      workflows: 10
+      workflows: 10,
+      apiRequestsPerMinute: 600
     },
     features: {
       workflows: true,
@@ -98,7 +101,8 @@ const PLANS = {
       aiResponsesPerMonth: null,
       operators: null,
       knowledgeChunks: null,
-      workflows: null
+      workflows: null,
+      apiRequestsPerMinute: 3000
     },
     features: {
       workflows: true,
@@ -118,6 +122,11 @@ const DEFAULT_PLAN = 'trial';
 /**
  * Human-readable names for the metered quantities, used in limit messages and
  * the usage dashboard.
+ *
+ * `apiRequestsPerMinute` is deliberately absent: it is a limit but not a
+ * meter, enforced per minute by middleware/rateLimiter.js rather than tallied
+ * for the month, so it has nothing to show on the usage screen. Like every
+ * other limit it can still be overridden per company on the subscription.
  */
 const METERS = {
   conversationsPerMonth: { label: 'Conversations', usageKey: 'conversations', resets: 'monthly' },

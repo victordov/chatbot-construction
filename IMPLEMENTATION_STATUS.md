@@ -1,6 +1,6 @@
 # Implementation status
 
-_Last reviewed: 2026-08-06_
+_Last reviewed: 2026-08-22_
 
 ## Working end to end
 
@@ -94,6 +94,28 @@ presets — Shopify, Stripe, Zendesk, Slack and HubSpot — fill in the URL, met
 authentication style and field mappings, and say where the credential comes
 from. No per-service code exists in the runtime, so there is nothing to break
 when a vendor changes anything other than the recipe.
+
+**Knowledge, end to end.** Until recently this loop did not close: ingestion,
+embedding, storage and retrieval were all built and *nothing called any of it*.
+No route in the product invoked `processKnowledgeSource`, so `KnowledgeChunk`
+was empty in every real deployment and both readers searched nothing and found
+nothing, without ever erroring. A tenant could not put a single sentence into
+their own knowledge base.
+
+`routes/knowledge.js` is the way in, and **Settings → Knowledge Base** is the
+screen: import a web page or a PDF, or paste text straight in; see what is
+indexed and how big it is; ask a test question to find out what the bot will
+retrieve before a customer does; remove a source. A re-import replaces exactly
+its own chunks. The URL is one a tenant typed, so fetching it goes through the
+same address-checked transport as workflow actions and webhooks — a knowledge
+import cannot be aimed at the instance metadata service.
+
+Both readers now work. `services/ai.js` retrieves on every assistant reply, so a
+company that has imported their material gets answers from it without drawing a
+workflow — which is what uploading it implied in the first place. Inside a
+workflow, `runLlmNode` sent `step.data.systemPrompt || systemPrompt` where the
+left branch was always set by the compiler, silently discarding the knowledge it
+had just retrieved; it now sends the built hierarchy.
 
 **Knowledge retrieval.** `services/embeddings.js` + `services/vector-store.js`.
 Backend is chosen automatically: Qdrant (`QDRANT_URL`), Atlas `$vectorSearch`
@@ -206,6 +228,22 @@ Outside them the widget stops implying someone is about to answer. Whether an
 operator is actually connected is read from the socket rooms, so it cannot
 drift from reality.
 
+**Rate limiting that survives a second instance.** Counts live in MongoDB
+rather than in each process's memory, so "5 login attempts an hour" does not
+quietly become fifteen behind three replicas — the limits used to multiply by
+the instance count, and nothing about the configuration changed when somebody
+scaled the deployment. The key is the tenant wherever the request proves which
+tenant it is: authenticated traffic carries a signed token, so it is keyed by
+company and user and an office NAT stops being one shared bucket, and the
+allowance comes from the plan (`apiRequestsPerMinute`, overridable per company
+like every other limit). Anonymous traffic proves nothing — a widget key is
+public by construction — so it is used only to separate tenants and never as
+the whole key, or anyone wanting a fresh bucket would invent one. Login is
+counted per address *and* account, and only failures count. A superadmin is
+skipped, because an incident nobody can log in to fix is worse. If MongoDB is
+unreachable the store counts in memory rather than failing the request or
+opening the door.
+
 **File uploads.** MIME allowlist, size cap, random storage ids, tenant-scoped
 downloads served as attachments with `nosniff`.
 
@@ -249,9 +287,29 @@ content-hashed widget assets cached for a year with the loader on `no-cache`.
   executor walks the graph, and a conversation that loops is almost always a
   bug rather than an intention.
 
+**Alerts that describe the system.** `services/alerting.js` reads the
+Prometheus registry that `services/monitoring.js` has always populated. It used
+to read `Math.random()`: average response time was `Math.random() * 3000`
+against a 2000ms threshold and error rate `Math.random() * 0.1` against 5%, so a
+deployment with alerts enabled sent a warning about one check in three and a
+*critical* "High Error Rate" email about half the time, forever, unrelated to
+anything that had happened. Each check now measures the interval since the last
+one rather than the lifetime of the process, so a bad minute does not stay in
+the average and a bad hour actually moves it. No traffic means no claim: a quiet
+window neither raises nor resolves anything.
+
+**Data-subject requests that find the person.** The GDPR routes looked
+conversations up by `Conversation.userId`, a field nothing in the application
+ever writes. Every request matched nothing, so the export produced an empty file
+and the erasure answered `success: true, "Deleted 0 conversations"` while
+writing an audit entry recording that an erasure had been performed. A subject
+is now resolved by contact id (covering every session that person has had), by
+session id, or by the legacy `userId`; an identifier that matches nobody is a
+404 rather than a false confirmation.
+
 ## Test suite
 
-`npm test` — 589 tests across 30 suites. An in-memory MongoDB starts
+`npm test` — 644 tests across 37 suites. An in-memory MongoDB starts
 automatically (`tests/globalSetup.js`), so no local `mongod` is needed.
 `tests/setup.js` blanks `OPENAI_API_KEY` so the suite never makes a real model
 call; the embedding and intent tests therefore assert on ranking and plumbing
