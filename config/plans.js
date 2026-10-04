@@ -24,6 +24,7 @@ const PLANS = {
       operators: 2,
       knowledgeChunks: 500,
       workflows: 1,
+      actions: 5,
       apiRequestsPerMinute: 60
     },
     features: {
@@ -32,6 +33,7 @@ const PLANS = {
       aiSuggestions: true,
       analytics: 'basic',
       fileUploads: true,
+      actions: true,
       apiAccess: false,
       customBranding: false,
       prioritySupport: false
@@ -50,6 +52,7 @@ const PLANS = {
       operators: 1,
       knowledgeChunks: 2000,
       workflows: 1,
+      actions: 0,
       apiRequestsPerMinute: 120
     },
     features: {
@@ -58,6 +61,7 @@ const PLANS = {
       aiSuggestions: false,
       analytics: 'basic',
       fileUploads: true,
+      actions: false,
       apiAccess: false,
       customBranding: false,
       prioritySupport: false
@@ -76,6 +80,7 @@ const PLANS = {
       operators: 10,
       knowledgeChunks: 25000,
       workflows: 10,
+      actions: 25,
       apiRequestsPerMinute: 600
     },
     features: {
@@ -84,6 +89,7 @@ const PLANS = {
       aiSuggestions: true,
       analytics: 'advanced',
       fileUploads: true,
+      actions: true,
       apiAccess: true,
       customBranding: true,
       prioritySupport: false
@@ -102,6 +108,7 @@ const PLANS = {
       operators: null,
       knowledgeChunks: null,
       workflows: null,
+      actions: null,
       apiRequestsPerMinute: 3000
     },
     features: {
@@ -110,6 +117,7 @@ const PLANS = {
       aiSuggestions: true,
       analytics: 'advanced',
       fileUploads: true,
+      actions: true,
       apiAccess: true,
       customBranding: true,
       prioritySupport: true
@@ -133,7 +141,11 @@ const METERS = {
   aiResponsesPerMonth: { label: 'AI responses', usageKey: 'aiResponses', resets: 'monthly' },
   operators: { label: 'Operator seats', usageKey: 'operators', resets: 'never' },
   knowledgeChunks: { label: 'Knowledge chunks', usageKey: 'knowledgeChunks', resets: 'never' },
-  workflows: { label: 'Workflows', usageKey: 'workflows', resets: 'never' }
+  workflows: { label: 'Workflows', usageKey: 'workflows', resets: 'never' },
+  // Saved actions (models/action.js), counted live like workflows. A plan
+  // without the `actions` feature has a limit of 0 as well, so the meter and
+  // the feature flag cannot disagree about whether a tenant may create one.
+  actions: { label: 'Actions', usageKey: 'actions', resets: 'never' }
 };
 
 function getPlan(planId) {

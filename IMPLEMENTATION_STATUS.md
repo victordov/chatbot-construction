@@ -174,6 +174,30 @@ address, including on each redirect - private, loopback and cloud-metadata
 ranges are refused. A "Try it" button in the editor runs the call once and
 shows both what came back and what the field mappings picked out of it.
 
+**Actions the assistant chooses itself.** A saved Action (`models/action.js`,
+`/api/actions`) is that same request defined once: a slug name, a "when to use
+this" description the model reads, typed inputs that come from the visitor,
+from the verified contact, or from a constant, an encrypted credential
+(responses only ever say `hasCredential`), a raw-JSON-with-a-cap or
+mapped-fields response mode, an `auto` / `workflow_only` switch and a
+"requires verified" gate. `POST /api/actions/:id/test` runs it once; `GET
+/api/actions/presets` turns the editor's five service recipes into templates.
+When the assistant answers (`services/assistant-tools.js`, one seam in
+`services/ai.js`), every enabled `auto` action and each enabled connector
+capability is offered to the model as a tool. The rules are enforced server
+side: verified-only actions are not offered to unverified visitors and
+verified inputs never come from the model's arguments; a write (non-GET, or a
+`write` capability) is stored as `conversation.pendingAction` and runs only
+when the identical call is repeated in a later turn after an affirmative
+reply, within ten minutes; at most three calls and one write per turn; results
+are truncated and fenced as data; failures go back to the model as one line;
+every call that ran is in the audit log as `assistant.tool_called`. Catalogue
+and slot results come back as `cards` / `choices` exactly as the workflow
+capability node produces them. A workflow action node can reference a saved
+action with `actionId` instead of carrying its own request. Plans: the
+`actions` feature and meter (Trial 5, Professional 25, Enterprise unlimited,
+Basic none).
+
 **Satisfaction.** A visitor is asked to rate the conversation once it ends, if
 they sent more than one message; declining is remembered so nobody is asked
 twice. The score is recorded on the first tap and a comment box only then
@@ -355,10 +379,21 @@ image build on every push. The first superadmin is created through
   order lookup are the obvious next capabilities; the contract and SDK are
   shaped so adding one is a new entry in `config/capabilities.js` and a method
   in the SDK rather than new plumbing.
-- **The assistant cannot yet choose a capability by itself.** A workflow author
-  wires the Use Your Data node explicitly. Handing the capabilities to the model
-  as tools is the step that would let it decide to search the catalogue without
-  anybody drawing that branch.
+- **Actions have no dashboard screen yet.** `/api/actions` is complete (CRUD,
+  test panel, presets) and the assistant uses saved actions as tools, but the
+  dashboard is being rewritten and has no form for them; the workflow editor
+  does not offer `actionId` on the action node either. Until then actions are
+  created through the API.
+- **Write confirmation is lexical.** A write runs only when the model repeats
+  the identical call in a later turn after a reply that matches a short list of
+  affirmatives ("yes", "ok", "go ahead"…, with no negation). That is
+  deliberately strict and deterministic, but a confirmation in another
+  language, or phrased unusually, is read as "not yet" and the visitor has to
+  say yes plainly.
+- **No MCP client and no in-chat one-time code yet.** A visitor becomes
+  verified only through the tenant's signed `identify` call, so actions marked
+  "requires verified" are invisible to anonymous visitors with no way for them
+  to verify inside the chat (PRODUCT.md recommendations 2 and 3).
 - **A workflow cannot call another workflow**, and there is no loop construct.
   Both are deliberate for now: cycles are rejected at design time because the
   executor walks the graph, and a conversation that loops is almost always a

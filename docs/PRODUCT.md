@@ -88,7 +88,7 @@ Full detail and sources: [research/market-landscape-2026-09.md](research/market-
 |---|---|
 | Knowledge from many sources: crawl a site, import a help centre, upload files, commerce data; cite sources | Partial. URL, PDF by URL and pasted text only. No file upload, no CSV, no help-centre connectors, no citations. Sheets are imported but unread. |
 | AI agent with an explicit resolution definition, confidence fallback, handoff, resolution reporting | Partial. Handoff and deflection metric exist. No "verified resolution" concept, which is what the market now bills on. |
-| Actions the agent decides to use: order status, refunds, booking, custom REST | Partial. Actions exist but only a workflow author can invoke them. The model never chooses a tool itself. |
+| Actions the agent decides to use: order status, refunds, booking, custom REST | Mostly there (2026-10). Saved Actions and connector capabilities are offered to the assistant as tools, with a verified gate, confirmation before writes and per-turn caps; workflows can reference the same Actions. No dashboard form yet, no MCP. |
 | Omnichannel inbox: web, email, WhatsApp, Messenger, Instagram | Missing beyond web and email. |
 | Operator mobile apps | Missing. |
 | Proactive messages and campaigns with triggers | Missing. |
@@ -162,4 +162,5 @@ Owner-acknowledged items live in [todo.md](../todo.md). Additional items found w
 - Settings tabs are not role-gated in the dashboard, so operators see errors on admin-only tabs; superadmins see empty retention and API-key panes.
 - Operators cannot send attachments, and the operator transcript never renders a visitor's file link.
 - Workflow execution stats are never persisted, so the stats endpoint always returns zeros.
+- Saved Actions (2026-10) have an API but no dashboard form, and the workflow editor cannot yet pick one for an action node (`actionId` works at run time). Write confirmation recognises English affirmatives only.
 - No Zapier, no in-product checkout, no operator invite by email, no widget JavaScript API beyond `init`, no translations.

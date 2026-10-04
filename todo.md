@@ -48,11 +48,14 @@ What is left is below.
 - [ ] **Invite flow for operators.** A company admin creates operators with a
       password today. An invitation email that lets the operator set their own
       would stop passwords being sent over chat.
-- [ ] **Let the assistant choose a capability itself.** `config/capabilities.js`
-      and the connector SDK give the platform typed access to a tenant's
-      catalogue and diary, but only a workflow author can invoke it by wiring a
-      node. Handing the capabilities to the model as tools is the step that
-      would let it decide to search the catalogue on its own.
+- [x] **Let the assistant choose a capability itself.** Done as saved Actions
+      plus connector capabilities offered to the model as tools
+      (`services/assistant-tools.js`, `/api/actions`), with verified gating,
+      write confirmation and per-turn caps enforced server side.
+- [ ] **Actions screen in the dashboard.** The API is complete; the rewritten
+      dashboard needs a form (inputs, credential, test panel, presets) and the
+      workflow editor's action node needs a "use a saved action" picker that
+      sets `actionId`.
 - [ ] **Order lookup** as a connector capability. The contract is shaped so this
       is a new entry in `config/capabilities.js` and a method in the SDK rather
       than new plumbing.

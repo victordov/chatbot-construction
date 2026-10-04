@@ -154,7 +154,7 @@ function readPath(source, path) {
  * @param {object} variables the run's variables, for templating
  * @param {object} [options] `simulate` refuses anything that would change the
  *        tenant's data — see below. `includeBody` returns a truncated raw
- *        response.
+ *        response (`bodyLimit` characters, default 4000).
  *        Only ever set from the editor's "Test" button, where a tenant admin is
  *        deliberately inspecting their own API to find the right field paths -
  *        never during a conversation, where the body would reach the model.
@@ -276,8 +276,11 @@ async function execute(config = {}, variables = {}, options = {}) {
     }
   }
 
+  // `bodyLimit` lets a saved Action hand the raw response to the model under
+  // its own size cap (services/actions.js); the editor's Test keeps 4000.
+  const bodyLimit = Math.max(parseInt(options.bodyLimit, 10) || 4000, 1);
   const preview = options.includeBody
-    ? { body: response.body.slice(0, 4000), truncated: response.body.length > 4000 }
+    ? { body: response.body.slice(0, bodyLimit), truncated: response.body.length > bodyLimit }
     : {};
 
   if (response.statusCode < 200 || response.statusCode >= 300) {

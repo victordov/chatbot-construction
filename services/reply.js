@@ -19,6 +19,7 @@
 
 const runtimeRegistry = require('./runtime-registry');
 const AIService = require('./ai');
+const assistantTools = require('./assistant-tools');
 const { logger } = require('./logging');
 
 /**
@@ -30,7 +31,8 @@ const { logger } = require('./logging');
  *        caller owns persistence, because it is already saving the message
  * @param {string} options.message
  * @param {Array} [options.history] prior messages as {role, content}
- * @returns {Promise<{text: string, choices?: Array, escalate?: object,
+ * @returns {Promise<{text: string, choices?: Array, cards?: object,
+ *                    escalate?: object, toolCalls?: Array<{name, status}>,
  *                    source: 'workflow'|'assistant'}>}
  */
 async function generate({ conversation, message, history = [] }) {
@@ -44,9 +46,18 @@ async function generate({ conversation, message, history = [] }) {
   }
 
   const aiService = await AIService.forCompany(companyId);
-  const text = await aiService.generateResponse(message, history);
 
-  return { text, source: 'assistant' };
+  // The tenant's actions and connector capabilities, offered to the model as
+  // tools. Null without a model client or with nothing to offer, in which case
+  // this is the plain assistant it always was.
+  const toolSession = await assistantTools.prepare({
+    conversation, companyId, client: aiService.openai, message
+  });
+
+  const text = await aiService.generateResponse(message, history, { toolSession });
+
+  // `cards`, `choices` and `toolCalls` only when a tool produced them.
+  return { text, source: 'assistant', ...(toolSession ? toolSession.outcome() : {}) };
 }
 
 /**
