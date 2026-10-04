@@ -1,6 +1,6 @@
 # Product overview
 
-_Written 2026-09-09 from the working tree on `production-readiness`. Companion documents: [FUNCTIONALITY_MAP.md](FUNCTIONALITY_MAP.md) (every endpoint, socket event, model and setting, read from the code), [research/market-landscape-2026-09.md](research/market-landscape-2026-09.md) (sixteen competing products, with sources) and [research/customer-data-connection-2026-09.md](research/customer-data-connection-2026-09.md) (how those products let an AI agent reach a customer's own systems, with sources)._
+_Written 2026-09-09 from the working tree on `production-readiness`; the baseline table and section 6 were updated on 2026-10-05 after the dashboard restructure. Companion documents: [FUNCTIONALITY_MAP.md](FUNCTIONALITY_MAP.md) (every endpoint, socket event, model and setting, read from the code), [research/market-landscape-2026-09.md](research/market-landscape-2026-09.md) (sixteen competing products, with sources) and [research/customer-data-connection-2026-09.md](research/customer-data-connection-2026-09.md) (how those products let an AI agent reach a customer's own systems, with sources)._
 
 ## 1. What the product is
 
@@ -86,7 +86,7 @@ Full detail and sources: [research/market-landscape-2026-09.md](research/market-
 
 | Baseline | Where we stand |
 |---|---|
-| Knowledge from many sources: crawl a site, import a help centre, upload files, commerce data; cite sources | Partial. URL, PDF by URL and pasted text only. No file upload, no CSV, no help-centre connectors, no citations. Sheets are imported but unread. |
+| Knowledge from many sources: crawl a site, import a help centre, upload files, commerce data; cite sources | Mostly. Site crawl, file upload (PDF, text, Markdown, CSV, HTML), single page or PDF by URL, pasted text, and citations in replies. No help-centre connectors; Sheets are imported but unread. |
 | AI agent with an explicit resolution definition, confidence fallback, handoff, resolution reporting | Partial. Handoff and deflection metric exist. No "verified resolution" concept, which is what the market now bills on. |
 | Actions the agent decides to use: order status, refunds, booking, custom REST | Mostly there (2026-10). Saved Actions and connector capabilities are offered to the assistant as tools, with a verified gate, confirmation before writes and per-turn caps; workflows can reference the same Actions. No dashboard form yet, no MCP. |
 | Omnichannel inbox: web, email, WhatsApp, Messenger, Instagram | Missing beyond web and email. |
@@ -151,16 +151,15 @@ Ranked by value. Each reuses what already exists.
 
 Owner-acknowledged items live in [todo.md](../todo.md). Additional items found while mapping the code on 2026-09-09, in rough order of customer impact (details in [FUNCTIONALITY_MAP.md](FUNCTIONALITY_MAP.md) section 6):
 
-- Saving a canned reply from the Assistant section calls the wrong path (`admin-assistant.js` builds `/<id>` instead of `/api/templates/<id>`), so create and edit cannot succeed from the UI.
-- The workflow knowledge node still offers `google_sheets` as a source type, but the loader uses the google-spreadsheet v3 API against the installed v4 and is likely broken at runtime.
+- Every workflow Knowledge step searches the tenant's knowledge base whatever its source type says. New nodes no longer offer `google_sheets`, `pdf` or `url`; old nodes keep the setting, labelled as an older one.
 - `conversation.started` is in the webhook catalogue but never fires; `conversation.ended` fires only for operator-ended chats; `task.created` fires only from the workflow node.
 - Response-template roles `fallback` and `handoff` are stored but never used by the assistant.
 - `Company.identitySecret`, the inbound email secret and Google OAuth tokens are not encrypted at rest (only hidden from default queries).
 - Inbound email trusts the shared secret only; provider signatures are not verified.
 - Deleting a company removes only the company document; a purge helper exists but has no caller.
 - Company create, update and delete, operator creation, admin password resets and whole-database backups write no audit entries.
-- Settings tabs are not role-gated in the dashboard, so operators see errors on admin-only tabs; superadmins see empty retention and API-key panes.
-- Operators cannot send attachments, and the operator transcript never renders a visitor's file link.
 - Workflow execution stats are never persisted, so the stats endpoint always returns zeros.
-- Saved Actions (2026-10) have an API but no dashboard form, and the workflow editor cannot yet pick one for an action node (`actionId` works at run time). Write confirmation recognises English affirmatives only.
-- No Zapier, no in-product checkout, no operator invite by email, no widget JavaScript API beyond `init`, no translations.
+- Write confirmation for Actions recognises English affirmatives only.
+- No Zapier, no operator invite by email, no widget JavaScript API beyond `init` and `preview`, and the dashboard is English only (the widget speaks eleven languages).
+
+Fixed on 2026-10-05 with the dashboard restructure: the canned-reply save path, role gating (each screen is hidden from roles that cannot use it, and a superadmin has a Platform area instead of tenant screens), operator attachments in both directions, in-product checkout, and the editor's saved-action picker.

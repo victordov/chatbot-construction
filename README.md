@@ -29,8 +29,19 @@ cp .env.example .env     # then edit it
 npm start
 ```
 
-`npm run dev` restarts on file changes. The server listens on `PORT`
+`npm start` builds the dashboard first (see below); `npm run dev` rebuilds it
+and restarts the server on file changes. The server listens on `PORT`
 (default 3000); the dashboard is at `/admin`.
+
+### The dashboard is built
+
+The dashboard, login page and workflow editor are ES modules under
+`client/`, bundled with their libraries (Bootstrap, Chart.js, Feather, marked)
+into `public/dist/` by `npm run build` (`scripts/build-client.js`, esbuild).
+`public/dist/` is generated and not committed. Nothing is loaded from a CDN,
+so the Content-Security-Policy allows no third-party origin. The Docker image
+builds the bundle in its own stage; CI builds it before the tests. The widget
+is not bundled: it ships as plain scripts because it runs on customers' sites.
 
 ---
 
@@ -86,7 +97,7 @@ the first three is missing, too short, or still the development default, or if
   `SMTP_FROM`.
 - **`EMAIL_*`** is the **email support channel**: the outbound side through
   which operators' replies reach customers who wrote in by email. Inbound mail
-  arrives via the per-tenant webhook shown under Settings → Email. They are
+  arrives via the per-tenant webhook shown under Channels → Email. They are
   separate because customer-facing mail and alert mail usually go through
   different providers with different reputations.
 
@@ -100,9 +111,10 @@ Google routes answer 503 and everything else works.
 
 Spreadsheet rows imported this way are stored as knowledge *documents* that
 **the assistant does not yet read**. The flow is kept while that is decided.
-Material the bot should answer from goes in through **Settings → Knowledge
-Base** (web page, PDF or pasted text), which is chunked, embedded and searched
-on every reply.
+Material the bot should answer from goes in through **Bot → Knowledge**
+(a whole website, an uploaded file, a single page or PDF, or pasted text),
+which is chunked, embedded and searched on every reply. A spreadsheet saved as
+CSV and uploaded there is answered from today.
 
 ### Everything else
 
@@ -288,18 +300,31 @@ instances without further setup.
 ## 8. Features and endpoints
 
 - **Frontend widget**: embeddable via `public/widget/js/widget-loader.js`; the
-  snippet is under **Install Widget** in the dashboard.
-- **Admin dashboard**: `/admin`.
+  snippet, a live preview and the language setting are under **Channels →
+  Website widget** in the dashboard.
+- **Admin dashboard**: `/admin`. Grouped by job: Inbox (live chats, history,
+  people, tasks), Bot (knowledge, persona and canned replies, actions,
+  workflows, test your bot), Channels (widget, email, business hours), Team,
+  Reports, Account (plan and billing, retention, audit log) and Developers
+  (your systems, identity verification, webhooks, API keys). A new company
+  admin lands on a setup checklist. A superadmin sees a Platform area
+  (companies, usage by tenant, platform audit) instead of tenant settings.
 - **API**: see `routes/`: auth, admin, chat, widget, upload, companies,
   contacts, tasks, notifications, workflows, workflow-execution, knowledge,
   templates, billing, webhooks, email, google, gdpr, api-keys and operations.
-- **Knowledge base**: **Settings → Knowledge Base**. Import a web page or PDF,
-  or paste text; it is chunked, embedded and searched by the assistant on every
-  question and by any workflow knowledge node. The same screen has a "try a
-  question" box.
+- **Knowledge base**: **Bot → Knowledge**. Read a whole site (sitemap or
+  links, same domain, capped by `KNOWLEDGE_CRAWL_MAX_PAGES`), upload a PDF,
+  text, Markdown, CSV or HTML file, import one page or PDF by URL, or paste
+  text; it is chunked, embedded and searched by the assistant on every
+  question and by any workflow knowledge node. Answers cite the sources they
+  drew on, in the widget and in **Bot → Test your bot**, which runs the real
+  reply path without saving a conversation or changing anything.
+- **Actions**: **Bot → Actions**. Calls into the tenant's own systems that
+  the assistant may choose to make itself, or that only workflows use; see
+  IMPLEMENTATION_STATUS.md for the safeguards.
 - **Monitoring**: Prometheus metrics at `/metrics`.
 - **Public read API**: `/api/v1`, authenticated by an API key a company admin
-  creates under **Settings → API keys**. See below.
+  creates under **Developers → API keys**. See below.
 
 ---
 
@@ -337,8 +362,10 @@ includes `apiAccess`, checked per request.
 
 1. Sign in as a superadmin and create the company under **Companies**.
 2. Create a company admin for it.
-3. As that company admin, open **Install Widget**. Copy the embed snippet onto
-   the customer's site and add their origin(s) under **Allowed domains**.
+3. As that company admin, follow the checklist on **Home**: add knowledge,
+   write the persona, test the bot, then under **Channels → Website widget**
+   copy the embed snippet onto the customer's site and add their origin(s)
+   under **Allowed domains**.
 
 The snippet's `data-widget-key` attributes incoming chats to the company.
 Without it, a conversation is only matched if the page's origin is registered

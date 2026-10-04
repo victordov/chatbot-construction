@@ -6,7 +6,7 @@ and the Google routes answer HTTP 503; nothing else is affected.
 
 Note what the import currently does: spreadsheet rows are stored as knowledge
 *documents* that the assistant does not yet read. Material the bot should
-answer from goes in through **Settings → Knowledge Base**.
+answer from goes in through **Bot → Knowledge**; the Sheets import sits in a collapsed panel at the bottom of that screen.
 
 ## 1. Create OAuth credentials
 

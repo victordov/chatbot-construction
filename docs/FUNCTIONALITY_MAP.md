@@ -2,6 +2,8 @@
 
 _Read from the working tree at `/Users/undefined/dev/proj/personal/chatbot-construction` on 2026-09-09 (branch `production-readiness`, uncommitted changes included). Every statement below is taken from the code; file paths are relative to the repo root._
 
+> **Since this was written (2026-10-05):** the dashboard was restructured and moved to `client/`; knowledge gained site crawl, file upload and citations; saved Actions the assistant can call, Test your bot, in-product checkout, operator attachments and widget translations were added. [IMPLEMENTATION_STATUS.md](../IMPLEMENTATION_STATUS.md) describes them. The "Not present" lists and section 6 below are as of 2026-09-09; [docs/PRODUCT.md](PRODUCT.md) section 6 is the current list.
+
 ---
 
 ## 1. What the product is
@@ -13,7 +15,7 @@ Three user types:
 | User | Where | What they are |
 |---|---|---|
 | **Visitor** | The tenant's website, inside the widget (`public/widget/js/widget.js`) | Anonymous by default; can self-report name/email/phone (identity `claimed`) or be vouched for by the tenant with an HMAC (`verified`). Authenticated to the socket only by a per-conversation session token. |
-| **Operator / company admin** | `/admin` dashboard (`public/admin/index.html`, `public/js/admin_parts/*`) and the workflow editor (`public/admin/workflow-editor.html`) | Roles `operator` (handles chats, tasks, contacts, analytics) and `company_admin` (additionally manages operators, widget, assistant, knowledge, workflows, webhooks, billing view, audit, retention, API keys). Both belong to exactly one company (`models/user.js` requires `company` for these roles). |
+| **Operator / company admin** | `/admin` dashboard (`public/admin/index.html`, modules in `client/admin/*` bundled to `public/dist/`) and the workflow editor (`public/admin/workflow-editor.html`, `client/workflow-editor/`) | Roles `operator` (handles chats, tasks, contacts, analytics) and `company_admin` (additionally manages operators, widget, assistant, knowledge, workflows, webhooks, billing view, audit, retention, API keys). Both belong to exactly one company (`models/user.js` requires `company` for these roles). |
 | **Superadmin** | Same dashboard, extra sections | Platform operator with `company: null`. Creates companies and their admins, changes plans/overage/limit overrides, sees every tenant's usage, runs and restores backups, sees platform-level audit entries. Bootstrapped once via `POST /api/auth/create-superadmin` while the users collection is empty. |
 
 Tenant resolution (`services/tenant.js`): a company is identified by its `widgetKey` (`wk_…`, pasted into the embed snippet) or, failing that, by the request `Origin`/`Referer` matching its `allowedDomains`. Every conversation is stamped with the company on creation; REST routes are scoped with `utils/query.js#companyFilter`; operators join a per-company socket room `operators:<companyId>` and superadmins join `operators:all`.
@@ -123,7 +125,7 @@ A tenant installs `@chatbot-platform/connector-sdk` (`sdk/index.js`, zero depend
 
 ### 2.5 Integrations
 
-**Action-node presets (`public/js/workflow-editor/editor.js` `ACTION_PRESETS`, browser-only; nothing service-specific exists server-side):**
+**Action-node presets (`client/workflow-editor/editor.js` `ACTION_PRESETS`, browser-only; nothing service-specific exists server-side):**
 
 | Preset | Request | Auth | Outputs → variables |
 |---|---|---|---|
@@ -515,7 +517,7 @@ Authentication: operators pass the JWT in handshake `auth.token` (invalid/expire
 | `data-privacy-policy-url` | `<serverUrl>/privacy-policy.html` | Pre-chat form link |
 | `data-require-name` / `data-require-email` / `data-require-phone` | server `true/true/false` | Mandatory pre-chat fields |
 
-### `Company.widgetSettings` (`models/company.js`, edited under Install Widget)
+### `Company.widgetSettings` (`models/company.js`, edited under Channels → Website widget)
 `chatbotName` ('Assistant'), `primaryColor` ('#2196f3'), `position` (`left|right`), `welcomeMessage` ('Hi! How can we help you today?'), `logoUrl` (accepted, not rendered), `requireName` (true), `requireEmail` (true), `requirePhone` (false), `privacyPolicyUrl` (http(s) only). Also per company: `allowedDomains`, `widgetKey` (rotatable), `businessHours`, `emailChannel`, `routing`, `dataRetention`, `assistant`, `connector`, `identitySecret`.
 
 ### Environment variables (names only; from `.env.example` and `process.env` reads)

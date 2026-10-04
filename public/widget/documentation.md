@@ -5,7 +5,7 @@ This document explains how to add the chat widget to your website.
 ## Quick start
 
 Paste this just before the closing `</body>` tag of your page. The widget key
-and server URL are shown in the dashboard under **Install Widget**, with the
+and server URL are shown in the dashboard under **Channels → Website widget**, with the
 values already filled in for your company.
 
 ```html
@@ -58,7 +58,7 @@ Before the first message, the widget asks for the visitor's details. Fields
 marked required must be filled in; the others are shown as optional. If none
 of the three is required the form is skipped and the visitor goes straight to
 the chat. The same three settings can be saved in the dashboard under
-**Install Widget → Appearance**, so they apply everywhere without editing the
+**Channels → Website widget → Appearance**, so they apply everywhere without editing the
 snippet.
 
 Details the visitor enters are kept in their browser's local storage for 30

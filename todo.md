@@ -1,6 +1,6 @@
 # What is actually left
 
-_Rewritten 2026-08-22; housekeeping updated 2026-09-08._
+_Rewritten 2026-08-22; housekeeping updated 2026-09-08; dashboard items closed 2026-10-05._
 
 This file used to carry about ninety unchecked boxes covering multi-tenancy,
 billing, tasks and analytics. Roughly seventy-five of them had already shipped —
@@ -21,8 +21,8 @@ What is left is below.
 - [x] **Nothing starts a checkout from inside the product.** Done server
       side (2026-10): `POST /api/billing/checkout` creates a Checkout Session,
       `POST /api/billing/portal` opens the Billing Portal, and
-      `GET /api/billing/me` says which plans can be bought. The dashboard
-      buttons arrive with the dashboard rewrite.
+      `GET /api/billing/me` says which plans can be bought. Plan & billing
+      shows a "Choose" button per purchasable plan and a link to the portal.
 - [ ] Automated invoicing, payment reminders, revenue and churn reporting.
 
 ## Support and SLA
@@ -45,7 +45,8 @@ What is left is below.
       neither `services/ai.js` nor a workflow knowledge node searches them.
       Decide whether to embed them into the knowledge base (so a sheet becomes
       chunks like a PDF does) or drop the flow. Until then the README tells
-      tenants to use Settings → Knowledge Base.
+      tenants to use Bot → Knowledge (a sheet exported as CSV can be uploaded
+      there and is answered from today).
 - [ ] **Invite flow for operators.** A company admin creates operators with a
       password today. An invitation email that lets the operator set their own
       would stop passwords being sent over chat.
@@ -53,10 +54,11 @@ What is left is below.
       plus connector capabilities offered to the model as tools
       (`services/assistant-tools.js`, `/api/actions`), with verified gating,
       write confirmation and per-turn caps enforced server side.
-- [ ] **Actions screen in the dashboard.** The API is complete; the rewritten
-      dashboard needs a form (inputs, credential, test panel, presets) and the
-      workflow editor's action node needs a "use a saved action" picker that
-      sets `actionId`.
+- [x] **Actions screen in the dashboard.** Bot → Actions: list with an
+      on/off switch, an editor (inputs, request, credential, response fields,
+      automatic or workflow-only, verified-only), templates from the presets,
+      and a "Run once" tester. The editor's action node has a "Use a saved
+      action" picker that sets `actionId`.
 - [ ] **Order lookup** as a connector capability. The contract is shaped so this
       is a new entry in `config/capabilities.js` and a method in the SDK rather
       than new plumbing.
@@ -65,8 +67,9 @@ What is left is below.
       sends it to the visitor as an operator message, the widget renders it as
       a download chip (thumbnail for images), the visitor downloads it with
       their session token, and visitor uploads now reach operators with
-      `fileId`/`fileName`/`fileUrl`. The attach button and transcript
-      rendering in the dashboard arrive with the dashboard rewrite.
+      `fileId`/`fileName`/`fileUrl`. The inbox composer has an attach button,
+      and the transcript renders files either side sent as download chips with
+      image thumbnails.
 - [ ] **Loops in workflows.** Any cycle is a hard validation error, so "back to
       the main menu" and "ask again differently" cannot be drawn. The runtime
       already has a step cap that would bound execution.
@@ -88,9 +91,16 @@ What is left is below.
       in CI is clean; these clear with the two upgrades above.
 - [ ] `googleapis` is 52 major versions behind and is the root of most remaining
       transitive advisories.
-- [ ] The admin dashboard loads 23 unbundled script tags, five from a CDN with
-      no SRI hashes, and `socket.io` is unpinned — whatever version is latest.
+- [x] The admin dashboard loaded 23 unbundled script tags and five CDN
+      libraries. It is now ES modules bundled by esbuild into `public/dist/`,
+      with no third-party origin; `socket.io` is the copy the server serves.
+- [ ] **Widget preview at desktop width.** The preview iframe on Channels →
+      Website widget is narrower than the widget's phone breakpoint, so it shows
+      the phone layout. A wider preview, or a desktop/phone toggle, would show
+      the launcher and panel as most visitors see them.
+- [ ] **Translate the dashboard.** The widget speaks eleven languages; the
+      dashboard is English only.
 
 Done since the last rewrite: `.gitignore` is a real one; CI runs lint, tests,
 `npm audit` and a Docker build on every push (`.github/workflows/ci.yml`); the
-duplicated `api()` helper across the admin modules is being consolidated.
+duplicated `api()` helpers are one client in `client/shared/http.js`.

@@ -57,7 +57,7 @@ app.all('/chatbot-connector', createConnector({
 ```
 
 Then paste `https://yourdomain.example/chatbot-connector` into
-**Settings → Your data** in the dashboard, copy the secret it gives you, and
+**Developers → Your systems** in the dashboard, copy the secret it gives you, and
 press **Check**.
 
 ## Mount it before your JSON parser

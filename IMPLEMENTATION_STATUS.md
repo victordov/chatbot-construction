@@ -1,8 +1,65 @@
 # Implementation status
 
-_Last reviewed: 2026-09-08_
+_Last reviewed: 2026-10-05_
 
 ## Working end to end
+
+**A dashboard arranged around the jobs people come to do.** The sidebar used
+to list features in the order they were built, with the knowledge base as the
+second tab under Settings, email and business hours inside "Install Widget",
+and developer settings scattered across three places. It is now grouped:
+Inbox (live chats, history, people, tasks), Bot (knowledge, persona and
+canned replies, actions, workflows, test your bot), Channels (website widget,
+email, business hours), Team (operators, routing), Reports, Account (plan and
+billing, data retention, audit log), and Developers (your systems, identity
+verification, webhooks, API keys) collapsed by default because none of it is
+needed to get a bot answering. Personal preferences and the password moved to
+a profile menu. A superadmin, who belongs to no company, sees a Platform area
+(companies, usage by tenant, platform audit) instead of tenant screens that
+could only fail for them; an operator sees the inbox, reports and their own
+settings. Every element is hidden by role rather than shown and refused.
+
+A new company admin lands on a checklist rather than three zeros: add
+knowledge, write the persona, test the bot, add the website, install the
+widget - each step opens the screen that does it and ticks itself off from
+what the account contains (`GET /api/companies/me/setup`).
+
+**Test your bot** runs the real reply path through `POST /api/bot/test` -
+live workflow, canned replies, knowledge, read-only actions - without saving a
+conversation, counting usage or writing anything, and shows how each answer
+was produced and which sources it drew on. It is a screen of its own and a
+drawer beside Knowledge, Persona & replies and Actions, so an admin can change
+something and try it without losing their place.
+
+The live inbox is three panes - queue, conversation, customer details - and
+one pane at a time on a phone, with a back button. The composer grows with
+what is typed (Enter sends, Shift+Enter is a new line) and can send a file;
+transcripts show files either side sent and the sources a bot reply cited.
+Leaving a conversation names both outcomes - hand back to the bot, or return
+to the queue - where a `confirm()` used to make OK and Cancel mean two kinds of
+leaving. Every native `confirm()` and `prompt()` in the dashboard and editor is
+a proper dialog that says what will happen and marks the dangerous button; a
+native dialog also froze the socket while it was open.
+
+The website widget screen has a live preview (the real widget in a
+no-side-effects preview mode) that redraws as the admin types, plus the
+widget's language and logo. Plan & billing has a button per purchasable plan
+that goes to Stripe Checkout, and a link to the Billing Portal for a tenant
+already paying.
+
+The code underneath: the dashboard was nineteen classic scripts sharing one
+global scope, loaded in a fixed order, with five libraries from a CDN. It is
+ES modules under `client/` with explicit imports, one HTTP client
+(`client/shared/http.js`) that notices an expired session wherever it
+happens, one dialog and toast implementation shared with the workflow editor,
+and a section registry (`client/admin/nav.js`) that sets a screen up the first
+time it is opened. esbuild bundles each page into `public/dist/`; nothing
+third-party is fetched, so the CSP allows no outside origin. Opening every
+screen once now stays well inside a trial plan's per-minute API allowance,
+which the old boot - every section loaded at once - used to exhaust.
+`tests/dashboard-markup.test.js` checks that every id the code looks up
+exists, every sidebar link has a section, every section is registered, and no
+native dialog has crept back.
 
 **Multi-tenancy.** Each company has a `widgetKey` and an `allowedDomains` list.
 The embed snippet carries the key; `services/tenant.js` resolves it (or the
@@ -24,7 +81,7 @@ workflow's Persona node) and defines its own canned replies, which are matched
 to a visitor's message by meaning rather than keyword. A company that
 configures nothing gets a plain assistant answering from its knowledge base.
 
-**Visual workflow editor.** `public/js/workflow-editor/editor.js` — a
+**Visual workflow editor.** `client/workflow-editor/editor.js` — a
 dependency-free SVG editor. Create, connect, validate, save, publish (with
 hot-swap into the live runtime), version history with rollback, duplicate,
 delete.
@@ -105,8 +162,9 @@ was empty in every real deployment and both readers searched nothing and found
 nothing, without ever erroring. A tenant could not put a single sentence into
 their own knowledge base.
 
-`routes/knowledge.js` is the way in, and **Settings → Knowledge Base** is the
-screen: import a web page or a PDF, or paste text straight in; see what is
+`routes/knowledge.js` is the way in, and **Bot → Knowledge** is the
+screen: read a whole website, upload a file, import a web page or a PDF, or
+paste text straight in; see what is
 indexed and how big it is; ask a test question to find out what the bot will
 retrieve before a customer does; remove a source. A re-import replaces exactly
 its own chunks. The URL is one a tenant typed, so fetching it goes through the
@@ -433,8 +491,6 @@ image build on every push. The first superadmin is created through
 
 ## Known gaps
 
-- **Checkout and operator attachments have no dashboard buttons yet.** The
-  server routes exist; the dashboard rewrite will call them.
 - **Nothing bills for overage.** `overageAllowed` lets a tenant exceed their
   plan and nothing charges for what it let through.
 - **A crawl follows no robots.txt and reads no JavaScript.** It reads the HTML
@@ -509,8 +565,9 @@ session id, or by the legacy `userId`; an identifier that matches nobody is a
 
 ## Test suite
 
-`npm test` — 731 tests across 39 suites. An in-memory MongoDB starts
-automatically (`tests/globalSetup.js`), so no local `mongod` is needed.
+`npm test` — about 1,070 tests across 60 suites. An in-memory MongoDB 7
+starts automatically (`tests/globalSetup.js`, wiredTiger in a throwaway
+directory, a native build on Apple Silicon), so no local `mongod` is needed.
 `tests/setup.js` blanks `OPENAI_API_KEY` so the suite never makes a real model
 call; the embedding and intent tests therefore assert on ranking and plumbing
 rather than on semantic quality.
