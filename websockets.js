@@ -932,6 +932,8 @@ function setupWebSockets(server) {
       }
 
       const botResponse = reply.text;
+      // The knowledge sources the answer drew on, for the widget to cite.
+      const sources = Array.isArray(reply.sources) ? reply.sources : [];
 
       // Create a message ID for the bot response
       const botMessageId = 'bot_' + Date.now();
@@ -940,6 +942,7 @@ function setupWebSockets(server) {
         content: botResponse,
         sender: 'bot',
         messageId: botMessageId,
+        sources: sources.length ? sources : undefined,
         timestamp: new Date()
       });
       conversation.lastActivity = new Date();
@@ -959,6 +962,8 @@ function setupWebSockets(server) {
         choices: reply.choices || undefined,
         // Products or appointment times for the widget to render.
         cards: reply.cards || undefined,
+        // Always an array, so the widget can test its length without a guard.
+        sources,
         timestamp: new Date()
       });
 
@@ -985,6 +990,7 @@ function setupWebSockets(server) {
         message: botResponse,
         sender: 'bot',
         messageId: dbBotMessageId,
+        sources,
         timestamp: new Date()
       });
     };

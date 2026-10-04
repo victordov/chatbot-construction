@@ -85,6 +85,8 @@ router.get('/history', async (req, res) => {
         content: msg.content,
         sender: msg.sender,
         operatorName: msg.operatorName || undefined,
+        // Citations on a grounded bot reply, so a reload shows them again.
+        sources: msg.sources && msg.sources.length ? msg.sources : undefined,
         timestamp: msg.timestamp
       }))
     });
@@ -212,7 +214,15 @@ router.post('/message', async (req, res) => {
 
     /** Store and deliver a bot message, whoever composed it. */
     const deliverBotMessage = async (content, extra = {}) => {
-      conversation.messages.push({ content, sender: 'bot', timestamp: new Date() });
+      const sources = Array.isArray(extra.sources) ? extra.sources : [];
+      extra = { ...extra, sources };
+
+      conversation.messages.push({
+        content,
+        sender: 'bot',
+        sources: sources.length ? sources : undefined,
+        timestamp: new Date()
+      });
       conversation.lastActivity = new Date();
       await conversation.save();
 
@@ -227,6 +237,7 @@ router.post('/message', async (req, res) => {
         sessionId,
         message: content,
         sender: 'bot',
+        sources,
         timestamp: new Date()
       });
 
@@ -270,7 +281,8 @@ router.post('/message', async (req, res) => {
 
     const delivered = await deliverBotMessage(reply.text, {
       choices: reply.choices || undefined,
-      cards: reply.cards || undefined
+      cards: reply.cards || undefined,
+      sources: reply.sources || []
     });
 
     // Only an assistant reply is a model call; a workflow that answered from a

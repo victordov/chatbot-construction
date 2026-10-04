@@ -30,23 +30,48 @@ const { logger } = require('./logging');
  *        caller owns persistence, because it is already saving the message
  * @param {string} options.message
  * @param {Array} [options.history] prior messages as {role, content}
+ * @param {boolean} [options.simulate] a dry run ("test your bot"): workflow
+ *        nodes read but do not write, exactly as in the editor's preview, and
+ *        canned-reply use is not counted. Metering is the caller's, so a
+ *        caller that does not record usage has none.
+ * @param {boolean} [options.useWorkflow=true] false skips the published
+ *        workflow and asks the assistant directly
  * @returns {Promise<{text: string, choices?: Array, escalate?: object,
- *                    source: 'workflow'|'assistant'}>}
+ *                    source: 'workflow'|'assistant',
+ *                    path: 'workflow'|'assistant'|'canned'|'fallback',
+ *                    sources: Array<{title: string, url: string|null}>}>}
+ *          `sources` are the knowledge sources whose chunks were placed in
+ *          the prompt: deduplicated, at most three, empty for a workflow
+ *          reply, a canned reply or an apology.
  */
-async function generate({ conversation, message, history = [] }) {
+async function generate({ conversation, message, history = [], simulate = false, useWorkflow = true }) {
   const companyId = conversation.company ? String(conversation.company) : null;
 
-  if (companyId) {
-    const fromWorkflow = await tryWorkflow({ conversation, companyId, message, history });
+  if (companyId && useWorkflow) {
+    const fromWorkflow = await tryWorkflow({ conversation, companyId, message, history, simulate });
     if (fromWorkflow) {
       return fromWorkflow;
     }
   }
 
-  const aiService = await AIService.forCompany(companyId);
+  const options = {};
+  if (simulate) {
+    // A fresh, uncached template service that does not count matches: the
+    // admin sees the canned replies they saved a second ago, and trying a
+    // question ten times does not skew the usage figures.
+    const { ResponseTemplateService } = require('./responseTemplates');
+    options.templateService = new ResponseTemplateService({ cacheTtl: 0, recordUse: false });
+  }
+
+  const aiService = await AIService.forCompany(companyId, options);
   const text = await aiService.generateResponse(message, history);
 
-  return { text, source: 'assistant' };
+  return {
+    text,
+    source: 'assistant',
+    path: aiService.lastPath || 'assistant',
+    sources: Array.isArray(aiService.lastSources) ? aiService.lastSources : []
+  };
 }
 
 /**
@@ -55,7 +80,7 @@ async function generate({ conversation, message, history = [] }) {
  * @returns {Promise<object|null>} null when there is no workflow, or when it
  *          could not produce an answer — in both cases the assistant takes over.
  */
-async function tryWorkflow({ conversation, companyId, message, history }) {
+async function tryWorkflow({ conversation, companyId, message, history, simulate = false }) {
   const previous = conversation.workflowState || {};
 
   try {
@@ -89,7 +114,10 @@ async function tryWorkflow({ conversation, companyId, message, history }) {
       // must not be something the browser can assert.
       variables: await contactVariables(conversation),
       // Where the last turn stopped. This is what makes a question possible.
-      state
+      state,
+      // The editor preview's mode: GETs happen, tasks, tags, emails, POSTs
+      // and handoffs are declined and reported as "would have".
+      ...(simulate ? { simulate: true } : {})
     });
 
     if (!result || !result.response) {
@@ -114,6 +142,10 @@ async function tryWorkflow({ conversation, companyId, message, history }) {
       cards: result.cards || null,
       escalate: result.escalation || null,
       source: 'workflow',
+      path: 'workflow',
+      // The compiler does not report which chunks its knowledge node used, and
+      // a citation we cannot stand behind is worse than none.
+      sources: [],
       metadata: result.metadata
     };
   } catch (error) {

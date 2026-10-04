@@ -23,7 +23,10 @@ const KnowledgeChunkSchema = new mongoose.Schema({
   },
   sourceType: {
     type: String,
-    enum: ['google_sheets', 'pdf', 'url', 'upload', 'manual'],
+    // `file` is a document uploaded from the dashboard (PDF, text, Markdown,
+    // CSV, HTML). `upload` predates it and has no producer; it stays in the
+    // list so a backup holding it still restores.
+    enum: ['google_sheets', 'pdf', 'url', 'upload', 'file', 'manual'],
     default: 'manual'
   },
   /**

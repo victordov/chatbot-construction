@@ -438,6 +438,7 @@ class VectorStoreService {
       stale: row.signature !== this.embeddings.signature,
       title: (row.metadata && (row.metadata.title || row.metadata.url || row.metadata.filename)) || null,
       url: (row.metadata && row.metadata.url) || null,
+      filename: (row.metadata && row.metadata.filename) || null,
       excerpt: String(row.sample || '').slice(0, 160)
     }));
   }

@@ -404,6 +404,8 @@ app.use('/api/upload', ensureSessionId, uploadRoutes);
 app.use('/api/billing', billingRoutes);
 app.use('/api/templates', templateRoutes);
 app.use('/api/knowledge', knowledgeRoutes);
+// Ask the live bot a question from the dashboard, without a conversation.
+app.use('/api/bot', require('./routes/bot'));
 app.use('/api/contacts', contactRoutes);
 app.use('/api/email', emailRoutes);
 app.use('/api/api-keys', require('./routes/api-keys'));

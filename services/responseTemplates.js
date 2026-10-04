@@ -24,6 +24,9 @@ class ResponseTemplateService {
     this.classifier = options.classifier || getIntentClassifier();
     this.cache = new Map();
     this.cacheTtl = options.cacheTtl ?? CACHE_TTL_MS;
+    // Off for a dry run ("test your bot"): an admin trying a question ten
+    // times must not make a canned reply look like the most popular one.
+    this.recordUse = options.recordUse !== false;
   }
 
   cacheKey(companyId) {
@@ -129,10 +132,12 @@ class ResponseTemplateService {
     }
 
     // Fire-and-forget: usage stats must not delay the reply.
-    ResponseTemplate.updateOne(
-      { _id: template._id },
-      { $inc: { useCount: 1 }, $set: { lastUsedAt: new Date() } }
-    ).catch(error => logger.warn('Could not record template use', { error: error.message }));
+    if (this.recordUse) {
+      ResponseTemplate.updateOne(
+        { _id: template._id },
+        { $inc: { useCount: 1 }, $set: { lastUsedAt: new Date() } }
+      ).catch(error => logger.warn('Could not record template use', { error: error.message }));
+    }
 
     return {
       text: this.render(template, variables),

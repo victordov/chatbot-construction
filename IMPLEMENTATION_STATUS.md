@@ -113,12 +113,63 @@ its own chunks. The URL is one a tenant typed, so fetching it goes through the
 same address-checked transport as workflow actions and webhooks — a knowledge
 import cannot be aimed at the instance metadata service.
 
+**More ways in: files and whole sites.** `POST /api/knowledge/upload` takes a
+file (multipart field `file`, optional `title`): PDF, plain text, Markdown, CSV
+or HTML, up to `KNOWLEDGE_UPLOAD_MAX_BYTES` (10 MB). The type is decided from
+the bytes as well as the name, so a zip renamed `.csv` is a 415 rather than
+several hundred chunks of noise; the file is read in memory and never written
+to disk. A CSV is indexed whole rows at a time, each written as `Header: value`
+lines, so a chunk retrieved alone still says which number is the price. The
+source is keyed by file name (`file:<name>`), so uploading a new `prices.csv`
+replaces the old one. Parsing lives in `services/knowledge-files.js`.
+
+`POST /api/knowledge/crawl` (`{url, maxPages}`) reads a site: `/sitemap.xml`
+first (sitemap indexes followed a level), then links from the pages, breadth
+first, same origin only, HTML only, capped by `KNOWLEDGE_CRAWL_MAX_PAGES` (50;
+a request defaults to 20) and `KNOWLEDGE_CRAWL_TIME_BUDGET_MS` (60 s). Every
+fetch — sitemap, pages, every link a page wrote — goes through `safe-http.js`.
+Each page becomes its own `url:` source with its `<title>`, exactly as if it
+had been imported by hand, so refresh and delete work per page and a second
+crawl replaces rather than doubles. The answer lists what was imported and
+what was skipped and why (not HTML, fetch failed, time ran out, plan limit).
+Crawling lives in `services/knowledge-crawler.js`. Single-URL imports now keep
+the page's `<title>` too.
+
 Both readers now work. `services/ai.js` retrieves on every assistant reply, so a
 company that has imported their material gets answers from it without drawing a
 workflow — which is what uploading it implied in the first place. Inside a
 workflow, `runLlmNode` sent `step.data.systemPrompt || systemPrompt` where the
 left branch was always set by the compiler, silently discarding the knowledge it
 had just retrieved; it now sends the built hierarchy.
+
+**Citations.** An assistant reply says which sources it drew on.
+`reply.generate()` returns `sources: [{title, url}]` — the sources of the chunks
+actually placed in the prompt, one entry per source, best first, at most three;
+`url` is null for pasted text and uploaded files. A canned reply, an apology
+and a workflow reply cite nothing (the workflow compiler does not report which
+chunks its knowledge node used). The socket `bot-message` event and the REST
+reply carry `sources` next to the text (always an array), the bot message
+stores it (`messages[].sources`), operators' `new-message` carries it, and
+`GET /api/chat/history` returns it, so a reload shows the citations again.
+
+**"Test your bot".** `POST /api/bot/test` (`{message, history, useWorkflow,
+state?}`, company admin; superadmin names `companyId`) runs the real reply
+path — published workflow, canned replies, assistant — for the tenant and
+answers `{reply, sources, path: workflow|canned|assistant|fallback, choices?,
+cards?, escalate?, state?, warning?}`. Nothing is created or counted: no
+Conversation, no usage meters, no canned-reply use count, and a workflow runs
+in the editor preview's simulate mode, so a GET happens but a task, tag,
+email, POST or handoff is declined. Without `OPENAI_API_KEY` it answers what a
+visitor would get (the apology) with `warning: 'OPENAI_API_KEY is not set'`.
+The returned `state` lets a workflow that asked a question be answered on the
+next turn; identity variables are stripped from it, as in preview.
+
+**Setup checklist data.** `GET /api/companies/me/setup` answers, from cheap
+counts and flags, how far a tenant has got: knowledge sources and chunks,
+persona (Assistant persona or a Persona node in the live workflow), allowed
+domains, conversations (`widgetSeen` when there is at least one), active
+operators including admins, a published workflow, email channel and business
+hours.
 
 **Knowledge retrieval.** `services/embeddings.js` + `services/vector-store.js`.
 Backend is chosen automatically: Qdrant (`QDRANT_URL`), Atlas `$vectorSearch`
@@ -341,6 +392,22 @@ image build on every push. The first superadmin is created through
   Link somebody sent them rather than by an upgrade button here.
 - **Nothing bills for overage.** `overageAllowed` lets a tenant exceed their
   plan and nothing charges for what it let through.
+- **A crawl follows no robots.txt and reads no JavaScript.** It reads the HTML
+  a server returns, so a site rendered in the browser yields little text. It
+  is same-origin by the address it was asked for; a page that redirects
+  off-site is followed (through the same address checks) and imported under
+  the address that was asked for.
+- **A re-crawl does not remove pages that have gone from the site.** Each page
+  crawled again is replaced, but a page that no longer exists stays until it is
+  deleted by hand: a crawl stopped by its cap or time budget cannot tell
+  "removed" from "not reached".
+- **Knowledge has no scheduled re-sync.** Refresh is per source, by hand.
+- **Workflow replies carry no citations.** The compiler's knowledge node does
+  not report which chunks it used, so `sources` is always empty for them.
+- **"Test your bot" runs real model and GET calls.** Those cost what they cost
+  (they are not metered against the tenant's plan, but OpenAI bills them), and
+  the runtime's in-memory execution counter moves. Persona changes reach it
+  after the assistant-config cache (60 s), canned replies immediately.
 - **Scanned PDFs yield no text.** `pdf-parse` reads a PDF's text layer; a
   scanned document has none. OCR would need an additional service.
 - **In-process vector ranking scans a tenant's chunks** rather than using an
