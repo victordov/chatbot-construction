@@ -85,6 +85,11 @@ router.get('/history', async (req, res) => {
         content: msg.content,
         sender: msg.sender,
         operatorName: msg.operatorName || undefined,
+        // Attachments either side sent, so a REST client can link them the
+        // same way the socket history does.
+        fileId: msg.fileId || undefined,
+        fileName: msg.fileId ? msg.fileName : undefined,
+        fileUrl: msg.fileId ? `/api/upload/${msg.fileId}` : undefined,
         timestamp: msg.timestamp
       }))
     });

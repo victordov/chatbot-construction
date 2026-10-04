@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const crypto = require('crypto');
+const { WIDGET_LANGUAGE_SETTINGS } = require('../config/widget-languages');
 
 const CompanySchema = new mongoose.Schema({
   name: {
@@ -182,7 +183,13 @@ const CompanySchema = new mongoose.Schema({
     primaryColor: { type: String, trim: true, default: '#2196f3' },
     position: { type: String, enum: ['left', 'right'], default: 'right' },
     welcomeMessage: { type: String, trim: true, default: 'Hi! How can we help you today?' },
+    // Shown in the widget header as the assistant's avatar. https only,
+    // checked by routes/company.js; optional.
     logoUrl: { type: String, trim: true },
+    // Which language the widget speaks to visitors. `auto` follows the
+    // visitor's browser; a `data-language` attribute on the snippet wins
+    // over both. See config/widget-languages.js.
+    language: { type: String, enum: WIDGET_LANGUAGE_SETTINGS, default: 'auto' },
     // Pre-chat form: which contact details a visitor must give before
     // chatting. Phone is optional by default; asking for it up front costs
     // more conversations than it is worth for most tenants.

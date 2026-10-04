@@ -18,10 +18,11 @@ What is left is below.
 
 - [ ] **Charge for overage.** `overageAllowed` is honoured by the quota check
       but nothing bills for what it lets through.
-- [ ] **Nothing starts a checkout from inside the product.** Stripe tells us
-      what happened once somebody pays, but the tenant has to reach Stripe by a
-      Payment Link somebody sent them. An "upgrade" button that creates a
-      Checkout Session would close that loop.
+- [x] **Nothing starts a checkout from inside the product.** Done server
+      side (2026-10): `POST /api/billing/checkout` creates a Checkout Session,
+      `POST /api/billing/portal` opens the Billing Portal, and
+      `GET /api/billing/me` says which plans can be bought. The dashboard
+      buttons arrive with the dashboard rewrite.
 - [ ] Automated invoicing, payment reminders, revenue and churn reporting.
 
 ## Support and SLA
@@ -56,10 +57,13 @@ What is left is below.
 - [ ] **Order lookup** as a connector capability. The contract is shaped so this
       is a new entry in `config/capabilities.js` and a method in the SDK rather
       than new plumbing.
-- [ ] **Operator-side attachments.** A visitor can send a file and the operator's
-      transcript does not render it — `fileUrl` appears nowhere in
-      `public/js/admin_parts/`. There is also no attach button on the operator
-      composer, so files only travel one way.
+- [x] **Operator-side attachments.** Done server side (2026-10):
+      `POST /api/admin/conversations/:sessionId/files` stores the file and
+      sends it to the visitor as an operator message, the widget renders it as
+      a download chip (thumbnail for images), the visitor downloads it with
+      their session token, and visitor uploads now reach operators with
+      `fileId`/`fileName`/`fileUrl`. The attach button and transcript
+      rendering in the dashboard arrive with the dashboard rewrite.
 - [ ] **Loops in workflows.** Any cycle is a hard validation error, so "back to
       the main menu" and "ask again differently" cannot be drawn. The runtime
       already has a step cap that would bound execution.

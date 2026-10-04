@@ -17,7 +17,39 @@
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
+const multer = require('multer');
 const { logger } = require('./logging');
+
+const MAX_FILE_BYTES = parseInt(process.env.MAX_UPLOAD_BYTES, 10) || 10 * 1024 * 1024;
+
+/**
+ * Types a support conversation legitimately needs. Everything else is refused:
+ * an allowlist is the only reliable way to keep executable content out. One
+ * list for both directions, so an operator cannot send a visitor anything a
+ * visitor could not have sent them.
+ */
+const ALLOWED_MIME_TYPES = new Set([
+  'image/png', 'image/jpeg', 'image/gif', 'image/webp',
+  'application/pdf',
+  'text/plain', 'text/csv',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+]);
+
+/**
+ * Raster image types by extension, for showing a thumbnail. SVG is absent on
+ * purpose: it can carry script, and it is not on the upload allowlist either.
+ */
+const IMAGE_TYPES_BY_EXTENSION = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp'
+};
 
 const UPLOAD_ROOT = path.join(__dirname, '..', 'uploads');
 
@@ -41,6 +73,71 @@ function filePath(companyId, fileId) {
     return null;
   }
   return path.join(companyDir(companyId), fileId);
+}
+
+/**
+ * A multer instance for one file in memory, held to the allowlist and the
+ * size cap. Memory rather than disk so nothing is written until the caller
+ * has decided the upload is allowed at all.
+ */
+function createUploadParser() {
+  return multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: MAX_FILE_BYTES, files: 1 },
+    fileFilter(req, file, cb) {
+      if (!ALLOWED_MIME_TYPES.has(file.mimetype)) {
+        return cb(new Error(`Files of type ${file.mimetype} are not accepted`));
+      }
+      cb(null, true);
+    }
+  });
+}
+
+/**
+ * Translate a multer error into the response a client can show. Returns
+ * false when the error is not one of ours to answer.
+ */
+function sendUploadError(err, res) {
+  if (!err) {
+    return false;
+  }
+  if (err.code === 'LIMIT_FILE_SIZE') {
+    res.status(413).json({
+      success: false,
+      error: `Files must be under ${Math.round(MAX_FILE_BYTES / 1024 / 1024)} MB`
+    });
+    return true;
+  }
+  res.status(400).json({ success: false, error: err.message });
+  return true;
+}
+
+/** The original name, reduced to something safe to keep as metadata. */
+function cleanFileName(originalName) {
+  return path.basename(String(originalName || 'file')).slice(0, 255) || 'file';
+}
+
+/**
+ * Write one file under its company and return the id it is stored as. The
+ * stored name is the random id only; the original filename is never part of
+ * a path, so it cannot be used for traversal.
+ */
+async function storeFile(companyId, buffer) {
+  const fileId = crypto.randomBytes(16).toString('hex');
+  const targetDir = companyDir(companyId);
+  await fs.promises.mkdir(targetDir, { recursive: true });
+  await fs.promises.writeFile(path.join(targetDir, fileId), buffer);
+  return fileId;
+}
+
+/** Where a file is downloaded from, relative to the server. */
+function downloadPath(fileId) {
+  return `/api/upload/${fileId}`;
+}
+
+/** The image type of a file name, or null when it is not a raster image. */
+function imageTypeFor(fileName) {
+  return IMAGE_TYPES_BY_EXTENSION[path.extname(String(fileName || '')).toLowerCase()] || null;
 }
 
 async function unlinkQuietly(target) {
@@ -184,6 +281,14 @@ async function purgeCompanyData(companyId) {
 }
 
 module.exports = {
+  MAX_FILE_BYTES,
+  ALLOWED_MIME_TYPES,
+  createUploadParser,
+  sendUploadError,
+  cleanFileName,
+  storeFile,
+  downloadPath,
+  imageTypeFor,
   UPLOAD_ROOT,
   companyDir,
   filePath,

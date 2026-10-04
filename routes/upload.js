@@ -16,10 +16,7 @@
  */
 
 const express = require('express');
-const multer = require('multer');
-const path = require('path');
 const fs = require('fs');
-const crypto = require('crypto');
 
 const Conversation = require('../models/conversation');
 const tenantService = require('../services/tenant');
@@ -28,42 +25,19 @@ const { canAccessCompany } = require('../utils/query');
 const { logger } = require('../services/logging');
 const usageService = require('../services/usage');
 const sessionToken = require('../services/session-token');
-// The layout on disk is owned by services/uploads.js, so the erasure and
-// retention paths that remove files agree with this route about where they are.
-const { UPLOAD_ROOT, companyDir, filePath } = require('../services/uploads');
+// The layout on disk, the MIME allowlist and the size cap are owned by
+// services/uploads.js, so the operator attachment route, erasure and
+// retention all agree with this one about what a file is and where it lives.
+const uploads = require('../services/uploads');
+const { UPLOAD_ROOT, filePath } = uploads;
 
 const router = express.Router();
-
-const MAX_FILE_BYTES = parseInt(process.env.MAX_UPLOAD_BYTES, 10) || 10 * 1024 * 1024;
-
-/**
- * Types a support conversation legitimately needs. Everything else is refused:
- * an allowlist is the only reliable way to keep executable content out.
- */
-const ALLOWED_MIME_TYPES = new Set([
-  'image/png', 'image/jpeg', 'image/gif', 'image/webp',
-  'application/pdf',
-  'text/plain', 'text/csv',
-  'application/msword',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  'application/vnd.ms-excel',
-  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-]);
 
 if (!fs.existsSync(UPLOAD_ROOT)) {
   fs.mkdirSync(UPLOAD_ROOT, { recursive: true });
 }
 
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: MAX_FILE_BYTES, files: 1 },
-  fileFilter(req, file, cb) {
-    if (!ALLOWED_MIME_TYPES.has(file.mimetype)) {
-      return cb(new Error(`Files of type ${file.mimetype} are not accepted`));
-    }
-    cb(null, true);
-  }
-});
+const upload = uploads.createUploadParser();
 
 /**
  * Upload a file against the caller's chat session.
@@ -121,15 +95,8 @@ router.post('/', upload.single('file'), async (req, res) => {
       });
     }
 
-    const fileId = crypto.randomBytes(16).toString('hex');
-    const targetDir = companyDir(companyId);
-    fs.mkdirSync(targetDir, { recursive: true });
-
-    // The stored name is the random id only. The original filename is never
-    // part of a path, so it cannot be used for traversal.
-    await fs.promises.writeFile(path.join(targetDir, fileId), req.file.buffer);
-
-    const originalName = path.basename(req.file.originalname).slice(0, 255);
+    const fileId = await uploads.storeFile(companyId, req.file.buffer);
+    const originalName = uploads.cleanFileName(req.file.originalname);
 
     conversation.messages.push({
       content: `[File uploaded: ${originalName}]`,
@@ -155,7 +122,7 @@ router.post('/', upload.single('file'), async (req, res) => {
       fileId,
       fileName: originalName,
       size: req.file.size,
-      url: `/api/upload/${fileId}`
+      url: uploads.downloadPath(fileId)
     });
   } catch (error) {
     logger.error('File upload failed', { error: error.message });
@@ -164,10 +131,39 @@ router.post('/', upload.single('file'), async (req, res) => {
 });
 
 /**
- * Download a previously uploaded file.
+ * Whether the request carries the visitor credentials of this conversation:
+ * its session id and the token issued for it, as query parameters (a link
+ * cannot set headers) or as `x-session-id` / `x-session-token` headers.
  *
- * Either an operator of the owning company, or the visitor whose session the
- * file belongs to.
+ * The widget runs on the tenant's site, so the session cookie that the older
+ * check relies on is a third-party cookie there and is often blocked; the
+ * token is what the widget actually holds. The query-string name contains
+ * "token" on purpose: the request logger redacts such parameters.
+ */
+async function hasVisitorCredentials(req, conversation) {
+  const claimedSession = req.query.sessionId || req.get('x-session-id');
+  const presentedToken = req.query.sessionToken || req.get('x-session-token');
+
+  if (!claimedSession || !presentedToken || claimedSession !== conversation.sessionId) {
+    return false;
+  }
+
+  const withHash = await Conversation.findById(conversation._id).select('+sessionTokenHash').lean();
+  // A conversation that was never issued a token has nothing to check a
+  // token against, and a session id alone is not a credential.
+  return Boolean(withHash && withHash.sessionTokenHash
+    && sessionToken.verify(withHash.sessionTokenHash, String(presentedToken)));
+}
+
+/**
+ * Download a previously uploaded file, whichever side sent it.
+ *
+ * Either staff of the owning company, or the visitor of the conversation the
+ * file belongs to - which covers both a visitor fetching their own upload and
+ * a visitor fetching a file an operator sent them.
+ *
+ * `?inline=1` on a raster image serves it as that image so the widget can
+ * show a thumbnail; everything else, and every non-image, is an attachment.
  */
 router.get('/:fileId', async (req, res) => {
   try {
@@ -189,7 +185,8 @@ router.get('/:fileId', async (req, res) => {
     }
 
     const message = conversation.messages[0];
-    const isOwnSession = req.session && req.session.sessionId === conversation.sessionId;
+    const isOwnSession = (req.session && req.session.sessionId === conversation.sessionId)
+      || await hasVisitorCredentials(req, conversation);
 
     if (!isOwnSession) {
       // Not the uploader, so authenticate as staff of the owning company.
@@ -213,12 +210,26 @@ router.get('/:fileId', async (req, res) => {
       return res.status(404).json({ error: 'File not found' });
     }
 
-    // Always download, never render: an uploaded HTML or SVG file must not be
-    // able to execute script on this origin.
-    res.setHeader('Content-Type', 'application/octet-stream');
+    const safeName = (message.fileName || 'download').replace(/["\\\r\n]/g, '');
+    const imageType = uploads.imageTypeFor(message.fileName);
+
     res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('Content-Disposition',
-      `attachment; filename="${(message.fileName || 'download').replace(/["\\]/g, '')}"`);
+    // Private: the URL may carry a visitor token, and a shared cache must not
+    // hand one visitor's file to the next person who asks for the same URL.
+    res.setHeader('Cache-Control', 'private, no-store');
+
+    if (req.query.inline === '1' && imageType) {
+      // A raster image type with nosniff renders as an image or not at all -
+      // never as a document - and the sandboxing CSP covers a direct visit.
+      res.setHeader('Content-Type', imageType);
+      res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
+      res.setHeader('Content-Disposition', `inline; filename="${safeName}"`);
+    } else {
+      // Otherwise always download, never render: an uploaded HTML or SVG file
+      // must not be able to execute script on this origin.
+      res.setHeader('Content-Type', 'application/octet-stream');
+      res.setHeader('Content-Disposition', `attachment; filename="${safeName}"`);
+    }
 
     fs.createReadStream(target).pipe(res);
   } catch (error) {
@@ -231,16 +242,9 @@ router.get('/:fileId', async (req, res) => {
 // the widget can show the visitor.
 // eslint-disable-next-line no-unused-vars
 router.use((err, req, res, next) => {
-  if (err && err.code === 'LIMIT_FILE_SIZE') {
-    return res.status(413).json({
-      success: false,
-      error: `Files must be under ${Math.round(MAX_FILE_BYTES / 1024 / 1024)} MB`
-    });
+  if (!uploads.sendUploadError(err, res)) {
+    next();
   }
-  if (err) {
-    return res.status(400).json({ success: false, error: err.message });
-  }
-  next();
 });
 
 module.exports = router;

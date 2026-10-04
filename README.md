@@ -133,6 +133,27 @@ bought.
 A failed payment sets the subscription to `past_due`, which still entitles the
 tenant; suspension stays a decision somebody makes.
 
+**In-product checkout.** Set `STRIPE_SECRET_KEY` (a secret or restricted key
+that can create Checkout Sessions and Billing Portal sessions) and `PUBLIC_URL`,
+and a company admin can buy any plan that has a `STRIPE_PRICE_*` mapping:
+
+- `POST /api/billing/checkout {plan}` creates a subscription Checkout Session
+  carrying `metadata.companyId`, `metadata.planId` (also on the subscription)
+  and `client_reference_id`, reuses the tenant's Stripe customer when there is
+  one, and returns `{url}`. Stripe sends the customer back to
+  `/admin/#billing?checkout=success` or `?checkout=cancelled`. Nothing changes
+  until the webhook reports the payment. 503 `{configured:false}` without the
+  key or the price; 409 when the tenant already has an active subscription.
+- `POST /api/billing/portal` returns `{url}` of the Stripe Billing Portal for a
+  tenant Stripe already knows (409 otherwise). Turn the portal on in Stripe's
+  dashboard (Settings, Billing, Customer portal) and choose which plans
+  customers may switch between there.
+- `GET /api/billing/me` says what to offer: `checkout {available, plans}` and
+  `portalAvailable`.
+
+Starting a checkout is written to the audit log as `billing.checkout_started`.
+No Stripe library is used; the two calls go through axios.
+
 ---
 
 ## 4. First run: creating the superadmin

@@ -13,6 +13,7 @@ const tenantService = require('../services/tenant');
 const assetManifest = require('../services/asset-manifest');
 const availabilityService = require('../services/availability');
 const { logger } = require('../services/logging');
+const { isWidgetLanguage, isSafeLogoUrl } = require('../config/widget-languages');
 
 const DEFAULT_SETTINGS = {
   chatbotName: 'Assistant',
@@ -20,6 +21,8 @@ const DEFAULT_SETTINGS = {
   position: 'right',
   welcomeMessage: 'Hi! How can we help you today?',
   logoUrl: null,
+  // `auto`: the widget follows the visitor's browser language.
+  language: 'auto',
   // What the pre-chat form asks for. Name and email are what an operator
   // needs to follow up; a phone number is more than most visitors will hand
   // over just to ask a question, so it is optional unless the tenant says.
@@ -55,7 +58,10 @@ function presentationSettings(company) {
     primaryColor: merged.primaryColor,
     position: merged.position,
     welcomeMessage: merged.welcomeMessage,
-    logoUrl: merged.logoUrl || null,
+    // Re-checked on the way out as well as on the way in: a value stored
+    // before validation existed must not reach somebody else's website.
+    logoUrl: isSafeLogoUrl(merged.logoUrl) ? merged.logoUrl : null,
+    language: isWidgetLanguage(merged.language) ? merged.language : 'auto',
     requireName: merged.requireName !== false && merged.requireName !== 'false',
     requireEmail: merged.requireEmail !== false && merged.requireEmail !== 'false',
     requirePhone: merged.requirePhone === true || merged.requirePhone === 'true',
