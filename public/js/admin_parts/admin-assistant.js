@@ -9,26 +9,6 @@
 (function() {
   let templates = [];
 
-  function token() {
-    return localStorage.getItem('chatbot-auth-token');
-  }
-
-  async function api(path, options = {}) {
-    const response = await fetch(`/api/templates${path}`, {
-      ...options,
-      headers: {
-        'Content-Type': 'application/json',
-        'x-auth-token': token(),
-        ...options.headers
-      }
-    });
-
-    const body = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      throw new Error(body.error || `Request failed (${response.status})`);
-    }
-    return body;
-  }
 
   const ROLE_LABELS = {
     greeting: 'Greeting',
@@ -41,7 +21,7 @@
 
   async function loadAssistantConfig() {
     try {
-      const config = await api('/assistant/config');
+      const config = await api('/api/templates/assistant/config');
 
       document.getElementById('assistant-persona').value = config.persona || '';
       document.getElementById('assistant-scope').value = config.scope || '';
@@ -68,7 +48,7 @@
 
     setLoading(button, true);
     try {
-      await api('/assistant/config', {
+      await api('/api/templates/assistant/config', {
         method: 'PUT',
         body: JSON.stringify({
           persona: document.getElementById('assistant-persona').value,
@@ -149,7 +129,7 @@
 
   async function loadTemplates() {
     try {
-      const result = await api('');
+      const result = await api('/api/templates');
       templates = result.templates || [];
       renderTemplates();
     } catch (error) {
@@ -259,7 +239,7 @@
     }
 
     try {
-      await api(`/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      await api(`/api/templates/${encodeURIComponent(id)}`, { method: 'DELETE' });
       showToast('Reply deleted', 'success');
       loadTemplates();
     } catch (error) {
@@ -281,7 +261,7 @@
     result.innerHTML = '<div class="text-muted small">Testing…</div>';
 
     try {
-      const outcome = await api('/preview', {
+      const outcome = await api('/api/templates/preview', {
         method: 'POST',
         body: JSON.stringify({ message })
       });
@@ -290,7 +270,7 @@
         ? `<div class="alert alert-success mb-0">
              <div class="d-flex justify-content-between align-items-start gap-3">
                <strong>${escapeHtml(outcome.templateName)}</strong>
-               <span class="badge bg-success">match ${outcome.score}</span>
+               <span class="badge bg-success">match ${escapeHtml(outcome.score)}</span>
              </div>
              <hr class="my-2">
              <div>${escapeHtml(outcome.response)}</div>

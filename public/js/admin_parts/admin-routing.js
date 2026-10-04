@@ -9,27 +9,6 @@
   let knownTags = [];
   let activeTagFilter = null;
 
-  function token() {
-    return localStorage.getItem('chatbot-auth-token');
-  }
-
-  async function api(path, options = {}) {
-    const response = await fetch(`/api/admin${path}`, {
-      ...options,
-      headers: {
-        'Content-Type': 'application/json',
-        'x-auth-token': token(),
-        ...options.headers
-      }
-    });
-
-    const body = await response.json().catch(() => ({}));
-
-    if (!response.ok) {
-      throw new Error(body.error || `Request failed (${response.status})`);
-    }
-    return body;
-  }
 
   // -------------------------------------------------------------- tagging
 
@@ -80,7 +59,7 @@
     }
 
     try {
-      const result = await api(`/chat/${encodeURIComponent(conversation.sessionId)}/tags`, {
+      const result = await api(`/api/admin/chat/${encodeURIComponent(conversation.sessionId)}/tags`, {
         method: 'PUT',
         body: JSON.stringify({ tags })
       });
@@ -115,7 +94,7 @@
    */
   async function loadKnownTags() {
     try {
-      const { tags } = await api('/tags');
+      const { tags } = await api('/api/admin/tags');
       knownTags = tags || [];
 
       const list = document.getElementById('tag-suggestions');
@@ -183,7 +162,7 @@
 
   async function setAccepting(accepting) {
     try {
-      await api('/me/availability', {
+      await api('/api/admin/me/availability', {
         method: 'PUT',
         body: JSON.stringify({ acceptingChats: accepting })
       });
@@ -211,7 +190,7 @@
   async function loadRoutingSettings() {
     try {
       const response = await fetch('/api/companies/me/routing', {
-        headers: { 'x-auth-token': token() }
+        headers: { 'x-auth-token': authToken() }
       });
 
       if (!response.ok) {
@@ -249,7 +228,7 @@
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
-          'x-auth-token': token()
+          'x-auth-token': authToken()
         },
         body: JSON.stringify({
           autoAssign: document.getElementById('routing-auto-assign').checked,

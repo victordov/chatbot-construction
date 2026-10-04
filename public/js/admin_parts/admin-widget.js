@@ -9,26 +9,6 @@
 (function() {
   let config = null;
 
-  function token() {
-    return localStorage.getItem('chatbot-auth-token');
-  }
-
-  async function api(path, options = {}) {
-    const response = await fetch(`/api/companies${path}`, {
-      ...options,
-      headers: {
-        'Content-Type': 'application/json',
-        'x-auth-token': token(),
-        ...options.headers
-      }
-    });
-
-    const body = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      throw new Error(body.error || `Request failed (${response.status})`);
-    }
-    return body;
-  }
 
   function snippet() {
     if (!config) {
@@ -87,6 +67,13 @@
     document.getElementById('widget-position').value = settings.position || 'right';
     document.getElementById('widget-welcome').value = settings.welcomeMessage || '';
 
+    // Pre-chat form. Name and email default to required, phone to optional,
+    // matching what the widget does when the setting is absent.
+    document.getElementById('widget-require-name').checked = settings.requireName !== false;
+    document.getElementById('widget-require-email').checked = settings.requireEmail !== false;
+    document.getElementById('widget-require-phone').checked = settings.requirePhone === true;
+    document.getElementById('widget-privacy-url').value = settings.privacyPolicyUrl || '';
+
     renderDomains();
 
     if (typeof feather !== 'undefined') {
@@ -96,7 +83,7 @@
 
   async function load() {
     try {
-      config = await api('/me/widget');
+      config = await api('/api/companies/me/widget');
       render();
     } catch (error) {
       logger.error('Failed to load widget configuration:', error);
@@ -107,7 +94,7 @@
 
   async function save(patch, successMessage) {
     try {
-      const result = await api('/me/widget', { method: 'PUT', body: JSON.stringify(patch) });
+      const result = await api('/api/companies/me/widget', { method: 'PUT', body: JSON.stringify(patch) });
       config.allowedDomains = result.allowedDomains;
       config.widgetSettings = result.widgetSettings;
       render();
@@ -146,7 +133,7 @@
     }
 
     try {
-      const result = await api('/me/widget/rotate-key', { method: 'POST' });
+      const result = await api('/api/companies/me/widget/rotate-key', { method: 'POST' });
       config.widgetKey = result.widgetKey;
       render();
       showToast('Widget key rotated - update your embed snippet', 'success');
@@ -159,7 +146,7 @@
 
   async function loadEmailSettings() {
     try {
-      const settings = await api('/me/email');
+      const settings = await api('/api/companies/me/email');
 
       document.getElementById('email-enabled').checked = settings.enabled;
       document.getElementById('email-inbound-address').value = settings.inboundAddress;
@@ -191,7 +178,7 @@
     setLoading(button, true);
 
     try {
-      const result = await api('/me/email', {
+      const result = await api('/api/companies/me/email', {
         method: 'PUT',
         body: JSON.stringify({
           enabled: document.getElementById('email-enabled').checked,
@@ -320,7 +307,7 @@
 
   async function loadHours() {
     try {
-      const { businessHours, current } = await api('/me/hours');
+      const { businessHours, current } = await api('/api/companies/me/hours');
 
       document.getElementById('hours-enabled').checked = Boolean(businessHours.enabled);
       populateTimezones(businessHours.timezone);
@@ -338,7 +325,7 @@
     setLoading(button, true);
 
     try {
-      const result = await api('/me/hours', {
+      const result = await api('/api/companies/me/hours', {
         method: 'PUT',
         body: JSON.stringify({
           enabled: document.getElementById('hours-enabled').checked,
@@ -389,12 +376,23 @@
 
     document.getElementById('widget-settings-form')?.addEventListener('submit', e => {
       e.preventDefault();
+
+      const privacyPolicyUrl = document.getElementById('widget-privacy-url').value.trim();
+      if (privacyPolicyUrl && !/^https?:\/\//i.test(privacyPolicyUrl)) {
+        showToast('The privacy policy link must start with http:// or https://', 'warning');
+        return;
+      }
+
       save({
         widgetSettings: {
           chatbotName: document.getElementById('widget-name').value.trim(),
           primaryColor: document.getElementById('widget-color').value,
           position: document.getElementById('widget-position').value,
-          welcomeMessage: document.getElementById('widget-welcome').value.trim()
+          welcomeMessage: document.getElementById('widget-welcome').value.trim(),
+          requireName: document.getElementById('widget-require-name').checked,
+          requireEmail: document.getElementById('widget-require-email').checked,
+          requirePhone: document.getElementById('widget-require-phone').checked,
+          privacyPolicyUrl: privacyPolicyUrl || null
         }
       }, 'Appearance saved');
     });

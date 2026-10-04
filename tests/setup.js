@@ -4,6 +4,26 @@
  */
 
 process.env.NODE_ENV = process.env.NODE_ENV || 'test';
+
+// Every suite connects to MONGODB_TEST_URI and clears the collections it
+// uses. Jest runs suites in parallel workers, so two suites on the same
+// database race: one suite's `deleteMany({})` empties another's fixtures, and
+// a shared username collides on a unique index. Give each worker its own
+// database name on the same server; suites in one worker run one at a time.
+const withWorkerDatabase = (uri) => {
+  if (!uri || !process.env.JEST_WORKER_ID) {
+    return uri;
+  }
+  const parsed = new URL(uri);
+  const base = parsed.pathname.replace(/^\//, '') || 'chatbot_test';
+  parsed.pathname = `/${base}_w${process.env.JEST_WORKER_ID}`;
+  return parsed.toString();
+};
+
+if (process.env.MONGODB_TEST_URI) {
+  process.env.MONGODB_TEST_URI = withWorkerDatabase(process.env.MONGODB_TEST_URI);
+  process.env.MONGODB_URI = process.env.MONGODB_TEST_URI;
+}
 process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-jwt-secret-value-for-tests-only';
 process.env.SESSION_SECRET = process.env.SESSION_SECRET || 'test-session-secret-value';
 

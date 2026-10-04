@@ -227,11 +227,35 @@ function escapeRegExp(value) {
 /**
  * Turn an inbound email into a message on a conversation.
  *
- * @returns {Promise<{conversation: object, created: boolean}|null>}
+ * @returns {Promise<{conversation: object, created: boolean,
+ *                    duplicate?: boolean}|null>} `duplicate` when this
+ *          Message-ID had already been received, in which case nothing was
+ *          appended
  */
 async function receive(companyId, parsed) {
   if (!companyId || !parsed) {
     return null;
+  }
+
+  // Providers retry a webhook that answered 5xx, and some retry a 2xx they
+  // did not see in time. Without this the same email lands twice, and the
+  // operator answers a question the customer asked once. The Message-ID is
+  // the provider's own identity for the message, so it is what makes a retry
+  // recognisable as one.
+  if (parsed.messageId) {
+    const seen = await Conversation.findOne({
+      company: companyId,
+      'email.messageIds': parsed.messageId
+    });
+
+    if (seen) {
+      logger.info('Inbound email already received; ignoring retry', {
+        companyId: String(companyId),
+        conversation: seen.sessionId,
+        messageId: parsed.messageId
+      });
+      return { conversation: seen, created: false, duplicate: true };
+    }
   }
 
   let conversation = await findThread(companyId, parsed);

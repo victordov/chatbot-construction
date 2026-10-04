@@ -3,7 +3,8 @@ const Company = require('../models/company');
 const User = require('../models/user');
 const tenantService = require('../services/tenant');
 const availabilityService = require('../services/availability');
-const { auth, superadmin, admin, sameCompany } = require('../middleware/auth');
+const { auth, superadmin, admin, sameCompany, requireString } = require('../middleware/auth');
+const { enforceLimit } = require('../middleware/quota');
 const { logger } = require('../services/logging');
 const connectorService = require('../services/connector');
 const capabilityContract = require('../config/capabilities');
@@ -24,6 +25,31 @@ function retentionService() {
     anonymizeAfterDays: process.env.RETENTION_ANONYMIZE_DAYS,
     deleteAfterDays: process.env.RETENTION_DELETE_DAYS || process.env.ARCHIVED_RETENTION_DAYS
   });
+}
+
+// The floor for any password set through these routes. Generated passwords
+// are longer than this, and a superadmin typing one in gets no exemption.
+const MIN_PASSWORD_LENGTH = 8;
+
+/**
+ * The reason a supplied password cannot be used, or null. A request field
+ * that is not a string is never a password - it is a query operator, or a
+ * client bug - and is refused on the same terms as a short one.
+ */
+function passwordProblem(password) {
+  if (typeof password !== 'string' || password.length < MIN_PASSWORD_LENGTH) {
+    return `Password must be at least ${MIN_PASSWORD_LENGTH} characters long`;
+  }
+  return null;
+}
+
+/**
+ * Set a new password on a user. The token version moves with it, so every
+ * session the old password opened is over.
+ */
+function setPassword(user, password) {
+  user.password = password;
+  user.tokenVersion = (user.tokenVersion || 0) + 1;
 }
 
 // Helper function to generate a random password
@@ -127,11 +153,17 @@ router.put('/me/widget', requireOwnCompany, async (req, res) => {
     }
 
     if (widgetSettings && typeof widgetSettings === 'object') {
-      const allowed = ['chatbotName', 'primaryColor', 'position', 'welcomeMessage', 'logoUrl'];
+      const allowed = ['chatbotName', 'primaryColor', 'position', 'welcomeMessage', 'logoUrl', 'privacyPolicyUrl'];
+      const booleans = ['requireName', 'requireEmail', 'requirePhone'];
       company.widgetSettings = company.widgetSettings || {};
       allowed.forEach(key => {
         if (widgetSettings[key] !== undefined) {
           company.widgetSettings[key] = widgetSettings[key];
+        }
+      });
+      booleans.forEach(key => {
+        if (widgetSettings[key] !== undefined) {
+          company.widgetSettings[key] = widgetSettings[key] === true || widgetSettings[key] === 'true';
         }
       });
     }
@@ -689,7 +721,22 @@ router.get('/:id', async (req, res) => {
 // Create new company (superadmin only)
 router.post('/', superadmin, async (req, res) => {
   try {
-    const { name, description, website, adminUsername, adminEmail, adminPassword } = req.body;
+    const { description, website, adminPassword } = req.body;
+    const name = requireString(req.body.name);
+    const adminUsername = req.body.adminUsername === undefined ? undefined : requireString(req.body.adminUsername);
+    const adminEmail = req.body.adminEmail === undefined ? undefined : requireString(req.body.adminEmail);
+
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: 'Company name is required' });
+    }
+
+    if (adminUsername === null || adminEmail === null) {
+      return res.status(400).json({ error: 'Admin username and email must be text' });
+    }
+
+    if (adminPassword !== undefined && passwordProblem(adminPassword)) {
+      return res.status(400).json({ error: passwordProblem(adminPassword) });
+    }
 
     // Check if company with this name already exists
     const existingCompany = await Company.findOne({ name });
@@ -758,7 +805,12 @@ router.post('/', superadmin, async (req, res) => {
 router.put('/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, description, website, isActive } = req.body;
+    const { description, website, isActive } = req.body;
+    const name = req.body.name === undefined ? undefined : requireString(req.body.name);
+
+    if (name === null) {
+      return res.status(400).json({ error: 'Company name must be text' });
+    }
 
     // Find company
     const company = await Company.findById(id);
@@ -911,7 +963,17 @@ router.get('/:id/admin', superadmin, async (req, res) => {
 router.put('/:id/admin', superadmin, async (req, res) => {
   try {
     const { id } = req.params;
-    const { username, email, displayName, password } = req.body;
+    const { displayName, password } = req.body;
+    const username = requireString(req.body.username);
+    const email = requireString(req.body.email);
+
+    if (!username || !email) {
+      return res.status(400).json({ error: 'Username and email are required' });
+    }
+
+    if (password !== undefined && password !== '' && passwordProblem(password)) {
+      return res.status(400).json({ error: passwordProblem(password) });
+    }
 
     // Check if company exists
     const company = await Company.findById(id);
@@ -959,7 +1021,7 @@ router.put('/:id/admin', superadmin, async (req, res) => {
       admin.displayName = displayName;
     }
     if (password) {
-      admin.password = password;
+      setPassword(admin, password);
     }
 
     await admin.save();
@@ -1007,13 +1069,16 @@ router.post('/:id/admin/reset-password', superadmin, async (req, res) => {
     if (generateRandom) {
       newPassword = generateRandomPassword();
     } else if (password) {
+      if (passwordProblem(password)) {
+        return res.status(400).json({ error: passwordProblem(password) });
+      }
       newPassword = password;
     } else {
       return res.status(400).json({ error: 'Either password or generateRandom must be provided' });
     }
 
     // Update password
-    admin.password = newPassword;
+    setPassword(admin, newPassword);
     await admin.save();
 
     res.json({
@@ -1037,7 +1102,18 @@ router.post('/:id/admin/reset-password', superadmin, async (req, res) => {
 router.put('/:id/users/:userId', superadmin, async (req, res) => {
   try {
     const { id, userId } = req.params;
-    const { username, name, displayName, email, role, password } = req.body;
+    const { name, displayName, role, password } = req.body;
+    const username = requireString(req.body.username);
+    const email = requireString(req.body.email);
+
+    // Validate input
+    if (!username || !email) {
+      return res.status(400).json({ error: 'Username and email are required' });
+    }
+
+    if (password !== undefined && password !== '' && passwordProblem(password)) {
+      return res.status(400).json({ error: passwordProblem(password) });
+    }
 
     // Check if company exists
     const company = await Company.findById(id);
@@ -1053,11 +1129,6 @@ router.put('/:id/users/:userId', superadmin, async (req, res) => {
 
     if (!user) {
       return res.status(404).json({ error: 'User not found in this company' });
-    }
-
-    // Validate input
-    if (!username || !email) {
-      return res.status(400).json({ error: 'Username and email are required' });
     }
 
     // Check if username or email is already taken by another user
@@ -1097,7 +1168,7 @@ router.put('/:id/users/:userId', superadmin, async (req, res) => {
       user.role = role;
     }
     if (password) {
-      user.password = password;
+      setPassword(user, password);
     }
 
     await user.save();
@@ -1121,21 +1192,28 @@ router.put('/:id/users/:userId', superadmin, async (req, res) => {
   }
 });
 
-// Create company user (superadmin only)
-router.post('/:id/users', superadmin, async (req, res) => {
+// Create company user (superadmin only). A seat is a billable resource, so
+// the plan is consulted before the account exists.
+router.post('/:id/users', superadmin, enforceLimit('operators'), async (req, res) => {
   try {
     const { id } = req.params;
-    const { username, name, displayName, email, role, password } = req.body;
+    const { name, displayName, role, password } = req.body;
+    const username = requireString(req.body.username);
+    const email = requireString(req.body.email);
+
+    // Validate input
+    if (!username || !email || !password || !role) {
+      return res.status(400).json({ error: 'Username, email, password, and role are required' });
+    }
+
+    if (passwordProblem(password)) {
+      return res.status(400).json({ error: passwordProblem(password) });
+    }
 
     // Check if company exists
     const company = await Company.findById(id);
     if (!company) {
       return res.status(404).json({ error: 'Company not found' });
-    }
-
-    // Validate input
-    if (!username || !email || !password || !role) {
-      return res.status(400).json({ error: 'Username, email, password, and role are required' });
     }
 
     // Validate role
@@ -1218,13 +1296,16 @@ router.post('/:id/users/:userId/reset-password', superadmin, async (req, res) =>
     if (generateRandom) {
       newPassword = generateRandomPassword();
     } else if (password) {
+      if (passwordProblem(password)) {
+        return res.status(400).json({ error: passwordProblem(password) });
+      }
       newPassword = password;
     } else {
       return res.status(400).json({ error: 'Either password or generateRandom must be provided' });
     }
 
     // Update password
-    user.password = newPassword;
+    setPassword(user, newPassword);
     await user.save();
 
     res.json({

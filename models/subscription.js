@@ -2,6 +2,23 @@ const mongoose = require('mongoose');
 const { DEFAULT_PLAN, getPlan } = require('../config/plans');
 
 /**
+ * How long a new tenant's trial lasts. Read from the environment so a
+ * deployment can be more or less generous without a code change; the plan
+ * table's `trialDays` is the fallback, and 14 the fallback for that.
+ */
+function trialDays() {
+  const fromEnv = parseInt(process.env.TRIAL_DAYS, 10);
+  if (Number.isFinite(fromEnv) && fromEnv > 0) {
+    return fromEnv;
+  }
+  return getPlan(DEFAULT_PLAN).trialDays || 14;
+}
+
+function trialEnd() {
+  return new Date(Date.now() + trialDays() * 24 * 60 * 60 * 1000);
+}
+
+/**
  * A company's plan.
  *
  * Separate from the Company document because it changes on a different rhythm
@@ -37,8 +54,15 @@ const SubscriptionSchema = new mongoose.Schema({
   currentPeriodEnd: {
     type: Date
   },
+  /**
+   * When the trial runs out. Set the moment the subscription is created
+   * rather than the first time something saves it: a tenant who signed up
+   * and was never touched again used to have no trial end at all, which
+   * meant a trial that never expired.
+   */
   trialEndsAt: {
-    type: Date
+    type: Date,
+    default: trialEnd
   },
   /**
    * Per-company limit overrides, for negotiated deals. Only keys present here
@@ -75,14 +99,32 @@ SubscriptionSchema.index({ status: 1, currentPeriodEnd: 1 });
 SubscriptionSchema.pre('save', function(next) {
   this.updatedAt = new Date();
 
-  // Start the trial clock the first time a trialing subscription is saved.
-  if (this.isNew && this.status === 'trialing' && !this.trialEndsAt) {
-    const days = getPlan(this.planId).trialDays || 14;
-    this.trialEndsAt = new Date(Date.now() + days * 24 * 60 * 60 * 1000);
+  if (this.isNew && this.status !== 'trialing') {
+    // Created straight onto a paid plan, so the default trial clock is
+    // meaningless and would only confuse the dashboard.
+    this.trialEndsAt = undefined;
   }
 
   next();
 });
+
+/**
+ * Whether the trial, if there is one, has run out.
+ */
+SubscriptionSchema.methods.trialExpired = function() {
+  return this.status === 'trialing' && Boolean(this.trialEndsAt) && this.trialEndsAt < new Date();
+};
+
+/**
+ * The status as a person would describe it.
+ *
+ * The stored `status` stays `trialing` after the trial ends - nothing runs to
+ * flip it, and a flag that has to be kept in step with a clock is a flag that
+ * is eventually wrong. So anything that reports the status asks here instead.
+ */
+SubscriptionSchema.methods.effectiveStatus = function() {
+  return this.trialExpired() ? 'trial_expired' : this.status;
+};
 
 /**
  * The effective limit for a meter: an override if one exists, otherwise the
@@ -115,7 +157,7 @@ SubscriptionSchema.methods.isEntitled = function() {
   if (this.status === 'cancelled' || this.status === 'suspended') {
     return false;
   }
-  if (this.status === 'trialing' && this.trialEndsAt && this.trialEndsAt < new Date()) {
+  if (this.trialExpired()) {
     return false;
   }
   return true;
@@ -138,3 +180,4 @@ SubscriptionSchema.statics.forCompany = async function(companyId) {
 const Subscription = mongoose.model('Subscription', SubscriptionSchema);
 
 module.exports = Subscription;
+module.exports.trialDays = trialDays;

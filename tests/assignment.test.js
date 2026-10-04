@@ -309,6 +309,42 @@ describe('Assignment and tags', () => {
       expect((await Conversation.findById(chat._id)).operatorName).toBe('Alice Anderson');
     });
 
+    test('two claims at once produce one holder, and the loser is told who', async () => {
+      // The claim is a conditional update, so the database decides who was
+      // first. Two reads of `operatorId: null` followed by two saves used to
+      // let the second write win silently.
+      const chat = await conversation();
+      const [forAlice, forBob] = await Promise.all([
+        Conversation.findById(chat._id),
+        Conversation.findById(chat._id)
+      ]);
+
+      const results = await Promise.all([
+        assignment.assign(forAlice, { id: alice._id, displayName: 'Alice Anderson' }, 'manual'),
+        assignment.assign(forBob, { id: bob._id, displayName: 'Bob Brown' }, 'manual')
+      ]);
+
+      const won = results.filter(result => result.assigned);
+      const lost = results.filter(result => !result.assigned);
+      expect(won).toHaveLength(1);
+      expect(lost).toHaveLength(1);
+      expect(lost[0].reason).toBe('already claimed');
+      expect(lost[0].claimedBy.name).toBe(won[0].operator.displayName);
+
+      const reloaded = await Conversation.findById(chat._id);
+      expect(reloaded.operatorName).toBe(won[0].operator.displayName);
+    });
+
+    test('a claim on a conversation released by its operator succeeds', async () => {
+      // `operator-leave` writes an explicit null rather than removing the
+      // field; both have to read as "free".
+      const chat = await conversation({ operatorId: null, hasOperator: false });
+
+      const result = await assignment.assign(chat, { id: alice._id, displayName: 'Alice Anderson' });
+
+      expect(result.assigned).toBe(true);
+    });
+
     test('auto-assignment does nothing when the company has not asked for it', async () => {
       pretendOnline([alice]);
       await Company.findByIdAndUpdate(acme._id, { 'routing.autoAssign': false });
@@ -349,6 +385,43 @@ describe('Assignment and tags', () => {
 
       const load = await assignment.currentLoad(acme._id);
       expect(load.get(String(alice._id))).toBe(2);
+    });
+  });
+
+  describe('releasing', () => {
+    test('hands the conversation to a colleague when one is free', async () => {
+      pretendOnline([alice, bob]);
+      const chat = await conversation({
+        operatorId: alice._id, operatorName: 'Alice Anderson', hasOperator: true, botEnabled: false
+      });
+
+      const result = await assignment.release(chat, { exclude: [alice._id] });
+
+      expect(result.assigned).toBe(true);
+      expect(result.operator.displayName).toBe('Bob Brown');
+
+      const reloaded = await Conversation.findById(chat._id);
+      expect(String(reloaded.operatorId)).toBe(String(bob._id));
+      expect(reloaded.botEnabled).toBe(false);
+      expect(reloaded.awaitingOperatorSince).toBeUndefined();
+    });
+
+    test('puts it in the queue with the bot answering when nobody is free', async () => {
+      // The dead end this replaces: bot off, operator gone, nobody assigned.
+      pretendOnline([alice]);
+      const chat = await conversation({
+        operatorId: alice._id, operatorName: 'Alice Anderson', hasOperator: true, botEnabled: false
+      });
+
+      const result = await assignment.release(chat, { exclude: [alice._id] });
+
+      expect(result.assigned).toBe(false);
+
+      const reloaded = await Conversation.findById(chat._id);
+      expect(reloaded.operatorId).toBeNull();
+      expect(reloaded.hasOperator).toBe(false);
+      expect(reloaded.botEnabled).toBe(true);
+      expect(reloaded.awaitingOperatorSince).toBeInstanceOf(Date);
     });
   });
 

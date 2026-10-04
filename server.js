@@ -3,6 +3,7 @@ const path = require('path');
 const fs = require('fs');
 const mongoose = require('mongoose');
 const http = require('http');
+const crypto = require('crypto');
 const helmet = require('helmet');
 const compression = require('compression');
 const session = require('express-session');
@@ -15,7 +16,6 @@ const setupWebSockets = require('./websockets');
 const socketManager = require('./socketManager');
 const tenantService = require('./services/tenant');
 const assetManifest = require('./services/asset-manifest');
-const sessionRoutes = require('./routes/session');
 const chatRoutes = require('./routes/chat');
 const adminRoutes = require('./routes/admin');
 const authRoutes = require('./routes/auth');
@@ -34,13 +34,18 @@ const templateRoutes = require('./routes/templates');
 const knowledgeRoutes = require('./routes/knowledge');
 const contactRoutes = require('./routes/contacts');
 const emailRoutes = require('./routes/email');
-const { apiLimiter, chatLimiter, authLimiter } = require('./middleware/rateLimiter');
+const {
+  apiLimiter,
+  chatLimiter,
+  authLimiter,
+  loginAddressLimiter,
+  passwordResetLimiter
+} = require('./middleware/rateLimiter');
 const DataRetentionService = require('./services/dataRetention');
 const { logger, httpLogger } = require('./services/logging');
 const { metricsMiddleware } = require('./services/monitoring');
 const AlertService = require('./services/alerting');
 const BackupService = require('./services/backup');
-const WidgetUpdateService = require('./services/widgetUpdate');
 const schedulerService = require('./services/scheduler');
 
 // ---------------------------------------------------------------------------
@@ -85,14 +90,19 @@ mongoose.connection.on('reconnected', () => logger.info('MongoDB reconnected'));
 // ---------------------------------------------------------------------------
 
 app.use(helmet({
-  // The admin dashboard and widget load Bootstrap/Chart.js/socket.io from CDNs
-  // and use inline styles, so CSP is configured rather than left at helmet's
-  // defaults (which would block them outright).
+  // The admin dashboard loads Bootstrap, Chart.js, feather and marked from
+  // jsdelivr (each pinned to a version and checked with an SRI hash), and
+  // Bootstrap relies on inline styles. Script is never inline: every page's
+  // script lives in a file under /js, so 'unsafe-inline' is not in scriptSrc
+  // and an injected <script> tag has nowhere to run.
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ['\'self\''],
-      scriptSrc: ['\'self\'', '\'unsafe-inline\'', 'https://cdn.jsdelivr.net', 'https://unpkg.com'],
-      styleSrc: ['\'self\'', '\'unsafe-inline\'', 'https://cdn.jsdelivr.net', 'https://unpkg.com'],
+      scriptSrc: ['\'self\'', 'https://cdn.jsdelivr.net'],
+      // Inline handler attributes are covered separately so they stay
+      // blocked even though inline <style> is allowed.
+      scriptSrcAttr: ['\'none\''],
+      styleSrc: ['\'self\'', '\'unsafe-inline\'', 'https://cdn.jsdelivr.net'],
       imgSrc: ['\'self\'', 'data:', 'https:'],
       connectSrc: ['\'self\'', 'ws:', 'wss:'],
       fontSrc: ['\'self\'', 'data:', 'https://cdn.jsdelivr.net'],
@@ -120,13 +130,52 @@ app.use(express.json({
 }));
 app.use(express.urlencoded({ extended: false, limit: '1mb' }));
 app.use(httpLogger);
+
+/**
+ * Guard for the Prometheus endpoint.
+ *
+ * `/metrics` lists every route with its request counts, error rates and
+ * process details - a map of the deployment. It answers to a bearer token
+ * from METRICS_TOKEN, and in production refuses to exist without one: an
+ * unset variable must fail closed, not open a public dashboard.
+ *
+ * A factory rather than a bare middleware so the production rule can be
+ * tested without booting the process in production mode.
+ */
+function metricsGuard({ token = process.env.METRICS_TOKEN, isProduction = config.isProduction } = {}) {
+  const expected = token ? crypto.createHash('sha256').update(token).digest() : null;
+
+  return (req, res, next) => {
+    if (!expected) {
+      if (isProduction) {
+        // Indistinguishable from a route that does not exist.
+        return res.status(404).json({ error: 'Not found' });
+      }
+      return next();
+    }
+
+    const header = req.get('authorization') || '';
+    const presented = header.startsWith('Bearer ') ? header.slice(7) : '';
+    // Both sides hashed to the same length so the comparison is constant-time
+    // whatever the length of what was sent.
+    const given = crypto.createHash('sha256').update(presented).digest();
+
+    if (!presented || !crypto.timingSafeEqual(expected, given)) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    return next();
+  };
+}
+
+app.use('/metrics', metricsGuard());
 app.use(metricsMiddleware);
 
 // ---------------------------------------------------------------------------
 // CORS
 // ---------------------------------------------------------------------------
 
-app.use(async (req, res, next) => {
+async function corsPolicy(req, res, next) {
   const origin = req.get('Origin');
 
   // Direct navigation sends no Origin at all.
@@ -160,8 +209,18 @@ app.use(async (req, res, next) => {
     // message the browser never showed, because a 403 carries no
     // Access-Control-Allow-Origin header and the fetch fails as a generic CORS
     // error. That is the "the widget just doesn't load" ticket.
-    if (!allowed && req.query.key) {
+    //
+    // But a widget key is public - it is in the page source of every site
+    // that embeds the widget - so it proves which tenant a page belongs to
+    // and nothing about the page itself. An origin let in on the strength of
+    // a key gets the widget's own anonymous traffic through and no more: no
+    // cookies, no Authorization header. Only an origin the tenant registered
+    // (or ALLOWED_DOMAINS names) is trusted with credentials, since that is
+    // the list a stolen key cannot add itself to.
+    let credentialed = allowed;
+    if (!allowed && typeof req.query.key === 'string' && req.query.key) {
       allowed = Boolean(await tenantService.resolveCompanyId({ widgetKey: req.query.key }));
+      credentialed = false;
     }
 
     if (!allowed) {
@@ -178,7 +237,9 @@ app.use(async (req, res, next) => {
     // GET and POST fails the preflight for every one of them.
     res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
     res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, x-auth-token');
-    res.header('Access-Control-Allow-Credentials', 'true');
+    if (credentialed) {
+      res.header('Access-Control-Allow-Credentials', 'true');
+    }
     res.header('Access-Control-Max-Age', '86400');
 
     if (req.method === 'OPTIONS') {
@@ -189,7 +250,9 @@ app.use(async (req, res, next) => {
   } catch (error) {
     next(error);
   }
-});
+}
+
+app.use(corsPolicy);
 
 // ---------------------------------------------------------------------------
 // Sessions
@@ -218,7 +281,6 @@ app.use(session({
 }));
 
 // Ensure every chat request has a sessionId
-app.use('/api/session', ensureSessionId);
 app.use('/api/chat', ensureSessionId);
 app.use('/api/gdpr/consent', ensureSessionId);
 
@@ -313,11 +375,17 @@ app.use('/api/v1', require('./routes/public-api'));
 
 // Rate limiters were defined but never applied, leaving login open to
 // unlimited brute force and the chat endpoint open to flooding.
-app.use('/api/auth/login', authLimiter);
+// Per account first, then the per-address ceiling over all accounts: the
+// first catches somebody hammering one login, the second somebody spraying a
+// password across many.
+app.use('/api/auth/login', authLimiter, loginAddressLimiter);
+// Reset requests always succeed from the outside, so they get a limiter that
+// counts every request rather than only failures.
+app.use('/api/auth/forgot-password', passwordResetLimiter);
+app.use('/api/auth/reset-password', passwordResetLimiter);
 app.use('/api/chat', chatLimiter);
 app.use('/api', apiLimiter);
 
-app.use('/api/session', sessionRoutes);
 app.use('/api/chat', chatRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/auth', authRoutes);
@@ -364,8 +432,18 @@ app.use((err, req, res, next) => {
     return;
   }
 
-  res.status(err.status || 500).json({
-    error: config.isProduction ? 'Internal server error' : err.message
+  const status = Number.isInteger(err.status) && err.status >= 400 && err.status < 600
+    ? err.status
+    : 500;
+
+  // In production the message is generic unless the error was built to be
+  // shown (body-parser's "request entity too large", for instance, sets
+  // `expose`). Anything else - a mongoose message quoting a field name, a
+  // path from a failed require - stays in the log.
+  const shown = !config.isProduction || (status < 500 && err.expose === true);
+
+  res.status(status).json({
+    error: shown ? err.message : (status < 500 ? 'Bad request' : 'Internal server error')
   });
 });
 
@@ -386,27 +464,38 @@ const dataRetention = new DataRetentionService({
   anonymizeAfterDays: process.env.RETENTION_ANONYMIZE_DAYS,
   deleteAfterDays: process.env.RETENTION_DELETE_DAYS || process.env.ARCHIVED_RETENTION_DAYS
 });
-dataRetention.start();
 
 const alertService = new AlertService({
   enabled: process.env.ALERTS_ENABLED === 'true',
   emailEnabled: process.env.EMAIL_ALERTS_ENABLED === 'true',
   recipients: process.env.ALERT_RECIPIENTS?.split(',') || []
 });
-alertService.start();
 
 const backupService = new BackupService({
   mongoUri: config.mongoUri,
   retentionDays: parseInt(process.env.BACKUP_RETENTION_DAYS || '30', 10)
 });
-backupService.start();
 
-const widgetUpdateService = new WidgetUpdateService({
-  currentVersion: process.env.WIDGET_VERSION || '1.0.0'
-});
-widgetUpdateService.start();
+// Every job below writes to the shared database or sends mail, so with several
+// instances behind a load balancer each one would sweep, back up and alert on
+// its own: N backups a night and N copies of every alert email.
+// SCHEDULER_ENABLED (default true) picks the instance that runs them; with more
+// than one instance, set it to true on exactly one.
+//
+// Alerting is gated with the rest because it only *reads* the Prometheus
+// registry and emails when a threshold is crossed. The metrics themselves are
+// collected by `metricsMiddleware` (services/monitoring.js) on every instance
+// regardless, so /metrics keeps working where this is false.
+const schedulerEnabled = process.env.SCHEDULER_ENABLED !== 'false';
 
-schedulerService.initialize();
+if (schedulerEnabled) {
+  dataRetention.start();
+  alertService.start();
+  backupService.start();
+  schedulerService.initialize();
+} else {
+  logger.info('SCHEDULER_ENABLED=false: retention, alerting, backups and cron jobs are left to another instance');
+}
 
 // ---------------------------------------------------------------------------
 // Startup and graceful shutdown
@@ -436,7 +525,7 @@ async function shutdown(signal) {
     io.close();
     await new Promise(resolve => server.close(resolve));
 
-    [dataRetention, alertService, backupService, widgetUpdateService, schedulerService]
+    [dataRetention, alertService, backupService, schedulerService]
       .forEach(service => {
         if (service && typeof service.stop === 'function') {
           try {
@@ -469,4 +558,6 @@ process.on('uncaughtException', error => {
   shutdown('uncaughtException');
 });
 
-module.exports = { app, server };
+// `corsPolicy` and `metricsGuard` are exported so their rules can be tested
+// against a bare express app rather than the whole process.
+module.exports = { app, server, corsPolicy, metricsGuard };

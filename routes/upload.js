@@ -27,10 +27,13 @@ const { auth, operator } = require('../middleware/auth');
 const { canAccessCompany } = require('../utils/query');
 const { logger } = require('../services/logging');
 const usageService = require('../services/usage');
+const sessionToken = require('../services/session-token');
+// The layout on disk is owned by services/uploads.js, so the erasure and
+// retention paths that remove files agree with this route about where they are.
+const { UPLOAD_ROOT, companyDir, filePath } = require('../services/uploads');
 
 const router = express.Router();
 
-const UPLOAD_ROOT = path.join(__dirname, '..', 'uploads');
 const MAX_FILE_BYTES = parseInt(process.env.MAX_UPLOAD_BYTES, 10) || 10 * 1024 * 1024;
 
 /**
@@ -80,11 +83,19 @@ router.post('/', upload.single('file'), async (req, res) => {
       return res.status(400).json({ success: false, error: 'No active session' });
     }
 
-    const conversation = await Conversation.findOne({ sessionId });
+    const conversation = await Conversation.findOne({ sessionId }).select('+sessionTokenHash');
     if (!conversation) {
       // Requiring an existing conversation stops this being an anonymous
       // upload endpoint for anyone who can guess the URL.
       return res.status(404).json({ success: false, error: 'No conversation for this session' });
+    }
+
+    // A session id is not a credential: it appears in dashboard URLs and
+    // exports. A conversation that was issued a token only accepts writes
+    // from whoever holds it; one without (legacy data) is left as it was.
+    if (conversation.sessionTokenHash
+        && !sessionToken.verify(conversation.sessionTokenHash, req.body.sessionToken)) {
+      return res.status(403).json({ success: false, error: 'This session is not yours to write to' });
     }
 
     // Attribute the file to the same tenant as the conversation.
@@ -111,12 +122,12 @@ router.post('/', upload.single('file'), async (req, res) => {
     }
 
     const fileId = crypto.randomBytes(16).toString('hex');
-    const companyDir = path.join(UPLOAD_ROOT, companyId ? companyId.toString() : 'unassigned');
-    fs.mkdirSync(companyDir, { recursive: true });
+    const targetDir = companyDir(companyId);
+    fs.mkdirSync(targetDir, { recursive: true });
 
     // The stored name is the random id only. The original filename is never
     // part of a path, so it cannot be used for traversal.
-    await fs.promises.writeFile(path.join(companyDir, fileId), req.file.buffer);
+    await fs.promises.writeFile(path.join(targetDir, fileId), req.file.buffer);
 
     const originalName = path.basename(req.file.originalname).slice(0, 255);
 
@@ -196,10 +207,9 @@ router.get('/:fileId', async (req, res) => {
       }
     }
 
-    const companyDir = conversation.company ? conversation.company.toString() : 'unassigned';
-    const filePath = path.join(UPLOAD_ROOT, companyDir, fileId);
+    const target = filePath(conversation.company, fileId);
 
-    if (!fs.existsSync(filePath)) {
+    if (!target || !fs.existsSync(target)) {
       return res.status(404).json({ error: 'File not found' });
     }
 
@@ -210,7 +220,7 @@ router.get('/:fileId', async (req, res) => {
     res.setHeader('Content-Disposition',
       `attachment; filename="${(message.fileName || 'download').replace(/["\\]/g, '')}"`);
 
-    fs.createReadStream(filePath).pipe(res);
+    fs.createReadStream(target).pipe(res);
   } catch (error) {
     logger.error('File download failed', { error: error.message });
     res.status(500).json({ error: 'Failed to read the file' });

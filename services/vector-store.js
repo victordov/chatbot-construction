@@ -20,8 +20,10 @@
  */
 
 const axios = require('axios');
+const crypto = require('crypto');
 const KnowledgeChunk = require('../models/knowledge-chunk');
 const { getEmbeddingService, cosineSimilarity } = require('./embeddings');
+const { toObjectId } = require('../utils/query');
 const { logger } = require('./logging');
 
 // Above this many chunks for one tenant, the in-process backend is no longer
@@ -71,17 +73,23 @@ class VectorStoreService {
     const usable = documents.filter(doc => doc && String(doc.content || '').trim().length > 0);
 
     if (usable.length === 0) {
-      await KnowledgeChunk.deleteMany({ company: companyId, sourceId });
+      await this.deleteSource(companyId, sourceId);
       return { stored: 0, backend: this.backend, signature: this.embeddings.signature };
     }
 
     const vectors = await this.embeddings.embedBatch(usable.map(doc => doc.content));
+
+    // One id per import. The new chunks are written under it and the old ones
+    // removed by it, so a search in the middle of a re-import is never empty
+    // and a failed import never leaves half a source.
+    const importId = crypto.randomUUID();
 
     const chunks = usable.map((doc, index) => ({
       company: companyId,
       sourceId,
       sourceType,
       collectionName,
+      importId,
       content: doc.content,
       embedding: vectors[index],
       embeddingSignature: this.embeddings.signature,
@@ -91,10 +99,17 @@ class VectorStoreService {
 
     // MongoDB is the system of record in every backend: Qdrant is an index we
     // can rebuild, not the only copy of the tenant's content.
-    await KnowledgeChunk.replaceSource(companyId, sourceId, chunks);
+    await KnowledgeChunk.replaceSource(companyId, sourceId, chunks, importId);
 
     if (this.backend === 'qdrant') {
       await this.qdrantUpsert(chunks, collectionName);
+      await this.qdrantDelete(collectionName, {
+        must: [
+          { key: 'company', match: { value: String(companyId) } },
+          { key: 'sourceId', match: { value: sourceId } }
+        ],
+        must_not: [{ key: 'importId', match: { value: importId } }]
+      });
     }
 
     logger.info('Stored knowledge chunks', {
@@ -145,6 +160,11 @@ class VectorStoreService {
 
   /**
    * Default backend: load this tenant's vectors and rank them here.
+   *
+   * Two passes, because the content is the bulk of a chunk and only the top
+   * few are needed: rank on `embedding` alone, then fetch the text for the
+   * winners. Loading content for every chunk meant a tenant with a few
+   * thousand pages pulled megabytes through the driver on every message.
    */
   async inProcessSearch(queryVector, { companyId, collectionName, limit }) {
     const filter = {
@@ -160,29 +180,48 @@ class VectorStoreService {
     }
 
     if (total > IN_PROCESS_SCAN_LIMIT) {
+      // Loud on purpose: past this point the tenant's older material is
+      // silently unsearchable, and "the bot does not know about X" is the
+      // only symptom anybody would otherwise see.
       logger.warn(
         `Tenant has ${total} knowledge chunks, above the in-process scan limit of ${IN_PROCESS_SCAN_LIMIT}. ` +
         'Only the most recent chunks are searched. Configure QDRANT_URL or MONGODB_VECTOR_INDEX for a real index.',
-        { companyId: String(companyId) }
+        { companyId: String(companyId), total, limit: IN_PROCESS_SCAN_LIMIT }
       );
     }
 
-    const chunks = await KnowledgeChunk.find(filter)
-      .select('content embedding metadata sourceId sourceType')
+    const candidates = await KnowledgeChunk.find(filter)
+      .select('_id embedding')
       .sort({ createdAt: -1 })
       .limit(IN_PROCESS_SCAN_LIMIT)
       .lean();
 
-    return chunks
-      .map(chunk => ({
-        content: chunk.content,
-        score: cosineSimilarity(queryVector, chunk.embedding),
-        metadata: chunk.metadata || {},
-        sourceId: chunk.sourceId,
-        sourceType: chunk.sourceType
-      }))
+    const ranked = candidates
+      .map(chunk => ({ id: chunk._id, score: cosineSimilarity(queryVector, chunk.embedding) }))
       .sort((a, b) => b.score - a.score)
       .slice(0, limit);
+
+    if (ranked.length === 0) {
+      return [];
+    }
+
+    const winners = await KnowledgeChunk.find({ _id: { $in: ranked.map(r => r.id) } })
+      .select('content metadata sourceId sourceType')
+      .lean();
+    const byId = new Map(winners.map(chunk => [String(chunk._id), chunk]));
+
+    return ranked
+      .map(({ id, score }) => {
+        const chunk = byId.get(String(id));
+        return chunk && {
+          content: chunk.content,
+          score,
+          metadata: chunk.metadata || {},
+          sourceId: chunk.sourceId,
+          sourceType: chunk.sourceType
+        };
+      })
+      .filter(Boolean);
   }
 
   /**
@@ -279,6 +318,7 @@ class VectorStoreService {
           sourceId: chunk.sourceId,
           sourceType: chunk.sourceType,
           collectionName: chunk.collectionName,
+          importId: chunk.importId || null,
           content: chunk.content,
           embeddingSignature: chunk.embeddingSignature
         }
@@ -293,6 +333,30 @@ class VectorStoreService {
       // The chunks are already safely in MongoDB, so a Qdrant outage degrades
       // search quality rather than losing the tenant's content.
       logger.error('Qdrant upsert failed; chunks are stored in MongoDB and searchable in process', {
+        error: error.message
+      });
+    }
+  }
+
+  /**
+   * Remove the points matching a payload filter.
+   *
+   * Qdrant was written to on import and never on delete, so a source a tenant
+   * removed from the dashboard kept being served from the index.
+   */
+  async qdrantDelete(collectionName, filter) {
+    try {
+      const name = this.qdrantCollection(collectionName);
+      await axios.post(
+        `${this.qdrantUrl.replace(/\/+$/, '')}/collections/${encodeURIComponent(name)}/points/delete?wait=true`,
+        { filter },
+        { headers: this.qdrantHeaders(), timeout: 30000 }
+      );
+    } catch (error) {
+      // MongoDB is the record, and the search filters on what is still there
+      // by content rather than by the index alone; the stale points are a
+      // cleanup problem, not a correctness one, but worth knowing about.
+      logger.error('Qdrant delete failed; stale points may remain in the index', {
         error: error.message
       });
     }
@@ -336,10 +400,63 @@ class VectorStoreService {
   }
 
   /**
-   * Remove everything stored for one source.
+   * What this tenant has indexed, one row per source.
+   *
+   * The dashboard needs to show somebody what their bot can actually draw on,
+   * and to let them remove a source they no longer stand behind. Without this,
+   * a knowledge base is a write-only hole.
+   */
+  async sources(companyId) {
+    const rows = await KnowledgeChunk.aggregate([
+      { $match: { company: toObjectId(companyId) } },
+      {
+        $group: {
+          _id: '$sourceId',
+          sourceType: { $first: '$sourceType' },
+          collectionName: { $first: '$collectionName' },
+          chunks: { $sum: 1 },
+          characters: { $sum: { $strLenCP: '$content' } },
+          importedAt: { $max: '$createdAt' },
+          signature: { $first: '$embeddingSignature' },
+          sample: { $first: '$content' },
+          metadata: { $first: '$metadata' }
+        }
+      },
+      { $sort: { importedAt: -1 } }
+    ]);
+
+    return rows.map(row => ({
+      sourceId: row._id,
+      sourceType: row.sourceType,
+      collectionName: row.collectionName,
+      chunks: row.chunks,
+      characters: row.characters,
+      importedAt: row.importedAt,
+      // A source embedded by a different model than the one now configured
+      // cannot be searched, and saying so is more use than quietly never
+      // matching it.
+      stale: row.signature !== this.embeddings.signature,
+      title: (row.metadata && (row.metadata.title || row.metadata.url || row.metadata.filename)) || null,
+      url: (row.metadata && row.metadata.url) || null,
+      excerpt: String(row.sample || '').slice(0, 160)
+    }));
+  }
+
+  /**
+   * Remove everything stored for one source, from every backend.
    */
   async deleteSource(companyId, sourceId) {
     const result = await KnowledgeChunk.deleteMany({ company: companyId, sourceId });
+
+    if (this.backend === 'qdrant') {
+      await this.qdrantDelete(undefined, {
+        must: [
+          { key: 'company', match: { value: String(companyId) } },
+          { key: 'sourceId', match: { value: sourceId } }
+        ]
+      });
+    }
+
     return result.deletedCount;
   }
 
@@ -348,7 +465,9 @@ class VectorStoreService {
    */
   async stats(companyId) {
     const [row] = await KnowledgeChunk.aggregate([
-      { $match: { company: companyId } },
+      // Cast explicitly: unlike a find(), an aggregation `$match` does not
+      // coerce a string id, and would silently match nothing.
+      { $match: { company: toObjectId(companyId) } },
       {
         $group: {
           _id: null,

@@ -11,6 +11,56 @@ const usageService = require('../services/usage');
 const { logger } = require('../services/logging');
 
 /**
+ * The tenant a request belongs to.
+ *
+ * `req.user.company` is a populated document on most routes, but some attach
+ * the bare id (an API key's company, a lean lookup), and a middleware that
+ * only understood one of them would silently skip enforcement on the other:
+ * `undefined.id` is not an error, it is "no company", and no company means
+ * no limit.
+ */
+function companyIdOf(user) {
+  const company = user && user.company;
+
+  if (!company) {
+    return null;
+  }
+  if (typeof company === 'string') {
+    return company;
+  }
+  if (company.id) {
+    return String(company.id);
+  }
+  if (company._id) {
+    return String(company._id);
+  }
+  // An ObjectId, which has neither `.id` nor `._id` but stringifies to its hex.
+  return String(company);
+}
+
+/**
+ * Whether a company may perform `requested` more of `meter`, as a plain
+ * answer with no response attached.
+ *
+ * For code that is not an Express handler - a socket event, a scheduled job,
+ * a route that has to check before it knows what to refuse with - and for
+ * handlers that want to check more than one meter before doing anything.
+ * Fails open like the middleware, and for the same reason: enforcement must
+ * not be a new way for the product to break.
+ *
+ * @returns {Promise<{allowed: boolean, reason?: string, limit: number|null,
+ *                    used: number, remaining: number|null, planId: string}>}
+ */
+async function checkLimit(companyId, meter, requested = 1) {
+  try {
+    return await usageService.check(companyId, meter, requested);
+  } catch (error) {
+    logger.error('Quota check failed; allowing the action', { meter, error: error.message });
+    return { allowed: true, limit: null, used: 0, remaining: null, planId: 'unknown', degraded: true };
+  }
+}
+
+/**
  * Refuse the request when a meter is at its limit.
  *
  * @param {string} meter key from config/plans METERS
@@ -27,7 +77,7 @@ function enforceLimit(meter, options = {}) {
         return next();
       }
 
-      const companyId = req.user && req.user.company ? req.user.company.id : null;
+      const companyId = companyIdOf(req.user);
       const result = await usageService.check(companyId, meter);
 
       if (!result.allowed) {
@@ -67,7 +117,7 @@ function requireFeature(feature) {
         return next();
       }
 
-      const companyId = req.user && req.user.company ? req.user.company.id : null;
+      const companyId = companyIdOf(req.user);
 
       if (await usageService.hasFeature(companyId, feature)) {
         return next();
@@ -87,4 +137,4 @@ function requireFeature(feature) {
   };
 }
 
-module.exports = { enforceLimit, requireFeature };
+module.exports = { enforceLimit, requireFeature, checkLimit, companyIdOf };

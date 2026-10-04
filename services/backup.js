@@ -5,19 +5,66 @@
  * configuration backups, and system restoration.
  */
 
-const { exec } = require('child_process');
+const { execFile } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { promisify } = require('util');
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 const { logger } = require('./logging');
+
+const TOOLS_HELP =
+  'MongoDB Database Tools are required.\n' +
+  'Installation instructions:\n' +
+  '- For macOS: brew install mongodb-database-tools\n' +
+  '- For Ubuntu/Debian: sudo apt-get install mongodb-database-tools\n' +
+  '- For Windows: Download from https://www.mongodb.com/try/download/database-tools\n' +
+  'After installation, ensure the tools are in your system PATH.';
+
+/**
+ * Run a database tool.
+ *
+ * `execFile` with an argument array, not `exec` with a shell string: the URI
+ * carries the database password and the path came from configuration, and a
+ * shell would interpret either. Nothing about the invocation is logged for
+ * the same reason - the URI is in the arguments.
+ */
+async function runTool(tool, args) {
+  try {
+    await execFileAsync(tool, args, { maxBuffer: 16 * 1024 * 1024 });
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      throw new Error(`${tool} command not found. ${TOOLS_HELP}`);
+    }
+    // The tool's own stderr can quote the URI it was given. Its exit status
+    // is enough to know it failed; the operator can rerun it by hand.
+    throw new Error(`${tool} exited with status ${error.code || 'unknown'}`);
+  }
+}
+
+/**
+ * A backup name as it appears in a directory listing, and nothing else.
+ *
+ * The timestamp reaches `restore` from a request body, so it is checked
+ * rather than trusted: `../../..` would otherwise turn the restore endpoint
+ * into a way to feed arbitrary directories to mongorestore. Same rule as
+ * services/tenant-backup.js.
+ */
+function backupSegment(value) {
+  const text = String(value);
+  if (!/^[A-Za-z0-9_-]+$/.test(text)) {
+    throw new Error('Invalid backup id');
+  }
+  return text;
+}
 
 class BackupService {
   constructor(options = {}) {
     this.mongoUri = options.mongoUri || process.env.MONGODB_URI;
     this.backupDir = options.backupDir || path.join(__dirname, '..', 'backups');
+    // `.env` is deliberately not on this list. It holds every secret the
+    // deployment has, and a backup directory is copied, synced and retained
+    // far more casually than the file itself.
     this.configFiles = options.configFiles || [
-      '.env',
       'package.json',
       'package-lock.json',
       'server.js'
@@ -78,7 +125,9 @@ class BackupService {
    * Perform a full backup of the database and configuration
    */
   async performBackup() {
-    const timestamp = new Date().toISOString().replace(/:/g, '-');
+    // Colons and dots are replaced so the name passes the same check the
+    // restore path applies to names it is given.
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const backupPath = path.join(this.backupDir, timestamp);
 
     // Create backup directory for this backup
@@ -113,23 +162,7 @@ class BackupService {
     logger.info('Starting database backup');
 
     try {
-      // Check if mongodump is installed
-      try {
-        await execAsync('which mongodump || command -v mongodump');
-      } catch (cmdError) {
-        throw new Error(
-          'mongodump command not found. MongoDB Database Tools are required for backups.\n' +
-          'Installation instructions:\n' +
-          '- For macOS: brew install mongodb-database-tools\n' +
-          '- For Ubuntu/Debian: sudo apt-get install mongodb-database-tools\n' +
-          '- For Windows: Download from https://www.mongodb.com/try/download/database-tools\n' +
-          'After installation, ensure the tools are in your system PATH.'
-        );
-      }
-
-      // Use mongodump to backup the database
-      const command = `mongodump --uri="${this.mongoUri}" --out="${dbBackupPath}"`;
-      await execAsync(command);
+      await runTool('mongodump', ['--uri', this.mongoUri, '--out', dbBackupPath]);
 
       logger.info('Database backup completed');
       return true;
@@ -212,7 +245,7 @@ class BackupService {
    * Restore from a backup
    */
   async restore(backupTimestamp) {
-    const backupPath = path.join(this.backupDir, backupTimestamp);
+    const backupPath = path.join(this.backupDir, backupSegment(backupTimestamp));
 
     if (!fs.existsSync(backupPath)) {
       throw new Error(`Backup ${backupTimestamp} not found`);
@@ -252,23 +285,7 @@ class BackupService {
     logger.info('Starting database restoration');
 
     try {
-      // Check if mongorestore is installed
-      try {
-        await execAsync('which mongorestore || command -v mongorestore');
-      } catch (cmdError) {
-        throw new Error(
-          'mongorestore command not found. MongoDB Database Tools are required for restoration.\n' +
-          'Installation instructions:\n' +
-          '- For macOS: brew install mongodb-database-tools\n' +
-          '- For Ubuntu/Debian: sudo apt-get install mongodb-database-tools\n' +
-          '- For Windows: Download from https://www.mongodb.com/try/download/database-tools\n' +
-          'After installation, ensure the tools are in your system PATH.'
-        );
-      }
-
-      // Use mongorestore to restore the database
-      const command = `mongorestore --uri="${this.mongoUri}" --drop "${dbBackupPath}"`;
-      await execAsync(command);
+      await runTool('mongorestore', ['--uri', this.mongoUri, '--drop', dbBackupPath]);
 
       logger.info('Database restoration completed');
       return true;

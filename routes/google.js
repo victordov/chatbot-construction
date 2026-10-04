@@ -38,28 +38,23 @@ router.get('/oauth2callback', async (req, res) => {
       return res.status(503).send('Google OAuth is not configured');
     }
 
+    // The state is checked inside: it names the user and is signed, so the
+    // callback cannot be pointed at somebody else's account.
     await authService.handleOAuthCallback(state, code);
     res.send('Google authorization successful. You can close this window.');
   } catch (err) {
+    if (err.code === 'INVALID_STATE') {
+      logger.warn('Refused an OAuth callback with a bad state');
+      return res.status(400).send('This authorization link is invalid or has expired. Please start again.');
+    }
     logger.error('Failed OAuth callback', { error: err });
     res.status(500).send('Failed to authorize with Google');
   }
 });
 
-// Save OAuth tokens
-router.post('/token', auth, async (req, res) => {
-  try {
-    if (!authService.isGoogleConfigured()) {
-      return res.status(503).json({ error: 'Google OAuth is not configured' });
-    }
-
-    await authService.saveTokens(req.user.id, req.body);
-    res.json({ success: true });
-  } catch (err) {
-    logger.error('Failed to save Google tokens', { error: err });
-    res.status(500).json({ error: 'Failed to save token' });
-  }
-});
+// There is deliberately no route for a client to post tokens directly. The
+// callback above is the only way tokens are stored, so what is stored is
+// always what Google issued for the signed-in user.
 
 // Check if user already authorized
 router.get('/status', auth, async (req, res) => {

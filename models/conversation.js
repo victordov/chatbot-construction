@@ -58,6 +58,13 @@ const ConversationSchema = new mongoose.Schema({
     required: true,
     unique: true
   },
+  // SHA-256 of the secret the widget must present to resume or write to this
+  // conversation. The session id alone is not a credential: it appears in
+  // dashboard URLs, exports and webhook payloads.
+  sessionTokenHash: {
+    type: String,
+    select: false
+  },
   /**
    * How this conversation reaches the customer.
    *
@@ -253,6 +260,23 @@ const ConversationSchema = new mongoose.Schema({
 });
 
 /**
+ * Metadata keys that hold the visitor's details. The socket layer and the
+ * dashboard write `name`, `email` and `phone` here from the pre-chat form and
+ * the operator's "contact details" panel; older widgets wrote `visitor*`
+ * variants of the same. `consent` stays: it is what the visitor agreed to,
+ * not who they are, and the record of consent is itself something a tenant
+ * has to keep.
+ */
+const PII_METADATA_KEYS = new Set([
+  'name', 'email', 'phone', 'firstName', 'lastName', 'fullName',
+  'address', 'ip', 'ipAddress', 'userAgent', 'company', 'username', 'userId'
+]);
+
+function isIdentifyingMetadataKey(key) {
+  return PII_METADATA_KEYS.has(key) || /^visitor/i.test(key) || /^user/i.test(key);
+}
+
+/**
  * Strip everything that identifies the person, keeping the shape of the
  * conversation.
  *
@@ -264,7 +288,13 @@ const ConversationSchema = new mongoose.Schema({
  *
  * Message text goes because people type addresses, order numbers and card
  * details into chat windows; there is no reliable way to keep the text and
- * claim the record is anonymous.
+ * claim the record is anonymous. The same applies to operator notes, to what
+ * a workflow collected ("what is your order number?"), and to the free-text
+ * half of a rating.
+ *
+ * Files are not removed here: the model does not know about the filesystem.
+ * Callers that scrub a conversation delete its uploads first, through
+ * services/uploads.js, while the message still says which files it had.
  */
 ConversationSchema.methods.anonymize = async function() {
   if (this.anonymizedAt) {
@@ -283,6 +313,16 @@ ConversationSchema.methods.anonymize = async function() {
     this.email.lastMessageId = undefined;
   }
 
+  if (this.metadata) {
+    // Iterate over a copy: deleting from a Map while iterating it is defined
+    // behaviour in JavaScript, but mongoose's change tracking is happier when
+    // the keys are settled before the deletes begin.
+    Array.from(this.metadata.keys())
+      .filter(isIdentifyingMetadataKey)
+      .forEach(key => this.metadata.delete(key));
+    this.markModified('metadata');
+  }
+
   this.messages.forEach(message => {
     message.content = '[removed]';
     message.fileId = undefined;
@@ -291,6 +331,19 @@ ConversationSchema.methods.anonymize = async function() {
     message.emailMessageId = undefined;
     message.encrypted = false;
   });
+
+  // Notes are where an operator writes what they would not say out loud,
+  // which is exactly the kind of thing that names somebody.
+  this.notes = [];
+
+  if (this.workflowState) {
+    // The answers a flow collected are the visitor's words, same as messages.
+    // `awaiting` is only the question, but it is keyed by the flow's state and
+    // useless once the answers are gone.
+    this.workflowState.variables = undefined;
+    this.workflowState.awaiting = undefined;
+    this.markModified('workflowState');
+  }
 
   if (this.rating && this.rating.comment) {
     // A free-text comment is as likely to name somebody as a message is.

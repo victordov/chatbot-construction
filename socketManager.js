@@ -67,11 +67,44 @@ function emitToSession(sessionId, event, payload) {
   }
 }
 
+/**
+ * Room one member of staff joins on connect (`websockets.js`), so anything
+ * addressed to a person reaches that person.
+ */
+function userRoom(userId) {
+  return `user:${userId.toString()}`;
+}
+
+/**
+ * Emit to one member of staff.
+ *
+ * The notification routes used to do this with a bare `io.emit`, which is not a
+ * room at all: it reaches every connected socket on the platform - every
+ * operator of every tenant, and every website visitor with the widget open -
+ * carrying the whole notification document. A notification belongs to one
+ * person, so it goes to one person.
+ */
+function emitToUser(userId, event, payload) {
+  if (!userId) {
+    return false;
+  }
+
+  try {
+    getIo().to(userRoom(userId)).emit(event, payload);
+    return true;
+  } catch (error) {
+    logger.warn(`Unable to emit "${event}" to user ${userId}`, { error: error.message });
+    return false;
+  }
+}
+
 module.exports = {
   setIo,
   getIo,
   operatorRoom,
+  userRoom,
   emitToOperators,
+  emitToUser,
   broadcastToTenant,
   emitToSession,
   GLOBAL_OPERATOR_ROOM

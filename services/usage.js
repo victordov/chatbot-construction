@@ -253,7 +253,20 @@ async function recordLimitHit(companyId) {
   return record(companyId, { limitHits: 1 });
 }
 
+/**
+ * What a visitor is told when their message cannot be answered because of the
+ * tenant's plan. Deliberately says nothing about quotas or billing: that is a
+ * conversation between the platform and the tenant, not something to put in
+ * front of the tenant's customer.
+ */
+const UNAVAILABLE_MESSAGE = 'Sorry, this chat is unavailable right now. Please try again later.';
+
+/** What a visitor is told when generating a reply failed. */
+const REPLY_FAILED_MESSAGE = 'Sorry, something went wrong while preparing a reply. Please try again in a moment.';
+
 module.exports = {
+  UNAVAILABLE_MESSAGE,
+  REPLY_FAILED_MESSAGE,
   record,
   check,
   hasFeature,

@@ -1,14 +1,34 @@
 const { OpenAI } = require('openai');
 const { getResponseTemplateService } = require('./responseTemplates');
-const { PromptEngineeringService } = require('./promptEngineering');
+const { PromptEngineeringService, wrapKnowledge } = require('./promptEngineering');
+const { getVectorStore } = require('./vector-store');
 const { logger } = require('./logging');
+const { openaiClientOptions } = require('../config/env');
 
-// Initialize OpenAI with API key from environment variables - only create instance if we have a key
-const openai = process.env.OPENAI_API_KEY ?
-  new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY
-  }) :
-  null;
+/** A client for the configured key, or null when there is none. */
+function buildClient(apiKey = process.env.OPENAI_API_KEY) {
+  return apiKey ? new OpenAI({ apiKey, ...openaiClientOptions() }) : null;
+}
+
+const openai = buildClient();
+
+/** The chat model used wherever a caller does not name one. */
+function defaultModel() {
+  return process.env.OPENAI_MODEL || 'gpt-4o';
+}
+
+/**
+ * Thrown when a reply needs the model and there is no client to call.
+ *
+ * This used to return a "mock response" string, which then went to real
+ * visitors of any deployment that lost its key. Throwing lets the caller send
+ * a proper apology instead of a test stub.
+ */
+function noClientError() {
+  const error = new Error('OPENAI_API_KEY is not configured; no model is available to answer');
+  error.code = 'NO_AI_CLIENT';
+  return error;
+}
 
 /**
  * The assistant's behaviour when a tenant has not configured a persona.
@@ -24,6 +44,33 @@ know something rather than guessing.
 `;
 
 /**
+ * Put the tenant's own material in front of the model, and tell it to prefer
+ * that material over what it happens to know.
+ *
+ * The wording matches `workflow-compiler.js#buildPromptHierarchy`, so a company
+ * gets the same answer from the assistant as from a workflow's knowledge node.
+ * The instruction to say so when the material does not cover the question is
+ * the point of retrieval in support: a confident wrong answer about somebody
+ * else's refund policy is worse than "I don't know".
+ */
+function groundInKnowledge(promptMessages, knowledgeContext) {
+  const system = promptMessages.find(entry => entry.role === 'system');
+
+  const grounding = `\n\n${wrapKnowledge(knowledgeContext)}\n\n` +
+    'Answer from the material above whenever it covers the question, and say ' +
+    'plainly that you do not have that information when it does not. Do not ' +
+    'invent details that are not there.';
+
+  if (system) {
+    system.content += grounding;
+  } else {
+    promptMessages.unshift({ role: 'system', content: DEFAULT_SYSTEM_MESSAGE + grounding });
+  }
+
+  return promptMessages;
+}
+
+/**
  * Get a response from ChatGPT
  * @param {Array} messages - Array of message objects with role and content
  * @param {Object} options - Configuration options
@@ -31,9 +78,14 @@ know something rather than guessing.
  */
 async function getChatGPTResponse(messages, options = {}) {
   try {
-    // If no OpenAI client available, return mock response
-    if (!openai) {
-      return 'This is a mock response since no OpenAI client is available';
+    // The caller's own client wins over the module-level one, which is built
+    // from the environment when this file is first required. An AIService that
+    // was handed a client had it ignored here, so the reply path could return
+    // the mock string below while `this.openai` was a perfectly good client.
+    const client = options.client || openai;
+
+    if (!client) {
+      throw noClientError();
     }
 
     // Include system message if not already present
@@ -51,8 +103,8 @@ async function getChatGPTResponse(messages, options = {}) {
     }));
 
     // Call OpenAI API
-    const response = await openai.chat.completions.create({
-      model: options.model || 'gpt-3.5-turbo',
+    const response = await client.chat.completions.create({
+      model: options.model || defaultModel(),
       messages: formattedMessages,
       temperature: options.temperature || 0.7,
       max_tokens: options.maxTokens || 500,
@@ -116,53 +168,17 @@ async function isOnTopic(message, openaiClient = openai, scope = null) {
 
 
 /**
- * Summarize a conversation
- * @param {Array} messages - Array of message objects
- * @returns {Promise<string>} - Conversation summary
- */
-async function summarizeConversation(messages) {
-  try {
-    const conversationText = messages
-      .map(msg => `${msg.sender}: ${msg.content}`)
-      .join('\n');
-
-    const response = await openai.chat.completions.create({
-      model: 'gpt-3.5-turbo',
-      messages: [
-        {
-          role: 'system',
-          content: 'Summarize the following conversation in 3-5 bullet points.'
-        },
-        {
-          role: 'user',
-          content: conversationText
-        }
-      ],
-      temperature: 0.5,
-      max_tokens: 250
-    });
-
-    return response.choices[0].message.content;
-  } catch (error) {
-    logger.error('Error summarizing conversation:', { error });
-    throw error;
-  }
-}
-
-/**
  * Service for AI integration with OpenAI
  */
 class AIService {
   constructor(options = {}) {
-    // Only create OpenAI instance if API key is available or use provided mock
-    this.openai = options.openai || (process.env.OPENAI_API_KEY ?
-      new OpenAI({
-        apiKey: process.env.OPENAI_API_KEY
-      }) : null);
+    // A caller's own client (tests, or a per-tenant key one day) wins over the
+    // one built from the environment.
+    this.openai = options.openai || buildClient();
 
     this.systemMessage = options.systemMessage || DEFAULT_SYSTEM_MESSAGE;
     // Use environment variable for model if set, otherwise use options.model or default to GPT-4o
-    this.defaultModel = options.model || process.env.OPENAI_MODEL || 'gpt-4o';
+    this.defaultModel = options.model || defaultModel();
     // Set a higher token limit for GPT-4o
     this.maxTokens = options.maxTokens || 4000;
 
@@ -178,14 +194,17 @@ class AIService {
 
     this.promptService = options.promptService ||
       new PromptEngineeringService(options.promptOptions);
-  }
 
-  /**
-   * Point this service at a tenant. Called by the socket layer once the
-   * conversation's company is known.
-   */
-  setCompany(companyId) {
-    this.companyId = companyId || null;
+    // How many knowledge chunks to put in front of the model. Five is what the
+    // workflow knowledge node uses; keeping them the same means a tenant does
+    // not get a different answer depending on whether they drew a graph.
+    this.knowledgeLimit = options.knowledgeLimit || 5;
+
+    // Retrieval can be turned off per instance, which the tests need and a
+    // tenant answering purely from a persona might want.
+    this.useKnowledge = options.useKnowledge !== false;
+
+    this.vectorStore = options.vectorStore || null;
   }
 
   /**
@@ -197,7 +216,9 @@ class AIService {
       this.systemMessage = String(persona).trim();
       this.promptService.setPersona(persona);
     }
-  }  /**
+  }
+
+  /**
    * Generate a response to a user message
    * @param {string} message - The user's message
    * @param {Array} messageHistory - Array of previous messages for context
@@ -278,17 +299,63 @@ class AIService {
       variables
     );
 
-    // If no OpenAI instance available (for testing), return a mock response
-    if (!this.openai) {
-      return 'This is an engineered response for a complex query';
+    const knowledge = await this.retrieveKnowledge(message);
+    if (knowledge) {
+      groundInKnowledge(promptMessages, knowledge);
     }
 
-    // Get response from ChatGPT using the engineered prompt
+    // No client means no answer: the caller turns the throw into an apology.
+    // Returning stub text here put "This is an engineered response for a
+    // complex query" in front of real visitors whenever the key was missing.
+    if (!this.openai) {
+      throw noClientError();
+    }
+
     return await getChatGPTResponse(promptMessages, {
+      client: this.openai,
       model: this.defaultModel,
       temperature: 0.7, // Slightly higher temperature for more creative responses
       maxTokens: 500
     });
+  }
+
+  /**
+   * What this tenant has written down that bears on the question.
+   *
+   * Until this existed, everything a tenant imported - their spreadsheets,
+   * their PDFs, their site - was reachable only from a workflow's knowledge
+   * node. A company that uploaded a price list and never drew a graph had an
+   * assistant that answered as though the price list did not exist, which is
+   * the opposite of what uploading it implies.
+   *
+   * @returns {Promise<string>} the chunks as text, or '' when there are none
+   */
+  async retrieveKnowledge(message) {
+    if (!this.useKnowledge || !this.companyId || !String(message || '').trim()) {
+      return '';
+    }
+
+    try {
+      const store = this.vectorStore || getVectorStore();
+      const results = await store.search(message, {
+        companyId: this.companyId,
+        limit: this.knowledgeLimit
+      });
+
+      return (results || [])
+        .map(result => String(result.content || '').trim())
+        .filter(Boolean)
+        .join('\n\n');
+    } catch (error) {
+      // A knowledge base that is down should cost the answer its context, not
+      // cost the visitor their reply - but it is an error, not a warning: the
+      // tenant's bot has just answered as though they never imported anything.
+      logger.error('Knowledge retrieval failed; answering without it', {
+        companyId: String(this.companyId),
+        error: error.message
+      });
+      return '';
+    }
   }
 
   /**
@@ -303,15 +370,6 @@ class AIService {
     ];
 
     return greetingPatterns.some(pattern => message.includes(pattern));
-  }
-
-  /**
-   * Summarize a conversation
-   * @param {Array} messages - Array of conversation messages
-   * @returns {Promise<string>} - The summary
-   */
-  async summarizeConversation(messages) {
-    return await summarizeConversation(messages);
   }
 
   /**
@@ -364,9 +422,16 @@ Include all relevant information that might help the user, as the operator can e
         { role: 'user', content: userMessage }
       ];
 
-      // If no OpenAI instance available (for testing), return a mock response
+      // An operator drafting a reply needs the tenant's material at least as
+      // much as the bot does - more, since they are about to send it as the
+      // company rather than as a machine.
+      const knowledge = await this.retrieveKnowledge(userMessage);
+      if (knowledge) {
+        groundInKnowledge(promptMessages, knowledge);
+      }
+
       if (!this.openai) {
-        return 'This is a suggestion for the operator to respond to the user query.';
+        throw noClientError();
       }
 
       // Get response from ChatGPT using the engineered prompt
@@ -408,3 +473,5 @@ AIService.forCompany = async function forCompany(companyId, options = {}) {
 };
 
 module.exports = AIService;
+module.exports.buildClient = buildClient;
+module.exports.getChatGPTResponse = getChatGPTResponse;

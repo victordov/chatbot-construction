@@ -1,6 +1,6 @@
 # Implementation status
 
-_Last reviewed: 2026-08-22_
+_Last reviewed: 2026-09-08_
 
 ## Working end to end
 
@@ -12,8 +12,11 @@ company on creation. Operators join a per-company socket room
 `utils/query.js#companyFilter`.
 
 **Chat.** Widget → WebSocket → conversation persistence → AI reply or operator
-hand-off, with a REST fallback at `POST /api/chat/message`. End-to-end
-encryption uses TweetNaCl served from this origin.
+hand-off, with a REST fallback at `POST /api/chat/message`. Transport
+security is TLS between the browser and the server. The widget no longer
+claims end-to-end encryption: the server has to read every message to answer
+or route it, so the in-browser key exchange it used to do promised something
+the design cannot deliver, and it was removed rather than left to mislead.
 
 **Industry neutrality.** Nothing about any particular business is compiled into
 the product. A company says who its assistant is (`Assistant` → Persona, or a
@@ -325,6 +328,11 @@ downloads served as attachments with `nosniff`.
 **Operations.** `/health` and `/ready`, Prometheus metrics at `/metrics`,
 graceful shutdown, MongoDB-backed sessions, helmet + CSP, rate limiting,
 content-hashed widget assets cached for a year with the loader on `no-cache`.
+Background jobs are gated by `SCHEDULER_ENABLED` so a multi-instance
+deployment runs them once. There is a `Dockerfile`, a Compose file that runs
+the app with MongoDB 7, and CI that runs lint, tests, `npm audit` and the
+image build on every push. The first superadmin is created through
+`POST /api/auth/create-superadmin`, which works only while no user exists.
 
 ## Known gaps
 
@@ -388,10 +396,47 @@ The socket layer and the task feature are covered directly now. `websockets.js`
 had four tests that mocked the database, the encryption service, the model and
 JWT, and the last of them called `done()` from a one-second timeout — it passed
 whether or not the server replied at all. Its replacement runs a real server
-against a real database with real end-to-end encryption, and stubs only what the
+against a real database over the real socket protocol, and stubs only what the
 model would say. Tasks had no direct tests at all, and writing them turned up
 two defects: a follow-up looked its parent up unscoped, so an operator at one
 company could hang a task off another company's — inheriting that company, their
 conversation and the customer's name, email and phone number — and every task
 deletion threw inside the activity logger and was swallowed, so the one action
 most worth a trace left none.
+
+## Removed on 2026-09-08
+
+Each of these was deleted rather than fixed. One line on why:
+
+- **Widget "end-to-end encryption"** (`docs/encryption.md`, the widget's
+  `encryption.js`): the server decrypted every message to answer it, so the
+  claim was untrue and the code was cost without benefit.
+- **Widget versioning** (`services/widgetUpdate.js`, `widget-versions/`,
+  `tests/widget-versions.test.js`): four copies of the widget on disk and a
+  version manifest nothing consumed; the widget is served content-hashed from
+  `public/widget` instead.
+- **Operator assist** (`services/operator-assist.js`): an unwired suggestion
+  service with no route or UI calling it.
+- **REST session API** (`routes/session.js`): the socket layer owns sessions;
+  the route duplicated it without tenant scoping.
+- **`create-admin.js`**: created a superadmin with a published default password;
+  replaced by `POST /api/auth/create-superadmin`, which only works while no
+  user exists.
+- **`services/googleDrive.js`, `services/documentIndex.js`,
+  `models/knowledge-source.js`**: the pre-knowledge-base Drive indexer,
+  superseded by `routes/knowledge.js` and `services/knowledge-connector.js`.
+- **Cookie consent banner** (`public/js/cookie-consent.js`, its CSS): the
+  widget sets no tracking cookies, so it asked consent for nothing.
+- **Load-test and security-audit reports, `scripts/load-test.js`,
+  `scripts/setup-monitoring.sh`, `public-setup.js`,
+  `test-activity-tracking.js`, `ACTIVITY_TRACKING_IMPLEMENTATION.md`**:
+  one-off scripts and their 2025 outputs, committed by accident.
+- **Mock database helpers** (`tests/helpers/mock-db.js`,
+  `tests/helpers/mock-mongodb.js`): the suite runs against an in-memory
+  MongoDB now, so the mocks only let tests pass that should not have.
+- **Stale design documents** (`docs/ci-cd-pipeline.md`,
+  `docs/security-audit-*.md`, `docs/integration-testing-strategy.md`,
+  `docs/VISUAL_WORKFLOW_EDITOR_IMPLEMENTATION.md`,
+  `docs/WORKFLOW_EDITOR_COMPLETE.md`): described pipelines and plans that did
+  not match what runs. `docs/DOCKER.md` and `docs/GOOGLE_OAUTH_SETUP.md`
+  remain and are current.

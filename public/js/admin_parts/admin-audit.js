@@ -8,11 +8,8 @@
  */
 
 (function() {
-  let state = { skip: 0, limit: 50, action: '', outcome: '', days: 30 };
+  const state = { skip: 0, limit: 50, action: '', outcome: '', days: 30 };
 
-  function token() {
-    return localStorage.getItem('chatbot-auth-token');
-  }
 
   /**
    * What each action means, in words somebody who was not there can read.
@@ -101,7 +98,7 @@
 
     try {
       const response = await fetch(`/api/admin/audit?${params.toString()}`, {
-        headers: { 'x-auth-token': token() }
+        headers: { 'x-auth-token': authToken() }
       });
 
       if (!response.ok) {
@@ -156,7 +153,7 @@
   async function loadActions() {
     try {
       const response = await fetch('/api/admin/audit/actions', {
-        headers: { 'x-auth-token': token() }
+        headers: { 'x-auth-token': authToken() }
       });
 
       if (!response.ok) {

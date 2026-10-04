@@ -21,6 +21,10 @@ module.exports = {
   // The test timeout in milliseconds
   testTimeout: 30000,
 
+  // Winston's rotating file transports and the shared mongoose connection keep
+  // the event loop alive after the last test; exit once the run is reported.
+  forceExit: true,
+
   // Automatically clear mock calls and instances between every test
   clearMocks: true,
 

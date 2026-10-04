@@ -111,6 +111,62 @@ describe('Tasks', () => {
       expect(stored.status).toBe('open');
     });
 
+    it('cannot be pinned to another tenant\'s conversation', async () => {
+      // A task links back from the conversation it names, so an id from
+      // another company would attach this company's task to their transcript
+      // - and, once linked, expose it to whoever opens that chat.
+      const theirs = await Conversation.create({
+        sessionId: 'task-globex-session', company: globex._id, messages: []
+      });
+
+      const bySession = await request(app)
+        .post('/api/tasks')
+        .set('x-auth-token', acmeToken)
+        .send({
+          title: 'Task Sneak', description: 'Linked across tenants',
+          dueDate: tomorrow(), conversationId: 'task-globex-session'
+        });
+      expect(bySession.status).toBe(404);
+
+      const byId = await request(app)
+        .post('/api/tasks')
+        .set('x-auth-token', acmeToken)
+        .send({
+          title: 'Task Sneak', description: 'Linked across tenants',
+          dueDate: tomorrow(), conversationId: String(theirs._id)
+        });
+      expect(byId.status).toBe(404);
+
+      expect(await Task.findOne({ title: 'Task Sneak' })).toBeNull();
+      expect((await Conversation.findById(theirs._id)).tasks).toHaveLength(0);
+    });
+
+    it('cannot be assigned to somebody at another tenant', async () => {
+      const response = await request(app)
+        .post('/api/tasks')
+        .set('x-auth-token', acmeToken)
+        .send({
+          title: 'Task Misdirected', description: 'For the wrong desk',
+          dueDate: tomorrow(), assignee: String(globexOperator._id)
+        });
+
+      expect(response.status).toBe(404);
+      expect(await Task.findOne({ title: 'Task Misdirected' })).toBeNull();
+    });
+
+    it('cannot be made a follow-up of another tenant\'s task', async () => {
+      const theirs = await createTask(globex, globexOperator, { title: 'Task Globex parent' });
+      const mine = await createTask(acme, acmeAdmin, { title: 'Task Acme child' });
+
+      const response = await request(app)
+        .put(`/api/tasks/${mine._id}`)
+        .set('x-auth-token', acmeToken)
+        .send({ parentTaskId: String(theirs._id) });
+
+      expect(response.status).toBe(404);
+      expect((await Task.findById(mine._id)).parentTaskId).toBeUndefined();
+    });
+
     it('refuses a task with no due date rather than creating one nobody chases', async () => {
       const response = await request(app)
         .post('/api/tasks')

@@ -9,15 +9,67 @@ const { redactWorkflow } = require('../services/workflow');
 const workflowActions = require('../services/workflow-actions');
 const workflowTemplates = require('../config/workflow-templates');
 const audit = require('../services/audit');
-const KnowledgeSource = require('../models/knowledge-source');
 const { auth: authMiddleware } = require('../middleware/auth');
 const { logger } = require('../services/logging');
 const socketManager = require('../socketManager');
 const runtimeRegistry = require('../services/runtime-registry');
 const { enforceLimit, requireFeature } = require('../middleware/quota');
 
-/** Knowledge source types the compiler knows how to query. */
-const SUPPORTED_KNOWLEDGE_SOURCE_TYPES = ['google_sheets', 'pdf', 'url', 'vector_store'];
+/**
+ * Variables a caller may not assert.
+ *
+ * `contact_verified` is what a flow gates account details on, and it is true
+ * only when the tenant's own backend signed the visitor's identity. A preview
+ * or an execute call that could set it would let whoever holds an admin token
+ * read any account through the flow.
+ */
+const RESERVED_VARIABLES = new Set([
+  'contact_verified', 'contact_external_id', 'contact_name', 'contact_email'
+]);
+
+function stripReservedVariables(variables) {
+  if (!variables || typeof variables !== 'object' || Array.isArray(variables)) {
+    return {};
+  }
+  return Object.fromEntries(
+    Object.entries(variables).filter(([key]) => !RESERVED_VARIABLES.has(key))
+  );
+}
+
+/**
+ * The tenant a workflow belongs to, as the string the runtime keys on.
+ *
+ * `getWorkflow` populates `company`, so `workflow.company` is a document,
+ * and `String(document)` is not its id. The publish route used to hot-swap
+ * under that key, so the workflow serving traffic (keyed by the id string)
+ * never changed and the persona cache was invalidated for nobody.
+ */
+function tenantIdOf(workflow) {
+  const company = workflow && workflow.company;
+  if (!company) {
+    return null;
+  }
+  return String(company._id || company);
+}
+
+/**
+ * Drop the tenant's live workflow from every process's view of it.
+ *
+ * The runtime's own copy is unloaded here; other instances notice on their
+ * next lookup, because the runtime re-checks the database every
+ * WORKFLOW_CACHE_TTL_MS.
+ */
+function forgetLiveWorkflow(tenantId) {
+  if (!tenantId) {
+    return;
+  }
+  require('../services/assistant-config').invalidate(tenantId);
+  try {
+    runtimeRegistry.getRuntimeService().unloadWorkflow(tenantId);
+  } catch (error) {
+    logger.warn('Could not unload the runtime workflow', { tenantId, error: error.message });
+  }
+}
 
 /**
  * Workflow management is an admin capability.
@@ -80,36 +132,6 @@ router.get('/templates/:id', authMiddleware, checkWorkflowAccess, (req, res) => 
   }
 
   res.json({ success: true, template });
-});
-
-// Get knowledge sources for workflow nodes
-router.get('/knowledge-sources', authMiddleware, checkWorkflowAccess, async (req, res) => {
-  try {
-    const { type } = req.query;
-
-    let knowledgeSources = [];
-
-    if (req.user.company?.id) {
-      knowledgeSources = await KnowledgeSource.getByCompany(req.user.company.id, type);
-    }
-
-    // Add public sources if available
-    const publicSources = await KnowledgeSource.getPublicSources(type);
-
-    res.json({
-      success: true,
-      // Source types the editor can offer in the node palette.
-      sources: SUPPORTED_KNOWLEDGE_SOURCE_TYPES,
-      // Sources this company has already configured.
-      knowledgeSources: [...knowledgeSources, ...publicSources]
-    });
-  } catch (error) {
-    logger.error('Error fetching knowledge sources:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to fetch knowledge sources'
-    });
-  }
 });
 
 // Get specific workflow
@@ -189,6 +211,13 @@ router.put('/:id', authMiddleware, checkWorkflowAccess, async (req, res) => {
       req.user
     );
 
+    // Editing the live workflow changes what visitors are answered by, so the
+    // runtime's copy is dropped and reloaded from the saved graph on the next
+    // message. Persona lives in the graph too.
+    if (workflow.status === 'published') {
+      forgetLiveWorkflow(tenantIdOf(workflow));
+    }
+
     res.json({
       success: true,
       workflow: redactWorkflow(workflow),
@@ -212,12 +241,12 @@ router.post('/:id/publish', authMiddleware, checkWorkflowAccess, async (req, res
     // Hot-swap into the runtime that is actually serving traffic. This used to
     // construct a fresh WorkflowRuntimeService, so the swap landed in a
     // throwaway object and live conversations kept the old workflow.
-    const tenantId = workflow.company || req.user.id;
+    const tenantId = tenantIdOf(workflow) || String(req.user.id);
     let hotSwapCompleted = false;
 
     // The published workflow's Persona node is what the assistant uses, so a
     // publish must invalidate the resolved persona immediately.
-    require('../services/assistant-config').invalidate(workflow.company);
+    require('../services/assistant-config').invalidate(tenantId);
 
     try {
       await runtimeRegistry.getRuntimeService().hotSwapWorkflow(tenantId, workflow);
@@ -279,7 +308,15 @@ router.post('/:id/archive', authMiddleware, checkWorkflowAccess, async (req, res
       });
     }
 
+    const wasLive = workflow.status === 'published';
     await workflow.archive();
+
+    // Archiving the live workflow takes the tenant back to the plain
+    // assistant; the runtime must stop serving the archived graph now, not
+    // when the process happens to restart.
+    if (wasLive) {
+      forgetLiveWorkflow(tenantIdOf(workflow));
+    }
 
     res.json({
       success: true,
@@ -340,6 +377,11 @@ router.post('/:id/rollback/:version', authMiddleware, checkWorkflowAccess, async
       req.user
     );
 
+    // A rolled-back graph that is live is served from the next message.
+    if (workflow.status === 'published') {
+      forgetLiveWorkflow(tenantIdOf(workflow));
+    }
+
     audit.record({
       req,
       action: 'workflow.rolled_back',
@@ -367,6 +409,11 @@ router.post('/:id/rollback/:version', authMiddleware, checkWorkflowAccess, async
 router.delete('/:id', authMiddleware, checkWorkflowAccess, async (req, res) => {
   try {
     const result = await WorkflowService.deleteWorkflow(req.params.id, req.user);
+
+    // Only drafts and archived workflows can be deleted, so nothing live is
+    // affected - but a stale runtime entry for the tenant is cheap to drop and
+    // means a delete never leaves a ghost serving traffic.
+    forgetLiveWorkflow(result.company);
 
     audit.record({
       req,
@@ -479,10 +526,15 @@ router.post('/actions/test', authMiddleware, checkWorkflowAccess, async (req, re
     }
 
     const auth = { ...(config.auth || {}) };
+    let url = config.url;
 
     // The editor never holds a saved credential, so a test of an existing node
     // has to pick the stored one up from the workflow - fetched with the
     // tenant filter, so another company's secret cannot be borrowed by id.
+    //
+    // When the stored credential is used, the stored URL is used with it. The
+    // request's URL was honoured before, which let anyone with editor access
+    // send a colleague's saved API key to an address of their choosing.
     if (auth.type && auth.type !== 'none' && !auth.value && workflowId && nodeId) {
       const stored = await WorkflowService.getWorkflow(
         workflowId,
@@ -491,15 +543,18 @@ router.post('/actions/test', authMiddleware, checkWorkflowAccess, async (req, re
       ).catch(() => null);
 
       const node = stored && (stored.nodes || []).find(n => n.id === nodeId);
-      if (node && node.data && node.data.auth) {
+      if (node && node.data && node.data.auth && node.data.auth.value) {
         auth.value = node.data.auth.value;
+        if (node.data.url) {
+          url = node.data.url;
+        }
       }
     }
 
     // Test values, so a URL containing {{order_id}} resolves to something.
     const result = await workflowActions.execute(
-      { ...config, auth },
-      { user_input: 'test message', ...variables },
+      { ...config, url, auth },
+      { user_input: 'test message', ...stripReservedVariables(variables) },
       { includeBody: true }
     );
 
@@ -565,7 +620,9 @@ router.post('/preview', authMiddleware, checkWorkflowAccess, async (req, res) =>
       {
         simulate: true,
         state,
-        variables,
+        // A preview may set up any variable it likes to try a branch, except
+        // the ones that assert who the visitor is.
+        variables: stripReservedVariables(variables),
         // No session and no conversation: nothing here is attached to a real
         // one, which is also why the side-effecting nodes have nothing to
         // write to even if the simulate flag were missed.
@@ -620,3 +677,5 @@ router.get('/:id/stats', authMiddleware, checkWorkflowAccess, async (req, res) =
 });
 
 module.exports = router;
+module.exports.stripReservedVariables = stripReservedVariables;
+module.exports.RESERVED_VARIABLES = RESERVED_VARIABLES;

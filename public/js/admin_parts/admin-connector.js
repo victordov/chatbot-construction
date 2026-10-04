@@ -9,27 +9,6 @@
 (function() {
   let contract = [];
 
-  function token() {
-    return localStorage.getItem('chatbot-auth-token');
-  }
-
-  async function api(path, options = {}) {
-    const response = await fetch(`/api/companies/me/connector${path}`, {
-      ...options,
-      headers: {
-        'Content-Type': 'application/json',
-        'x-auth-token': token(),
-        ...options.headers
-      }
-    });
-
-    const body = await response.json().catch(() => ({}));
-
-    if (!response.ok) {
-      throw new Error(body.error || `Request failed (${response.status})`);
-    }
-    return body;
-  }
 
   /**
    * What they have implemented, against what they could.
@@ -102,7 +81,7 @@
 
   async function load() {
     try {
-      const { connector, contract: shapes } = await api('');
+      const { connector, contract: shapes } = await api('/api/companies/me/connector');
       contract = shapes || [];
 
       document.getElementById('connector-url').value = connector.url || '';
@@ -140,7 +119,7 @@
     button.disabled = true;
 
     try {
-      const result = await api('', {
+      const result = await api('/api/companies/me/connector', {
         method: 'PUT',
         body: JSON.stringify({
           url: document.getElementById('connector-url').value.trim(),
@@ -168,7 +147,7 @@
     button.textContent = 'Checking…';
 
     try {
-      const result = await api('/check', { method: 'POST' });
+      const result = await api('/api/companies/me/connector/check', { method: 'POST' });
 
       if (result.warning) {
         showToast(result.warning, 'warning');

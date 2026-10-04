@@ -10,9 +10,6 @@
   const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   let currentRange = 7;
 
-  function token() {
-    return localStorage.getItem('chatbot-auth-token');
-  }
 
   /**
    * Seconds as something a person reads at a glance.
@@ -307,7 +304,7 @@
 
     try {
       const response = await fetch(`/api/admin/analytics/advanced?days=${days}`, {
-        headers: { 'x-auth-token': token() }
+        headers: { 'x-auth-token': authToken() }
       });
 
       if (response.status === 402) {

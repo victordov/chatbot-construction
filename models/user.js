@@ -43,6 +43,23 @@ const UserSchema = new mongoose.Schema({
     type: Boolean,
     default: true
   },
+  // Incremented on password change or reset; a JWT carries the value it was
+  // issued with (`tv`) and is refused once they differ.
+  tokenVersion: {
+    type: Number,
+    default: 0
+  },
+  // Self-service password reset. Only the SHA-256 of the emailed token is
+  // stored, so a copy of the database is not a copy of every open reset link.
+  // Not selected by default: nothing but the reset route has a use for it.
+  passwordResetTokenHash: {
+    type: String,
+    select: false
+  },
+  passwordResetExpires: {
+    type: Date,
+    select: false
+  },
   /**
    * Override the company's concurrent-chat cap for this person.
    *

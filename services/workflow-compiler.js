@@ -23,6 +23,8 @@ const { logger } = require('./logging');
 const { getIntentClassifier } = require('./intent-classifier');
 const workflowActions = require('./workflow-actions');
 const nodes = require('./workflow-nodes');
+const { wrapKnowledge } = require('./promptEngineering');
+const { openaiClientOptions } = require('../config/env');
 
 const CONFIGURATION_NODES = new Set(['persona', 'moderation']);
 
@@ -63,7 +65,7 @@ const MAX_EXECUTION_STEPS = 50;
 class WorkflowCompilerService {
   constructor() {
     this.openai = process.env.OPENAI_API_KEY
-      ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
+      ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY, ...openaiClientOptions() })
       : null;
     this.knowledgeService = new KnowledgeConnectorService();
 
@@ -206,6 +208,11 @@ class WorkflowCompilerService {
       if (type === 'action') {
         errors.push(...this.validateActionNode(node, edges, warnings));
       }
+
+      // Likewise every regular expression a tenant wrote: an invalid or
+      // catastrophically slow one is refused here, with the node named, rather
+      // than hanging the bot for whoever types the wrong thing.
+      errors.push(...this.validatePatterns(node));
     });
 
     if (this.detectCycles(nodes, edges)) {
@@ -243,11 +250,9 @@ class WorkflowCompilerService {
     }
 
     if (data.body && String(data.method || 'GET').toUpperCase() !== 'GET') {
-      try {
-        // Placeholders are replaced with a quoted string first so a template
-        // like {"id": "{{order_id}}"} parses.
-        JSON.parse(String(data.body).replace(/\{\{\s*[\w.]+\s*\}\}/g, 'x'));
-      } catch {
+      // Placeholders are replaced with a literal of the right kind first, so
+      // both {"id": "{{order_id}}"} and {"count": {{count}}} parse.
+      if (!workflowActions.isJsonTemplate(data.body)) {
         errors.push(`"${name}" has a request body that is not valid JSON`);
       }
     }
@@ -261,6 +266,53 @@ class WorkflowCompilerService {
         `"${name}" has nothing connected to its Failed output. If the API is ` +
         'down the visitor will get the generic fallback message.'
       );
+    }
+
+    return errors;
+  }
+
+  /**
+   * Every regular expression a node carries, checked and compiled once.
+   *
+   * Three places take one: a router condition of type `regex`, an Ask node's
+   * `pattern`, and a Check node clause using `matches`. The compiled form is
+   * cached by workflow-nodes so the run path never constructs it again.
+   */
+  validatePatterns(node) {
+    const errors = [];
+    const data = node.data || {};
+    const name = data.label || node.id;
+    const type = this.nodeType(node);
+
+    const check = (pattern, flags, where) => {
+      if (pattern === undefined || pattern === null || pattern === '') {
+        return;
+      }
+      const compiled = nodes.compilePattern(String(pattern), flags);
+      if (compiled.error) {
+        errors.push(`"${name}" ${where}: ${compiled.error}`);
+      }
+    };
+
+    if (type === 'router') {
+      (data.conditions || []).forEach((condition, index) => {
+        if (condition && condition.type === 'regex') {
+          check(condition.value, 'i', `condition ${index + 1}`);
+        }
+      });
+    }
+
+    if (type === 'ask') {
+      check(data.pattern, '', 'answer pattern');
+    }
+
+    if (type === 'condition') {
+      const clauses = Array.isArray(data.clauses) && data.clauses.length > 0 ? data.clauses : [data];
+      clauses.forEach((clause, index) => {
+        if (clause && clause.operator === 'matches') {
+          check(clause.right, 'i', `clause ${index + 1}`);
+        }
+      });
     }
 
     return errors;
@@ -676,9 +728,24 @@ class WorkflowCompilerService {
       }
     }
 
-    // Knowledge retrieval happens once up front so every node can reference it.
+    // Whether the last turn stopped at a question this message answers. An
+    // answer to "what is your order number?" is not a query worth searching
+    // the knowledge base for, and the search is the slowest thing in the turn.
+    const answering = Boolean(
+      context.state && context.state.awaiting && context.state.awaiting.nodeId &&
+      steps[context.state.awaiting.nodeId]
+    );
+
+    // Retrieved at most once per turn, and only when something will read it:
+    // up front on a fresh message so every node can reference it, or on
+    // demand when an answer to a question goes on to reach an LLM node.
     let knowledgeContext = '';
-    if (knowledge.sources.length > 0) {
+    let retrieved = false;
+    const retrieveKnowledge = async () => {
+      if (retrieved || knowledge.sources.length === 0) {
+        return knowledgeContext;
+      }
+      retrieved = true;
       try {
         const results = await this.knowledgeService.getKnowledge(
           userMessage,
@@ -688,9 +755,17 @@ class WorkflowCompilerService {
         knowledgeContext = (results || []).map(r => r.content).join('\n');
       } catch (error) {
         // A knowledge source being down should degrade the answer, not break
-        // the conversation.
-        logger.warn('Knowledge retrieval failed, continuing without it', { error: error.message });
+        // the conversation - but it is logged as the error it is, because the
+        // tenant's bot has just answered as though they imported nothing.
+        logger.error('Knowledge retrieval failed, continuing without it', {
+          tenantId, error: error.message
+        });
       }
+      return knowledgeContext;
+    };
+
+    if (!answering) {
+      await retrieveKnowledge();
     }
 
     // Variables carried over from earlier turns come first, so an answer
@@ -708,6 +783,16 @@ class WorkflowCompilerService {
 
     let currentId = entryPoint;
     let response = null;
+    // A node that speaks adds to what was already said rather than replacing
+    // it, so a Fixed Reply wired into an Ask reads "Thanks. What is your
+    // order number?" instead of losing its first half.
+    const say = text => {
+      const spoken = text === undefined || text === null ? '' : String(text);
+      if (!spoken) {
+        return;
+      }
+      response = response ? `${response}\n\n${spoken}` : spoken;
+    };
     let escalate = null;
     let choices = null;
     // Structured results — products, appointment times — for the widget to
@@ -761,13 +846,14 @@ class WorkflowCompilerService {
         break;
 
       case 'response':
-        response = this.renderTemplate(step.data.template || step.data.message, variables);
-        nextId = null;
+        // The walk carries on along the node's edge, if it has one. Stopping
+        // here made "say this, then ask that" impossible to draw: the reply
+        // was sent and the Ask it was wired to never ran.
+        say(this.renderTemplate(step.data.template || step.data.message, variables));
         break;
 
       case 'llm':
-        response = await this.runLlmNode(step, userMessage, chatHistory, knowledgeContext, variables);
-        nextId = null;
+        say(await this.runLlmNode(step, userMessage, chatHistory, await retrieveKnowledge(), variables));
         break;
 
       case 'router': {
@@ -842,7 +928,7 @@ class WorkflowCompilerService {
         }
 
         if (outcome.response) {
-          response = outcome.response;
+          say(outcome.response);
         }
         if (outcome.choices) {
           choices = outcome.choices;
@@ -866,17 +952,17 @@ class WorkflowCompilerService {
       }
 
       case 'fallback':
-        response = this.renderTemplate(step.data.message, variables) ||
+        say(this.renderTemplate(step.data.message, variables) ||
             routing.fallback?.message ||
-            'I\'m not sure how to help with that.';
+            'I\'m not sure how to help with that.');
         escalate = step.data.escalation || routing.fallback?.escalation || null;
         nextId = null;
         break;
 
       case 'operator-handoff':
         escalate = { enabled: true, type: 'operator' };
-        response = this.renderTemplate(step.data.message, variables) ||
-            'Let me connect you with a member of our team.';
+        say(this.renderTemplate(step.data.message, variables) ||
+            'Let me connect you with a member of our team.');
 
         if (context.simulate) {
           // Nothing is assigned here even on a live run — the socket layer does
@@ -912,7 +998,7 @@ class WorkflowCompilerService {
           { data: {} },
           userMessage,
           chatHistory,
-          knowledgeContext,
+          await retrieveKnowledge(),
           variables,
           prompts
         );
@@ -1077,9 +1163,27 @@ class WorkflowCompilerService {
       return 'I\'m not able to answer that right now. Let me get someone to help you.';
     }
 
+    // The socket layer's history already ends with the message being answered
+    // (it is saved before the reply is generated), so appending it again put
+    // two identical user turns at the end of every request. Drop the trailing
+    // copy rather than the appended one: the appended turn is the rendered
+    // prompt, which is what the node was configured to say.
+    const history = (chatHistory || []).slice(-10);
+    const last = history[history.length - 1];
+    if (last && last.role === 'user' && String(last.content) === String(userMessage)) {
+      history.pop();
+    }
+
     const messages = [
-      { role: 'system', content: step.data.systemPrompt || systemPrompt },
-      ...chatHistory.slice(-10),
+      // `systemPrompt`, not `step.data.systemPrompt || systemPrompt`.
+      // `applyPromptHierarchyToNodes` sets `data.systemPrompt` on every LLM
+      // node at compile time, so that fallback was never a fallback - the left
+      // branch always won and threw away the hierarchy built two lines up,
+      // knowledge included. An author who wired Knowledge into an LLM node got
+      // an ungrounded answer, and nothing said so. The safety and persona
+      // prompts are in `systemPrompt` too, so nothing is lost by using it.
+      { role: 'system', content: systemPrompt },
+      ...history,
       { role: 'user', content: rendered || userMessage }
     ];
 
@@ -1157,7 +1261,8 @@ class WorkflowCompilerService {
     }
 
     if (knowledgeContext) {
-      systemPrompt += `\n\nRelevant Knowledge:\n${knowledgeContext}`;
+      // Delimited and labelled as material: see promptEngineering#wrapKnowledge.
+      systemPrompt += `\n\n${wrapKnowledge(knowledgeContext)}`;
     }
 
     return systemPrompt;
@@ -1197,19 +1302,19 @@ class WorkflowCompilerService {
         break;
       }
 
-      case 'regex':
-        try {
-          // The pattern is authored by a tenant admin, not a visitor, but a
-          // catastrophically backtracking pattern would still hang the
-          // request for every conversation. Cap the input length so the
-          // worst case stays bounded.
-          if (new RegExp(value, 'i').test(message.slice(0, 2000))) {
-            return { type: 'matched', condition };
-          }
-        } catch {
-          logger.warn(`Router condition has an invalid regex: ${value}`);
+      case 'regex': {
+        // Compiled once and cached; a pattern the validator would have refused
+        // (from a workflow saved before the check existed) is skipped rather
+        // than run. The input is capped so even an accepted pattern stays
+        // bounded.
+        const compiled = nodes.compilePattern(String(value), 'i');
+        if (compiled.error) {
+          logger.warn('Router condition has an unusable regex', { error: compiled.error });
+        } else if (compiled.regex.test(message.slice(0, 2000))) {
+          return { type: 'matched', condition };
         }
         break;
+      }
 
       case 'intent':
         // Deferred: literal matches are cheaper and should win outright.

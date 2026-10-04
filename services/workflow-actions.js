@@ -74,6 +74,62 @@ function fill(template, variables, encode = false) {
   });
 }
 
+/**
+ * Whether a body template is JSON once its placeholders are filled.
+ *
+ * Decided on the template, not the rendered body: with the placeholders
+ * replaced by a harmless token it either parses or it does not, and a visitor's
+ * message cannot change the answer.
+ */
+function isJsonTemplate(template) {
+  try {
+    JSON.parse(probeJson(template));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The template with each placeholder replaced by a harmless literal of the
+ * right kind: a string where it sits inside quotes, a number where it is bare.
+ * Shared with the editor's validator so both agree on what is valid.
+ */
+function probeJson(template) {
+  return String(template).replace(/("?)\{\{\s*[\w.]+\s*\}\}("?)/g, (match, open, close) =>
+    (open && close ? '"x"' : `${open}0${close}`));
+}
+
+/**
+ * Fill placeholders inside a JSON body.
+ *
+ * A raw substitution let a visitor's answer break out of the string it was
+ * meant to sit in: an order id of `123", "refund": "full` turns
+ * `{"id": "{{order_id}}"}` into a request for a refund. Each value is encoded
+ * the way JSON.stringify would encode it inside a string, so quotes, newlines
+ * and backslashes stay inside the quotes the author drew. An object value is
+ * encoded whole, so `{{items}}` in a bare position still produces valid JSON.
+ */
+function fillJson(template, variables) {
+  const text = String(template);
+
+  return text.replace(/\{\{\s*([\w.]+)\s*\}\}/g, (match, path, offset) => {
+    const value = readPath(variables, path);
+    const quoted = text[offset - 1] === '"' && text[offset + match.length] === '"';
+
+    if (quoted) {
+      // Inside a string the author drew: the value's characters, escaped.
+      return value === undefined || value === null
+        ? ''
+        : JSON.stringify(typeof value === 'object' ? JSON.stringify(value) : String(value)).slice(1, -1);
+    }
+
+    // A bare position takes the value as a JSON value: a number stays a
+    // number, a string is quoted, an object is serialised, nothing is null.
+    return value === undefined ? 'null' : JSON.stringify(value);
+  });
+}
+
 /** Read `a.b.c` out of a nested object, tolerating gaps along the way. */
 function readPath(source, path) {
   return String(path).split('.').reduce((value, key) => {
@@ -181,7 +237,12 @@ async function execute(config = {}, variables = {}, options = {}) {
   let body = null;
 
   if (method !== 'GET' && config.body) {
-    body = fill(config.body, variables);
+    // A JSON body gets JSON escaping; anything else (a form, plain text) is
+    // filled as written, because escaping for a format we cannot name would
+    // only corrupt it.
+    body = isJsonTemplate(config.body)
+      ? fillJson(config.body, variables)
+      : fill(config.body, variables);
     headers['content-type'] = headers['content-type'] || 'application/json';
     headers['content-length'] = Buffer.byteLength(body);
   }
@@ -257,6 +318,9 @@ module.exports = {
   execute,
   validateUrl,
   fill,
+  fillJson,
+  isJsonTemplate,
+  probeJson,
   readPath,
   // Re-exported so the existing tests, and anything already importing them,
   // keep working after the transport moved out.

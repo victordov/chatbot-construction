@@ -5,7 +5,6 @@
 
 const WorkflowCompilerService = require('../services/workflow-compiler');
 const WorkflowRuntimeService = require('../services/workflow-runtime');
-const OperatorAssistService = require('../services/operator-assist');
 const KnowledgeConnectorService = require('../services/knowledge-connector');
 
 // Mock socket manager for testing
@@ -364,42 +363,6 @@ describe('Workflow Services', () => {
     });
   });
 
-  describe('OperatorAssistService', () => {
-    let operatorAssist;
-
-    beforeEach(() => {
-      operatorAssist = new OperatorAssistService(mockSocketManager);
-    });
-
-    test('should handle operator join', () => {
-      const result = operatorAssist.joinSession('session-1', 'operator-1', 'John Doe');
-
-      expect(result.success).toBe(true);
-      expect(operatorAssist.getActiveOperators('session-1')).toHaveLength(1);
-    });
-
-    test('should handle operator leave', () => {
-      operatorAssist.joinSession('session-1', 'operator-1', 'John Doe');
-      const result = operatorAssist.leaveSession('session-1', 'operator-1');
-
-      expect(result.success).toBe(true);
-      expect(operatorAssist.getActiveOperators('session-1')).toHaveLength(0);
-    });
-
-    test('should generate suggested replies', async () => {
-      const chatHistory = [
-        { role: 'user', content: 'I need help with my order' },
-        { role: 'assistant', content: 'I can help you with that. What seems to be the issue?' },
-        { role: 'user', content: 'It never arrived' }
-      ];
-
-      const suggestions = await operatorAssist.generateSuggestedReplies(chatHistory);
-
-      expect(suggestions).toBeDefined();
-      expect(Array.isArray(suggestions)).toBe(true);
-      expect(suggestions.length).toBeGreaterThan(0);
-    });
-  });
 
   describe('KnowledgeConnectorService', () => {
     let knowledgeConnector;

@@ -29,7 +29,6 @@ const PUBLIC_DIR = path.join(__dirname, '..', 'public');
  */
 const HASHED_ASSETS = [
   'widget/js/widget.js',
-  'widget/js/encryption.js',
   'widget/css/widget.css'
 ];
 

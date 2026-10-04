@@ -7,30 +7,10 @@
  */
 
 (function() {
-  let contactsState = { page: 1, search: '', filter: '' };
+  const contactsState = { page: 1, search: '', filter: '' };
   let currentContact = null;
   let identityExamples = {};
 
-  function token() {
-    return localStorage.getItem('chatbot-auth-token');
-  }
-
-  async function api(path, options = {}) {
-    const response = await fetch(`/api/contacts${path}`, {
-      ...options,
-      headers: {
-        'Content-Type': 'application/json',
-        'x-auth-token': token(),
-        ...options.headers
-      }
-    });
-
-    const body = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      throw new Error(body.error || `Request failed (${response.status})`);
-    }
-    return body;
-  }
 
   /**
    * How strongly we know who someone is. Shown prominently because an operator
@@ -65,7 +45,7 @@
     table.innerHTML = '<tr><td colspan="5" class="text-center text-muted py-4">Loading…</td></tr>';
 
     try {
-      const { contacts, pagination } = await api(`?${params.toString()}`);
+      const { contacts, pagination } = await api(`/api/contacts?${params.toString()}`);
 
       if (contacts.length === 0) {
         table.innerHTML = `
@@ -145,7 +125,7 @@
 
   async function openContact(id) {
     try {
-      const { contact, conversations } = await api(`/${encodeURIComponent(id)}`);
+      const { contact, conversations } = await api(`/api/contacts/${encodeURIComponent(id)}`);
       currentContact = contact;
 
       document.getElementById('contacts-list-view').style.display = 'none';
@@ -230,7 +210,7 @@
     setLoading(button, true);
 
     try {
-      const { contact } = await api(`/${encodeURIComponent(currentContact._id)}`, {
+      const { contact } = await api(`/api/contacts/${encodeURIComponent(currentContact._id)}`, {
         method: 'PUT',
         body: JSON.stringify({
           name: document.getElementById('contact-edit-name').value,
@@ -266,7 +246,7 @@
 
   async function loadIdentitySecret() {
     try {
-      const { secret, examples } = await api('/identity/secret');
+      const { secret, examples } = await api('/api/contacts/identity/secret');
       identityExamples = examples;
 
       document.getElementById('identity-secret').value = secret;
@@ -288,7 +268,7 @@
     }
 
     try {
-      const { secret } = await api('/identity/secret/rotate', { method: 'POST' });
+      const { secret } = await api('/api/contacts/identity/secret/rotate', { method: 'POST' });
       document.getElementById('identity-secret').value = secret;
       showToast('Secret rotated — update your server', 'success');
     } catch (error) {

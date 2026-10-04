@@ -36,7 +36,8 @@ class EmbeddingService {
 
     if (this.apiKey) {
       const { OpenAI } = require('openai');
-      this.client = new OpenAI({ apiKey: this.apiKey });
+      const { openaiClientOptions } = require('../config/env');
+      this.client = new OpenAI({ apiKey: this.apiKey, ...openaiClientOptions() });
     }
 
     // Query embeddings repeat constantly (the same question asked twice, a
@@ -119,11 +120,22 @@ class EmbeddingService {
 
         vectors.push(...ordered);
       } catch (error) {
-        logger.error('Embedding request failed, falling back to local vectors', {
+        // Deliberately not falling back to `localEmbedding` here.
+        //
+        // The local fallback exists for a deployment with no API key at all,
+        // where *every* vector is a hash vector and they are all comparable
+        // with each other, tagged `local-hash-v1`. Substituting one mid-batch
+        // is a different thing entirely: the chunk would be stored under the
+        // real model's signature, because the signature is per-service and not
+        // per-vector. `cosineSimilarity` returns 0 for a length mismatch, so
+        // those chunks would never match anything, ever - while the dashboard
+        // showed them as healthy and indexed. Silently unfindable knowledge is
+        // worse than a failed import somebody can retry.
+        logger.error('Embedding request failed', {
           error: error.message,
           batchSize: batch.length
         });
-        vectors.push(...batch.map(text => this.localEmbedding(text)));
+        throw new Error(`Could not reach the embedding model: ${error.message}`);
       }
     }
 

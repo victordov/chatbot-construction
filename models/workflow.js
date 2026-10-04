@@ -53,13 +53,15 @@ const WorkflowSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.Mixed
   },
 
-  // Multi-tenancy
+  // Multi-tenancy. Null only for a workflow a superadmin created outside any
+  // tenant; the service sets it from the user, never from the request.
+  //
+  // This used to be `required` when `this.createdBy.role !== 'superadmin'`,
+  // but `createdBy` is an ObjectId, so `.role` was always undefined and the
+  // guard was always true - it never did what it said.
   company: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Company',
-    required: function() {
-      return this.createdBy && this.createdBy.role !== 'superadmin';
-    },
     default: null
   },
 

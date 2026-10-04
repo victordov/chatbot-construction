@@ -166,20 +166,79 @@ function nextOpening(days, today, nowMinutes) {
 }
 
 /**
- * Is at least one operator connected for this company right now?
+ * The distinct operators connected for this company right now.
  *
  * Read from the socket rooms rather than a presence table, so it cannot drift
- * out of sync with reality when a process dies.
+ * out of sync with reality when a process dies. Counted by user rather than
+ * by socket: one person with the dashboard open in three tabs is one person,
+ * and telling a visitor "3 operators online" when there is one is the same
+ * broken promise as telling them there are any when there are none.
+ *
+ * A socket whose user has switched off `acceptingChats` is skipped when that
+ * flag has been put on the socket; the database is the authority and is
+ * consulted in `status()`.
+ *
+ * @returns {string[]} user ids
  */
-function operatorsOnline(companyId) {
+function connectedOperatorIds(companyId) {
   try {
     const socketManager = require('../socketManager');
     const io = socketManager.getIo();
     const room = io.sockets.adapter.rooms.get(socketManager.operatorRoom(companyId));
-    return room ? room.size : 0;
+
+    if (!room) {
+      return [];
+    }
+
+    const ids = new Set();
+    room.forEach(socketId => {
+      const socket = io.sockets.sockets.get(socketId);
+      const user = socket && socket.user;
+      if (!user || !user.id || user.acceptingChats === false) {
+        return;
+      }
+      ids.add(String(user.id));
+    });
+
+    return [...ids];
   } catch {
     // Sockets not initialised (tests, scripts).
+    return [];
+  }
+}
+
+/**
+ * How many distinct operators are connected for this company right now.
+ */
+function operatorsOnline(companyId) {
+  return connectedOperatorIds(companyId).length;
+}
+
+/**
+ * Of the connected operators, how many are actually taking chats.
+ *
+ * `acceptingChats` lives on the user and changes while they are connected, so
+ * the socket's copy can be stale; the database is asked.
+ */
+async function operatorsAccepting(companyId) {
+  const ids = connectedOperatorIds(companyId);
+
+  if (ids.length === 0) {
     return 0;
+  }
+
+  try {
+    const User = require('../models/user');
+    return await User.countDocuments({
+      _id: { $in: ids },
+      isActive: { $ne: false },
+      // `$ne: false` so a user written before the field existed still counts;
+      // defaults apply on write, not on read.
+      acceptingChats: { $ne: false }
+    });
+  } catch (error) {
+    logger.warn('Could not check who is accepting chats; using connection count', { error: error.message });
+    return ids.length;
   }
 }
 
@@ -188,7 +247,7 @@ function operatorsOnline(companyId) {
  */
 async function status(companyId) {
   const hours = await isWithinBusinessHours(companyId);
-  const online = operatorsOnline(companyId);
+  const online = await operatorsAccepting(companyId);
 
   return {
     ...hours,
@@ -202,6 +261,8 @@ module.exports = {
   status,
   isWithinBusinessHours,
   operatorsOnline,
+  operatorsAccepting,
+  connectedOperatorIds,
   invalidate,
   // Exported for tests and for the settings UI.
   formatMinutes,

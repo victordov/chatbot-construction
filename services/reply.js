@@ -56,8 +56,29 @@ async function generate({ conversation, message, history = [] }) {
  *          could not produce an answer — in both cases the assistant takes over.
  */
 async function tryWorkflow({ conversation, companyId, message, history }) {
+  const previous = conversation.workflowState || {};
+
   try {
     const runtime = runtimeRegistry.getRuntimeService();
+
+    // Which workflow, and which version of it, is live right now. A
+    // conversation that stopped at a question in one release must not resume
+    // against the node ids of another: the node may be gone, or - worse -
+    // be a different question with the same id.
+    const active = typeof runtime.ensureWorkflowLoaded === 'function'
+      ? await runtime.ensureWorkflowLoaded(companyId)
+      : null;
+    if (!active && typeof runtime.ensureWorkflowLoaded === 'function') {
+      return null;
+    }
+
+    const state = !active || sameWorkflow(previous, active) ? previous : {};
+
+    if (previous.awaiting && state !== previous) {
+      logger.info('Workflow was republished mid-conversation; restarting from the top', {
+        companyId, sessionId: conversation.sessionId
+      });
+    }
 
     const result = await runtime.executeWorkflow(companyId, message, history, {
       sessionId: conversation.sessionId,
@@ -68,7 +89,7 @@ async function tryWorkflow({ conversation, companyId, message, history }) {
       // must not be something the browser can assert.
       variables: await contactVariables(conversation),
       // Where the last turn stopped. This is what makes a question possible.
-      state: conversation.workflowState || {}
+      state
     });
 
     if (!result || !result.response) {
@@ -77,8 +98,11 @@ async function tryWorkflow({ conversation, companyId, message, history }) {
 
     // Written back so the next message resumes rather than restarting. Kept on
     // the document the caller is about to save, so this costs no extra write.
+    // The workflow's identity travels with it, so the check above has
+    // something to compare against next time.
     conversation.workflowState = {
-      workflowId: conversation.workflowState?.workflowId,
+      workflowId: active ? active.id : previous.workflowId,
+      version: active ? active.version : previous.version,
       awaiting: result.state?.awaiting || null,
       variables: result.state?.variables || {},
       updatedAt: new Date()
@@ -100,12 +124,37 @@ async function tryWorkflow({ conversation, companyId, message, history }) {
 
     // A broken workflow must not take the conversation with it: the visitor
     // gets an assistant answer, and the tenant gets a log entry to act on.
+    //
+    // The saved state goes too. If the failure was in resuming a question,
+    // keeping the state would fail the same way on every later message, and
+    // the visitor would be stuck for good.
     logger.error('Published workflow failed; falling back to the assistant', {
       companyId,
       error: error.message
     });
+    clearState(conversation);
     return null;
   }
+}
+
+/**
+ * Whether saved state belongs to the workflow now being served.
+ *
+ * State saved before workflow identity was recorded (no `workflowId`) is
+ * trusted, so a deploy of this change does not restart every conversation
+ * that happened to be mid-question.
+ */
+function sameWorkflow(state, active) {
+  if (!state || !state.workflowId) {
+    return true;
+  }
+
+  if (String(state.workflowId) !== String(active.id)) {
+    return false;
+  }
+
+  return state.version === undefined || state.version === null ||
+    state.version === active.version;
 }
 
 /**

@@ -25,6 +25,24 @@ const { auth, admin, superadmin } = require('../middleware/auth');
 const { logger } = require('../services/logging');
 
 /**
+ * A company's plan and usage, with the status a person would recognise.
+ *
+ * The stored status of a subscription whose trial ran out last week is still
+ * `trialing`; only `isEntitled()` knows better. The dashboard should say
+ * "trial expired", because "trialing" next to a widget that has stopped
+ * answering is a support ticket.
+ */
+async function summaryFor(companyId) {
+  // Sequential on purpose: a company with no subscription yet gets one created
+  // on first read, and two concurrent first reads would both try to create it.
+  const subscription = await usageService.getSubscription(companyId);
+  const summary = await usageService.summary(companyId);
+
+  summary.subscription.status = subscription.effectiveStatus();
+  return summary;
+}
+
+/**
  * The plan catalogue. Public: a pricing page needs it before anyone signs in.
  */
 router.get('/plans', (req, res) => {
@@ -50,7 +68,7 @@ router.get('/me', auth, admin, async (req, res) => {
       return res.status(400).json({ error: 'Your account is not linked to a company' });
     }
 
-    res.json(await usageService.summary(req.user.company.id));
+    res.json(await summaryFor(req.user.company.id));
   } catch (error) {
     logger.error('Failed to build usage summary', { error: error.message });
     res.status(500).json({ error: 'Failed to load plan and usage' });
@@ -105,7 +123,12 @@ router.patch('/companies/:companyId/subscription', auth, superadmin, async (req,
 
     const { subscription, company } = await billingService.applySubscriptionChange(companyId, {
       planId, status, overageAllowed, currentPeriodEnd, limitOverrides,
-      externalCustomerId, externalSubscriptionId
+      externalCustomerId, externalSubscriptionId,
+      // A person's decision is the newest thing that has happened to this
+      // subscription. Stamping it with now means a Stripe event raised before
+      // it - a redelivery, or one that was queued - cannot quietly undo a
+      // manual suspension.
+      eventAt: new Date()
     });
 
     logger.info('Subscription updated', {
@@ -134,7 +157,7 @@ router.patch('/companies/:companyId/subscription', auth, superadmin, async (req,
       success: true,
       subscription: {
         planId: subscription.planId,
-        status: subscription.status,
+        status: subscription.effectiveStatus(),
         overageAllowed: subscription.overageAllowed,
         trialEndsAt: subscription.trialEndsAt,
         currentPeriodEnd: subscription.currentPeriodEnd
@@ -183,6 +206,14 @@ router.post('/webhook/stripe', async (req, res) => {
   }
 
   try {
+    // Stripe retries until it gets a 200, and a retry of something we already
+    // applied must not be applied again. The id is claimed before any work is
+    // done, and given back if the work fails so the retry is welcome.
+    if (!(await stripe.claimEvent(event.id, event.type))) {
+      logger.info('Acknowledged a Stripe event already processed', { id: event.id, type: event.type });
+      return res.json({ received: true, handled: false, applied: false, reason: 'duplicate event' });
+    }
+
     const translated = stripe.translate(event);
 
     if (!translated) {
@@ -229,7 +260,9 @@ router.post('/webhook/stripe', async (req, res) => {
     res.json({ received: true, handled: true, applied });
   } catch (error) {
     // A verified event we failed to process is worth retrying, so this one is
-    // allowed to be a 500.
+    // allowed to be a 500 - and the id is released so the retry is not
+    // mistaken for a duplicate.
+    await stripe.releaseEvent(event.id);
     logger.error('Failed to process a Stripe event', { type: event.type, error: error.message });
     res.status(500).json({ error: 'Failed to process the event' });
   }
@@ -240,7 +273,7 @@ router.post('/webhook/stripe', async (req, res) => {
  */
 router.get('/companies/:companyId', auth, superadmin, async (req, res) => {
   try {
-    res.json(await usageService.summary(req.params.companyId));
+    res.json(await summaryFor(req.params.companyId));
   } catch (error) {
     logger.error('Failed to load company usage', { error: error.message });
     res.status(500).json({ error: 'Failed to load company usage' });

@@ -3,7 +3,7 @@ const mongoose = require('mongoose');
 const Conversation = require('../models/conversation');
 const User = require('../models/user');
 const Company = require('../models/company');
-const { auth, operator, admin } = require('../middleware/auth');
+const { auth, operator, admin, requireString } = require('../middleware/auth');
 const { enforceLimit } = require('../middleware/quota');
 const analyticsService = require('../services/analytics');
 const usageService = require('../services/usage');
@@ -404,27 +404,72 @@ router.put('/me/availability', async (req, res) => {
  */
 router.post('/chat/:sessionId/claim', async (req, res) => {
   try {
-    const conversation = await loadScopedConversation(req, res);
-    if (!conversation) {
-      return;
-    }
+    const operatorId = req.user.id;
+    const operatorName = req.user.displayName || req.user.username;
 
-    if (conversation.operatorId && String(conversation.operatorId) !== String(req.user.id)) {
+    // One update, conditional on nobody holding it: two operators clicking
+    // "take" in the same instant used to both read an empty `operatorId`,
+    // both write theirs, and the second silently won. The database now
+    // decides, and the loser is told.
+    const claimed = await Conversation.findOneAndUpdate(
+      {
+        sessionId: req.params.sessionId,
+        ...companyFilter(req.user),
+        $or: [{ operatorId: null }, { operatorId: { $exists: false } }]
+      },
+      {
+        $set: {
+          operatorId,
+          operatorName,
+          hasOperator: true,
+          assignment: { method: 'manual', at: new Date() }
+        },
+        // No longer waiting: a person has it.
+        $unset: { awaitingOperatorSince: 1 }
+      },
+      { new: true }
+    );
+
+    if (!claimed) {
+      // Either it does not exist for this tenant, or somebody has it.
+      const existing = await loadScopedConversation(req, res);
+      if (!existing) {
+        return;
+      }
+
+      if (String(existing.operatorId) === String(operatorId)) {
+        // Already theirs; claiming twice is not an error.
+        return res.json({ operatorName: existing.operatorName });
+      }
+
       return res.status(409).json({
-        error: `${conversation.operatorName || 'Another operator'} is already handling this conversation`
+        error: `${existing.operatorName || 'Another operator'} is already handling this conversation`
       });
     }
 
-    const result = await assignmentService.assign(conversation, {
-      id: req.user.id,
-      displayName: req.user.displayName || req.user.username
-    }, 'manual');
+    // The same announcements services/assignment.js makes, so the queue and
+    // the new owner learn about a manual claim exactly as about an automatic
+    // one.
+    socketManager.emitToOperators(claimed.company, 'chat-assigned', {
+      sessionId: claimed.sessionId,
+      operatorId,
+      operatorName,
+      method: 'manual',
+      timestamp: new Date()
+    });
+    socketManager.emitToUser(operatorId, 'chat-assigned-to-you', {
+      sessionId: claimed.sessionId,
+      timestamp: new Date()
+    });
 
-    if (!result.assigned && !conversation.operatorId) {
-      return res.status(400).json({ error: result.reason });
-    }
+    webhookService.dispatch(claimed.company, 'operator.assigned', {
+      sessionId: claimed.sessionId,
+      operatorId: String(operatorId),
+      operatorName,
+      method: 'manual'
+    });
 
-    res.json({ operatorName: conversation.operatorName });
+    res.json({ operatorName: claimed.operatorName });
   } catch (error) {
     logger.error('Error claiming conversation', { error });
     res.status(500).json({ error: 'Failed to claim the conversation' });
@@ -528,9 +573,15 @@ router.post('/chat/:sessionId/transfer', async (req, res) => {
       return res.status(404).json({ error: 'That operator is not available' });
     }
 
-    // The receiving operator must be in the same company, or the transfer
-    // would hand another tenant's conversation to them.
-    if (!canAccessCompany(req.user, target.company)) {
+    // The receiving person must belong to the conversation's own company, or
+    // the transfer hands another tenant's conversation to them. Checked
+    // against the conversation rather than the caller, because a superadmin
+    // can reach every conversation and must still not move one across
+    // tenants. Company admins take chats too, so they are valid targets; a
+    // superadmin has no company and is not.
+    const sameCompany = target.company && conversation.company
+      && String(target.company) === String(conversation.company);
+    if (!sameCompany || !['operator', 'company_admin'].includes(target.role)) {
       return res.status(403).json({ error: 'You can only transfer within your own company' });
     }
 
@@ -576,6 +627,14 @@ router.post('/chat/:sessionId/transfer', async (req, res) => {
       operatorId: target._id,
       operatorName: targetName,
       from: from.operatorName
+    });
+
+    // The visitor is told as well, so the widget can say who they are now
+    // talking to instead of messages arriving under a new name unexplained.
+    socketManager.emitToSession(conversation.sessionId, 'chat-transferred', {
+      sessionId: conversation.sessionId,
+      operatorName: targetName,
+      timestamp: new Date()
     });
 
     logger.info('Conversation transferred', {
@@ -1075,18 +1134,71 @@ async function loadManagedOperator(req, res) {
     return null;
   }
 
+  // A company admin manages operators. Their fellow admins are peers, not
+  // reports: letting one rename, re-address or deactivate another is how one
+  // compromised admin account becomes all of them.
+  if (req.user.role !== 'superadmin' && target.role !== 'operator') {
+    res.status(403).json({ error: 'Company admins can only manage operators' });
+    return null;
+  }
+
   return target;
+}
+
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/**
+ * Run the operators quota check for a user who is being switched from
+ * inactive to active. Deactivated accounts do not occupy a seat, so
+ * reactivating one is the same billable act as creating one.
+ *
+ * @returns {Promise<boolean>} true when the request may proceed; false when
+ *   the quota middleware has already answered with a 402.
+ */
+function seatAvailable(req, res) {
+  return new Promise(resolve => {
+    enforceLimit('operators')(req, res, () => resolve(true));
+    // enforceLimit either calls next or ends the response.
+    res.once('finish', () => resolve(false));
+  });
+}
+
+/**
+ * Apply an `isActive` change, refusing a reactivation the plan has no seat
+ * for. Sends the response itself on refusal.
+ *
+ * @returns {Promise<boolean>} whether the caller should continue
+ */
+async function applyActivation(req, res, target, isActive) {
+  const wanted = Boolean(isActive);
+
+  if (!target.isActive && wanted && !(await seatAvailable(req, res))) {
+    return false;
+  }
+
+  target.isActive = wanted;
+  return true;
 }
 
 // Create a new operator. Seats are a billable resource, so the plan's limit
 // is checked before the account is created rather than after.
 router.post('/operators', enforceLimit('operators'), async (req, res) => {
   try {
-    const { username, email, password, confirmPassword, name, displayName, companyId } = req.body;
+    const { password, confirmPassword, name, displayName, companyId } = req.body;
+    const username = requireString(req.body.username);
+    const email = requireString(req.body.email);
     const currentUser = req.user;
 
     if (!username || !email || !password || !confirmPassword) {
       return res.status(400).json({ error: 'Username, email, password, and confirm password are required' });
+    }
+
+    if (!EMAIL_PATTERN.test(email)) {
+      return res.status(400).json({ error: 'Email address is not valid' });
+    }
+
+    if (typeof password !== 'string') {
+      return res.status(400).json({ error: 'Password must be at least 8 characters long' });
     }
 
     if (password !== confirmPassword) {
@@ -1181,7 +1293,9 @@ router.patch('/operators/:id', async (req, res) => {
       return res.status(400).json({ error: 'User is not an operator' });
     }
 
-    target.isActive = Boolean(isActive);
+    if (!(await applyActivation(req, res, target, isActive))) {
+      return;
+    }
     await target.save();
 
     audit.record({
@@ -1210,13 +1324,39 @@ router.patch('/operators/:id', async (req, res) => {
 });
 
 // Update operator details
+const OPERATOR_UPDATE_FIELDS = ['username', 'name', 'displayName', 'email', 'isActive', 'role', 'companyId'];
+
 router.put('/operators/:id', async (req, res) => {
   try {
-    const { username, name, displayName, email, role, companyId } = req.body;
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+
+    // Anything not on the list is refused rather than ignored. Ignoring is how
+    // a `password` or `tokenVersion` slipped in here would go unnoticed for
+    // exactly as long as it did nothing.
+    const unknown = Object.keys(body).filter(field => !OPERATOR_UPDATE_FIELDS.includes(field));
+    if (unknown.length > 0) {
+      return res.status(400).json({ error: `Unknown field: ${unknown.join(', ')}` });
+    }
+
+    const { name, displayName, role, companyId, isActive } = body;
+    const username = requireString(body.username);
+    const email = requireString(body.email);
     const currentUser = req.user;
 
     if (!username || !email) {
       return res.status(400).json({ error: 'Username and email are required' });
+    }
+
+    if (!EMAIL_PATTERN.test(email)) {
+      return res.status(400).json({ error: 'Email address is not valid' });
+    }
+
+    if (isActive !== undefined && typeof isActive !== 'boolean') {
+      return res.status(400).json({ error: 'isActive must be true or false' });
+    }
+
+    if (companyId !== undefined && companyId !== null && typeof companyId !== 'string') {
+      return res.status(400).json({ error: 'Company not found' });
     }
 
     const target = await loadManagedOperator(req, res);
@@ -1264,6 +1404,10 @@ router.put('/operators/:id', async (req, res) => {
     }
 
     const previousRole = target.role;
+
+    if (isActive !== undefined && !(await applyActivation(req, res, target, isActive))) {
+      return;
+    }
 
     target.username = username;
     target.name = name;
@@ -1330,7 +1474,7 @@ router.post('/operators/:id/reset-password', async (req, res) => {
       return res.status(400).json({ error: 'Passwords do not match' });
     }
 
-    if (password.length < 8) {
+    if (typeof password !== 'string' || password.length < 8) {
       return res.status(400).json({ error: 'Password must be at least 8 characters long' });
     }
 
@@ -1344,6 +1488,8 @@ router.post('/operators/:id/reset-password', async (req, res) => {
     }
 
     target.password = password;
+    // Whatever sessions the old password had opened end with it.
+    target.tokenVersion = (target.tokenVersion || 0) + 1;
     await target.save();
 
     logger.info('Operator password reset', {

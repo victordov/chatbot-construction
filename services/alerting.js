@@ -6,8 +6,33 @@
  */
 
 const nodemailer = require('nodemailer');
-const { ALERT_THRESHOLDS } = require('./monitoring');
+const { ALERT_THRESHOLDS, register } = require('./monitoring');
 const { logger } = require('./logging');
+
+/**
+ * A nodemailer transport from the SMTP_* environment, or null when SMTP_HOST is
+ * not set.
+ *
+ * Shared with the password-reset email in routes/auth.js, so there is one
+ * place that knows how this deployment sends mail rather than two
+ * configurations that drift apart.
+ */
+function createSmtpTransport() {
+  if (!process.env.SMTP_HOST) {
+    return null;
+  }
+
+  return nodemailer.createTransport({
+    host: process.env.SMTP_HOST,
+    port: parseInt(process.env.SMTP_PORT, 10) || 587,
+    secure: process.env.SMTP_SECURE === 'true',
+    // Some relays take no credentials at all; passing an empty `auth` makes
+    // nodemailer attempt a login and fail.
+    auth: process.env.SMTP_USER
+      ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASSWORD }
+      : undefined
+  });
+}
 
 class AlertService {
   constructor(options = {}) {
@@ -17,17 +42,13 @@ class AlertService {
     this.checkInterval = options.checkInterval || parseInt(process.env.ALERT_CHECK_INTERVAL || '60000');
     this.alertingState = new Map();
 
+    // Cumulative HTTP counters as of the previous check, so each check can ask
+    // "what happened since?" rather than "what has ever happened?".
+    this.httpTotals = null;
+
     // Configure email transport if both alerts and email alerts are enabled
-    if (this.enabled && this.emailEnabled && process.env.SMTP_HOST) {
-      this.transporter = nodemailer.createTransport({
-        host: process.env.SMTP_HOST,
-        port: process.env.SMTP_PORT || 587,
-        secure: process.env.SMTP_SECURE === 'true',
-        auth: {
-          user: process.env.SMTP_USER,
-          pass: process.env.SMTP_PASSWORD
-        }
-      });
+    if (this.enabled && this.emailEnabled) {
+      this.transporter = createSmtpTransport();
     }
   }
 
@@ -44,9 +65,6 @@ class AlertService {
 
     // Set up interval to check metrics and trigger alerts
     this.interval = setInterval(() => this.checkMetrics(), this.checkInterval);
-
-    // Set up webhook handler for external alerts
-    this.setupWebhookHandler();
   }
 
   /**
@@ -65,37 +83,48 @@ class AlertService {
    */
   async checkMetrics() {
     try {
-      // This would typically fetch metrics from Prometheus or other sources
-      // For now, we'll simulate some checks
+      // Read once per check: the window is a delta against the previous
+      // reading, so asking for it twice would leave the second caller looking
+      // at an empty interval.
+      const window = await this.readHttpWindow();
 
-      // Example: Check response time
-      const avgResponseTime = await this.getAverageResponseTime();
+      if (!window) {
+        // No traffic since the last check, or the first check after start.
+        // Nothing is known, so nothing is claimed - in particular, existing
+        // alerts are left alone rather than resolved on the strength of
+        // silence.
+        return;
+      }
+
+      const avgResponseTime = window.totalMs / window.requests;
+
       if (avgResponseTime > ALERT_THRESHOLDS.high_response_time) {
         this.triggerAlert('high_response_time', {
           title: 'High Response Time Detected',
-          message: `Average response time (${avgResponseTime}ms) exceeds threshold (${ALERT_THRESHOLDS.high_response_time}ms)`,
+          message: `Average response time (${Math.round(avgResponseTime)}ms across ` +
+            `${window.requests} requests) exceeds threshold ` +
+            `(${ALERT_THRESHOLDS.high_response_time}ms)`,
           severity: 'warning',
-          metrics: { avgResponseTime }
+          metrics: { avgResponseTime, requests: window.requests }
         });
       } else {
         this.resolveAlert('high_response_time');
       }
 
-      // Example: Check error rate
-      const errorRate = await this.getErrorRate();
+      const errorRate = window.errors / window.requests;
+
       if (errorRate > ALERT_THRESHOLDS.high_error_rate) {
         this.triggerAlert('high_error_rate', {
           title: 'High Error Rate Detected',
-          message: `Error rate (${(errorRate * 100).toFixed(2)}%) exceeds threshold (${(ALERT_THRESHOLDS.high_error_rate * 100).toFixed(2)}%)`,
+          message: `Error rate (${(errorRate * 100).toFixed(2)}%, ` +
+            `${window.errors} of ${window.requests} requests) exceeds threshold ` +
+            `(${(ALERT_THRESHOLDS.high_error_rate * 100).toFixed(2)}%)`,
           severity: 'critical',
-          metrics: { errorRate }
+          metrics: { errorRate, errors: window.errors, requests: window.requests }
         });
       } else {
         this.resolveAlert('high_error_rate');
       }
-
-      // More checks would be added here for memory usage, CPU, disk space, etc.
-
     } catch (error) {
       logger.error('Error in alert metrics check:', { error });
     }
@@ -191,29 +220,6 @@ class AlertService {
   }
 
   /**
-   * Set up webhook handler for external alerts
-   */
-  setupWebhookHandler() {
-    // This would be implemented in the express app
-    // Example: app.post('/api/alerts/webhook', (req, res) => this.handleWebhook(req, res));
-  }
-
-  /**
-   * Handle incoming webhook alerts
-   */
-  handleWebhook(req, res) {
-    const { alertId, title, message, severity, metrics } = req.body;
-
-    if (!alertId || !title || !message) {
-      return res.status(400).json({ error: 'Missing required alert data' });
-    }
-
-    this.triggerAlert(alertId, { title, message, severity: severity || 'warning', metrics });
-
-    res.status(200).json({ success: true });
-  }
-
-  /**
    * Get escalation interval based on severity
    */
   getEscalationInterval(severity) {
@@ -228,22 +234,70 @@ class AlertService {
   }
 
   /**
-   * Mock method to get average response time
-   * In a real implementation, this would query Prometheus or other metrics sources
+   * Read the HTTP request histogram, as counts since the last time we looked.
+   *
+   * The registry's counters run cumulatively from process start, so comparing
+   * them against a threshold directly would mean one bad minute stayed in the
+   * average for the life of the process, and a genuinely bad hour never moved
+   * it. Taking the delta since the previous check makes both numbers describe
+   * the window the alert is actually about.
+   *
+   * @returns {{requests: number, totalMs: number, errors: number}|null} null
+   *          when no requests have been served since the last check, which is
+   *          "nothing to say" rather than "everything is fine".
    */
-  async getAverageResponseTime() {
-    // Simulate a fluctuating response time
-    return Math.random() * 3000; // 0-3000ms
-  }
+  async readHttpWindow() {
+    const metric = register.getSingleMetric('http_request_duration_ms');
 
-  /**
-   * Mock method to get error rate
-   * In a real implementation, this would query Prometheus or other metrics sources
-   */
-  async getErrorRate() {
-    // Simulate a fluctuating error rate
-    return Math.random() * 0.1; // 0-10%
+    if (!metric) {
+      return null;
+    }
+
+    let requests = 0;
+    let totalMs = 0;
+    let errors = 0;
+
+    // `get()` resolves a promise in current prom-client, and reading it
+    // synchronously silently produced `undefined` here.
+    const { values } = await metric.get();
+
+    (values || []).forEach(entry => {
+      const status = Number(entry.labels?.status_code);
+
+      if (entry.metricName === 'http_request_duration_ms_sum') {
+        totalMs += entry.value;
+      } else if (entry.metricName === 'http_request_duration_ms_count') {
+        requests += entry.value;
+        if (status >= 500) {
+          errors += entry.value;
+        }
+      }
+    });
+
+    const previous = this.httpTotals;
+    this.httpTotals = { requests, totalMs, errors };
+
+    if (!previous) {
+      // First check after start: establish the baseline rather than alerting on
+      // everything that happened before the service was watching.
+      return null;
+    }
+
+    const window = {
+      requests: requests - previous.requests,
+      totalMs: totalMs - previous.totalMs,
+      errors: errors - previous.errors
+    };
+
+    // A negative delta means the registry was reset underneath us.
+    if (window.requests <= 0) {
+      return null;
+    }
+
+    return window;
   }
 }
+
+AlertService.createSmtpTransport = createSmtpTransport;
 
 module.exports = AlertService;

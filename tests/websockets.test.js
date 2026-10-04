@@ -1,23 +1,21 @@
 /**
  * The socket layer.
  *
- * This is the application's primary request path and the largest file in it,
- * and the previous four tests mocked the database, the encryption service, the
- * model and JWT before asserting that an event fired. The last of them called
- * `done()` from a one-second timeout, so it passed whether or not the server
- * replied at all.
+ * This is the application's primary request path and the largest file in it.
+ * Here the database, the tenant resolution, the session tokens, the plan
+ * checks and the assignment queue are real. Only `services/reply` and
+ * `services/ai` are stubbed - what the model says is not this file's
+ * business, and a real call would be slow, billable and non-deterministic.
  *
- * Here the database, the encryption, the tenant resolution and the assignment
- * queue are real. Only `services/reply` and `services/ai` are stubbed - what
- * the model says is not this file's business, and a real call would be slow,
- * billable and non-deterministic.
+ * Most of what is tested is refusal: a visitor in the wrong room, a resume
+ * with the wrong token, a message for a session the socket never proved it
+ * owned. Those are the cases that decide whether one tenant's traffic can
+ * reach another.
  */
 
 const http = require('http');
 const mongoose = require('mongoose');
 const jwt = require('jsonwebtoken');
-const nacl = require('tweetnacl');
-const naclUtil = require('tweetnacl-util');
 const { io: Client } = require('socket.io-client');
 
 jest.mock('../services/reply', () => ({
@@ -34,9 +32,12 @@ jest.mock('../services/ai', () => ({
 const setupWebSockets = require('../websockets');
 const socketManager = require('../socketManager');
 const replyService = require('../services/reply');
+const usageService = require('../services/usage');
+const sessionTokenService = require('../services/session-token');
 const Company = require('../models/company');
 const User = require('../models/user');
 const Conversation = require('../models/conversation');
+const Subscription = require('../models/subscription');
 
 /** Wait for one event, and fail loudly rather than hanging until the timeout. */
 const waitFor = (socket, event, timeout = 4000) => new Promise((resolve, reject) => {
@@ -47,6 +48,23 @@ const waitFor = (socket, event, timeout = 4000) => new Promise((resolve, reject)
   socket.once(event, (payload) => {
     clearTimeout(timer);
     resolve(payload);
+  });
+});
+
+/** Wait for whichever of several events arrives first. */
+const waitForAny = (socket, events, timeout = 4000) => new Promise((resolve, reject) => {
+  const timer = setTimeout(
+    () => reject(new Error(`Timed out waiting for one of ${events.join(', ')}`)),
+    timeout
+  );
+  const handlers = events.map(event => {
+    const handler = payload => {
+      clearTimeout(timer);
+      events.forEach((other, i) => socket.off(other, handlers[i]));
+      resolve({ event, payload });
+    };
+    socket.once(event, handler);
+    return handler;
   });
 });
 
@@ -65,6 +83,8 @@ const eventually = async (check, timeout = 4000) => {
   }
 };
 
+const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+
 describe('WebSockets', () => {
   let httpServer;
   let io;
@@ -72,7 +92,10 @@ describe('WebSockets', () => {
   let acme;
   let globex;
   let acmeOperator;
+  let acmeSecondOperator;
+  let acmeAdmin;
   let globexOperator;
+  let superadmin;
   const sockets = [];
 
   const connect = (options = {}) => {
@@ -82,11 +105,6 @@ describe('WebSockets', () => {
       reconnection: false,
       ...options
     });
-
-    // The server sends this the moment the connection is accepted, so the
-    // listener has to exist before anything is awaited or the packet has been
-    // and gone by the time a test asks for it.
-    socket.encryptionInit = new Promise(resolve => socket.once('encryption-init', resolve));
 
     sockets.push(socket);
     return socket;
@@ -98,31 +116,79 @@ describe('WebSockets', () => {
     return socket;
   };
 
-  const connectOperator = async (user) => {
-    const token = jwt.sign(
-      { id: String(user._id), username: user.username, role: user.role, company: user.company },
-      process.env.JWT_SECRET
-    );
-    const socket = connect({ auth: { token } });
+  const tokenFor = (user, extra = {}) => jwt.sign(
+    { id: String(user._id), username: user.username, role: user.role, company: user.company, ...extra },
+    process.env.JWT_SECRET
+  );
+
+  const connectOperator = async (user, extra = {}) => {
+    const socket = connect({ auth: { token: tokenFor(user, extra) } });
     await waitFor(socket, 'connect');
     return socket;
   };
+
+  /**
+   * Establish a session the way the widget does, and hand back what the
+   * server said. Listeners go on before the emit, because `session-history`
+   * follows `session-ready` immediately.
+   */
+  const resume = async (socket, sessionId, sessionToken) => {
+    const outcome = waitForAny(socket, ['session-ready', 'session-rejected']);
+    const history = new Promise(resolve => socket.once('session-history', resolve));
+
+    socket.emit('resume-session', { sessionId, sessionToken });
+
+    const result = await outcome;
+    if (result.event === 'session-rejected') {
+      return { rejected: true, ...result.payload };
+    }
+    return { rejected: false, ...result.payload, history };
+  };
+
+  /** A fresh visitor with a fresh, bound session. */
+  const startVisitor = async (prefix, widgetKey = acme.widgetKey) => {
+    const socket = await connectVisitor(widgetKey);
+    const sessionId = `ws-${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const session = await resume(socket, sessionId);
+    expect(session.rejected).toBe(false);
+    return { socket, sessionId, sessionToken: session.sessionToken };
+  };
+
+  const say = (socket, message, messageId = 'm1') => socket.emit('user-message', {
+    messageId, message, timestamp: new Date().toISOString()
+  });
 
   beforeAll(async () => {
     if (mongoose.connection.readyState === 0) {
       await mongoose.connect(process.env.MONGODB_TEST_URI);
     }
 
-    acme = await Company.create({ name: 'Acme Sockets', allowedDomains: ['https://acme-sockets.test'] });
+    acme = await Company.create({
+      name: 'Acme Sockets',
+      allowedDomains: ['https://acme-sockets.test'],
+      routing: { autoAssign: true, maxConcurrent: 3 }
+    });
     globex = await Company.create({ name: 'Globex Sockets' });
 
     acmeOperator = await User.create({
       username: 'acme-socket-op', email: 'acme@sockets.example',
       password: 'TestPassword123!', role: 'operator', displayName: 'Ada', company: acme._id
     });
+    acmeSecondOperator = await User.create({
+      username: 'acme-socket-op2', email: 'acme2@sockets.example',
+      password: 'TestPassword123!', role: 'operator', displayName: 'Bea', company: acme._id
+    });
+    acmeAdmin = await User.create({
+      username: 'acme-socket-admin', email: 'admin@sockets.example',
+      password: 'TestPassword123!', role: 'company_admin', displayName: 'Dana', company: acme._id
+    });
     globexOperator = await User.create({
       username: 'globex-socket-op', email: 'globex@sockets.example',
       password: 'TestPassword123!', role: 'operator', displayName: 'Gus', company: globex._id
+    });
+    superadmin = await User.create({
+      username: 'socket-superadmin', email: 'root@sockets.example',
+      password: 'TestPassword123!', role: 'superadmin', displayName: 'Root'
     });
 
     httpServer = http.createServer();
@@ -135,88 +201,160 @@ describe('WebSockets', () => {
     port = httpServer.address().port;
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     while (sockets.length) {
       sockets.pop().close();
     }
     replyService.generate.mockResolvedValue({ text: 'A reply from the bot', source: 'assistant' });
+    // Let the server see the disconnects before the next test connects.
+    await pause(20);
   });
 
   afterAll(async () => {
+    setupWebSockets.graceTimers.forEach(timer => clearTimeout(timer));
     io.close();
     await new Promise(resolve => httpServer.close(resolve));
     await Conversation.deleteMany({ sessionId: /^ws-/ });
+    await Subscription.deleteMany({ company: { $in: [acme._id, globex._id] } });
     await User.deleteMany({ email: /@sockets\.example$/ });
     await Company.deleteMany({ name: /Sockets$/ });
     await mongoose.connection.close();
   });
 
-  describe('encryption', () => {
-    it('completes a real key exchange and decrypts what the visitor sent', async () => {
-      const socket = await connectVisitor(acme.widgetKey);
-      const { serverPublicKey } = await socket.encryptionInit;
+  describe('establishing a session', () => {
+    it('creates the conversation and hands the visitor a token whose hash is stored', async () => {
+      const { sessionId, sessionToken } = await startVisitor('new');
 
-      // A real keypair, encrypting with the key the server actually sent. A
-      // mocked service would pass this test with the crypto removed entirely.
-      const clientKeys = nacl.box.keyPair();
-      const sessionId = `ws-encrypted-${Date.now()}`;
+      expect(typeof sessionToken).toBe('string');
+      expect(sessionToken).toHaveLength(64);
 
-      socket.emit('client-public-key', {
-        sessionId,
-        publicKey: naclUtil.encodeBase64(clientKeys.publicKey)
-      });
-      expect((await waitFor(socket, 'encryption-ready')).success).toBe(true);
-
-      const nonce = nacl.randomBytes(nacl.box.nonceLength);
-      const box = nacl.box(
-        naclUtil.decodeUTF8('my order has not arrived'),
-        nonce,
-        naclUtil.decodeBase64(serverPublicKey),
-        clientKeys.secretKey
-      );
-
-      socket.emit('user-message', {
-        sessionId,
-        messageId: 'm1',
-        encrypted: true,
-        encryptedMessage: naclUtil.encodeBase64(box),
-        nonce: naclUtil.encodeBase64(nonce),
-        timestamp: new Date().toISOString()
-      });
-
-      const stored = await eventually(async () => {
-        const conversation = await Conversation.findOne({ sessionId });
-        return conversation && conversation.messages.length ? conversation : null;
-      });
-
-      expect(stored.messages[0].content).toBe('my order has not arrived');
-      expect(stored.messages[0].encrypted).toBe(true);
+      const conversation = await Conversation.findOne({ sessionId }).select('+sessionTokenHash company');
+      expect(conversation).not.toBeNull();
+      expect(conversation.sessionTokenHash).toBe(sessionTokenService.hash(sessionToken));
+      expect(String(conversation.company)).toBe(String(acme._id));
     });
 
-    it('refuses a public key it cannot decode rather than pretending to be secure', async () => {
+    it('rejects a resume with the wrong token and binds nothing', async () => {
+      const { sessionId } = await startVisitor('wrong-token');
+
+      const intruder = await connectVisitor(acme.widgetKey);
+      const attempt = await resume(intruder, sessionId, 'not-the-token');
+      expect(attempt).toMatchObject({ rejected: true, sessionId });
+
+      // Not bound, so a message cannot follow.
+      say(intruder, 'I am in your conversation');
+      expect((await waitFor(intruder, 'error')).message).toMatch(/Session not established/);
+
+      const conversation = await Conversation.findOne({ sessionId });
+      expect(conversation.messages).toHaveLength(0);
+    });
+
+    it('rejects a resume with no token for a conversation that has one', async () => {
+      const { sessionId } = await startVisitor('no-token');
+
+      const intruder = await connectVisitor(acme.widgetKey);
+      expect((await resume(intruder, sessionId)).rejected).toBe(true);
+    });
+
+    it('replays history under session-history, with ids, on a resume with the right token', async () => {
+      const { socket, sessionId, sessionToken } = await startVisitor('history');
+      say(socket, 'first question');
+      await waitFor(socket, 'bot-message');
+      socket.close();
+
+      const returning = await connectVisitor(acme.widgetKey);
+      const session = await resume(returning, sessionId, sessionToken);
+      expect(session.rejected).toBe(false);
+
+      const history = await session.history;
+      expect(history.sessionId).toBe(sessionId);
+      expect(history.messages.map(m => m.sender)).toEqual(['user', 'bot']);
+      expect(history.messages.map(m => m.text)).toEqual(['first question', 'A reply from the bot']);
+      // Ids let the widget drop what it already has rather than showing the
+      // conversation twice.
+      history.messages.forEach(message => expect(message.id).toMatch(/^[0-9a-f]{24}$/));
+    });
+
+    it('accepts a conversation from before tokens existed, and gives it one', async () => {
+      const sessionId = `ws-legacy-${Date.now()}`;
+      await Conversation.create({
+        sessionId, company: acme._id,
+        messages: [{ content: 'from the old days', sender: 'user' }]
+      });
+
       const socket = await connectVisitor(acme.widgetKey);
-      await socket.encryptionInit;
+      const session = await resume(socket, sessionId);
 
-      socket.emit('client-public-key', { sessionId: 'ws-bad-key', publicKey: 'not base64 at all!!' });
+      expect(session.rejected).toBe(false);
+      expect(typeof session.sessionToken).toBe('string');
 
-      expect((await waitFor(socket, 'encryption-ready')).success).toBe(false);
+      const upgraded = await Conversation.findOne({ sessionId }).select('+sessionTokenHash');
+      expect(upgraded.sessionTokenHash).toBe(sessionTokenService.hash(session.sessionToken));
+
+      // From now on the token is required.
+      const intruder = await connectVisitor(acme.widgetKey);
+      expect((await resume(intruder, sessionId)).rejected).toBe(true);
+    });
+  });
+
+  describe('rooms', () => {
+    it('does not let a visitor join the operators room, or hear what goes through it', async () => {
+      const visitor = await connectVisitor(acme.widgetKey);
+      const heard = jest.fn();
+      visitor.on('new-message', heard);
+
+      for (const room of ['operators:all', `operators:${acme._id}`, `user:${acmeOperator._id}`]) {
+        visitor.emit('join', room);
+        expect(await waitFor(visitor, 'joined-room')).toMatchObject({ success: false, error: 'Access denied' });
+      }
+
+      // Traffic that would have reached `operators:all` under the old code.
+      const { socket: other } = await startVisitor('leak-source');
+      say(other, 'a private question');
+      await waitFor(other, 'bot-message');
+
+      expect(heard).not.toHaveBeenCalled();
+    });
+
+    it('does not let a visitor join a session they did not resume', async () => {
+      const { sessionId: victimSessionId } = await startVisitor('victim-room');
+
+      const { socket: attacker } = await startVisitor('attacker-room');
+      attacker.emit('join', victimSessionId);
+
+      expect(await waitFor(attacker, 'joined-room')).toMatchObject({ success: false });
+    });
+
+    it('lets a visitor re-join their own session', async () => {
+      const { socket, sessionId } = await startVisitor('own-room');
+      socket.emit('join', sessionId);
+
+      expect(await waitFor(socket, 'joined-room')).toMatchObject({ success: true, room: sessionId });
+    });
+
+    it('writes a message into the bound session, whatever the payload names', async () => {
+      const { sessionId: victimSessionId } = await startVisitor('victim-write');
+      const { socket: attacker, sessionId: ownSessionId } = await startVisitor('attacker-write');
+
+      attacker.emit('user-message', {
+        sessionId: victimSessionId, messageId: 'm1', message: 'planted', timestamp: new Date().toISOString()
+      });
+      await waitFor(attacker, 'bot-message');
+
+      expect((await Conversation.findOne({ sessionId: victimSessionId })).messages).toHaveLength(0);
+      expect((await Conversation.findOne({ sessionId: ownSessionId })).messages[0].content).toBe('planted');
     });
   });
 
   describe('a visitor message', () => {
     it('creates the conversation, stamps the tenant and answers', async () => {
-      const socket = await connectVisitor(acme.widgetKey);
-      const sessionId = `ws-plain-${Date.now()}`;
+      const { socket, sessionId } = await startVisitor('plain');
 
-      socket.emit('join', sessionId);
-      expect((await waitFor(socket, 'joined-room')).success).toBe(true);
-
-      socket.emit('user-message', {
-        sessionId, messageId: 'm1', message: 'hello there', timestamp: new Date().toISOString()
-      });
+      say(socket, 'hello there');
 
       const reply = await waitFor(socket, 'bot-message');
       expect(reply.text).toBe('A reply from the bot');
+      expect(reply.id).toMatch(/^[0-9a-f]{24}$/);
 
       const conversation = await Conversation.findOne({ sessionId });
       // Without the tenant stamp the conversation belongs to nobody and the
@@ -225,23 +363,30 @@ describe('WebSockets', () => {
       expect(conversation.messages.map(m => m.sender)).toEqual(['user', 'bot']);
     });
 
+    it('shows the bot typing while the reply is being produced, and stops when it lands', async () => {
+      const { socket } = await startVisitor('typing');
+      const seen = [];
+      socket.on('bot-typing', payload => seen.push(payload.typing));
+
+      say(socket, 'hello');
+      await waitFor(socket, 'bot-message');
+      await pause(30);
+
+      expect(seen).toEqual([true, false]);
+    });
+
     it('reaches that tenant\'s operators and no others', async () => {
       const acmeSocket = await connectOperator(acmeOperator);
       const globexSocket = await connectOperator(globexOperator);
       acmeSocket.emit('join-operator-room');
       globexSocket.emit('join-operator-room');
-      await new Promise(resolve => setTimeout(resolve, 50));
+      await pause(50);
 
       const heardByGlobex = jest.fn();
       globexSocket.on('new-message', heardByGlobex);
 
-      const visitor = await connectVisitor(acme.widgetKey);
-      const sessionId = `ws-routing-${Date.now()}`;
-      visitor.emit('join', sessionId);
-      await waitFor(visitor, 'joined-room');
-      visitor.emit('user-message', {
-        sessionId, messageId: 'm1', message: 'a private question', timestamp: new Date().toISOString()
-      });
+      const { socket: visitor } = await startVisitor('routing');
+      say(visitor, 'a private question');
 
       const seen = await waitFor(acmeSocket, 'new-message');
       expect(seen.message).toBe('a private question');
@@ -263,11 +408,8 @@ describe('WebSockets', () => {
       });
 
       const socket = await connectVisitor(acme.widgetKey);
-      socket.emit('join', sessionId);
-      await waitFor(socket, 'joined-room');
-      socket.emit('user-message', {
-        sessionId, messageId: 'm2', message: 'are you there?', timestamp: new Date().toISOString()
-      });
+      await resume(socket, sessionId);
+      say(socket, 'are you there?', 'm2');
 
       // Somebody coming back days later must not meet the silence left behind
       // by an escalation that never happened.
@@ -278,23 +420,123 @@ describe('WebSockets', () => {
       expect(conversation.botEnabled).toBe(true);
     });
 
-    it('says so rather than going quiet when the reply cannot be produced', async () => {
+    it('apologises in the bot\'s voice, and says why, when the reply cannot be produced', async () => {
       replyService.generate.mockRejectedValueOnce(new Error('model unavailable'));
 
-      const socket = await connectVisitor(acme.widgetKey);
-      const sessionId = `ws-failure-${Date.now()}`;
-      socket.emit('join', sessionId);
-      await waitFor(socket, 'joined-room');
+      const { socket, sessionId } = await startVisitor('failure');
+      const error = waitFor(socket, 'error');
+      const typing = [];
+      socket.on('bot-typing', payload => typing.push(payload.typing));
 
-      socket.emit('user-message', {
-        sessionId, messageId: 'm1', message: 'hello', timestamp: new Date().toISOString()
-      });
+      say(socket, 'hello');
 
-      expect((await waitFor(socket, 'error')).message).toMatch(/Failed to process message/);
+      const apology = await waitFor(socket, 'bot-message');
+      expect(apology.text).toBe(usageService.REPLY_FAILED_MESSAGE);
+      expect(await error).toMatchObject({ sessionId, message: expect.stringMatching(/Failed to generate/) });
+      // The typing indicator does not get stuck on.
+      expect(typing).toEqual([true, false]);
 
       // The visitor's message is still stored, so an operator can pick it up.
       const conversation = await Conversation.findOne({ sessionId });
-      expect(conversation.messages).toHaveLength(1);
+      expect(conversation.messages.map(m => m.sender)).toEqual(['user', 'bot']);
+    });
+
+    it.each([
+      ['a number', 42],
+      ['an object', { text: 'hi' }],
+      ['whitespace', '   '],
+      ['too long', 'x'.repeat(4001)]
+    ])('refuses %s as a message', async (_label, message) => {
+      const { socket, sessionId } = await startVisitor('invalid');
+
+      socket.emit('user-message', { messageId: 'bad', message, timestamp: new Date().toISOString() });
+
+      expect((await waitFor(socket, 'error')).message).toMatch(/Message/);
+      expect((await Conversation.findOne({ sessionId })).messages).toHaveLength(0);
+      expect(replyService.generate).not.toHaveBeenCalled();
+    });
+
+    it('drops messages beyond the per-socket rate limit', async () => {
+      const previous = process.env.RATE_LIMIT_CHAT_MAX;
+      process.env.RATE_LIMIT_CHAT_MAX = '3';
+
+      try {
+        const { socket, sessionId } = await startVisitor('rate');
+        const limited = waitFor(socket, 'error');
+
+        for (let i = 0; i < 5; i += 1) {
+          say(socket, `message ${i}`, `m${i}`);
+        }
+
+        expect((await limited).message).toMatch(/too quickly/);
+
+        const conversation = await eventually(async () => {
+          const found = await Conversation.findOne({ sessionId });
+          return found.messages.filter(m => m.sender === 'user').length >= 3 ? found : null;
+        });
+        await pause(100);
+        const reloaded = await Conversation.findOne({ sessionId });
+        expect(reloaded.messages.filter(m => m.sender === 'user')).toHaveLength(3);
+        expect(conversation).not.toBeNull();
+      } finally {
+        if (previous === undefined) {
+          delete process.env.RATE_LIMIT_CHAT_MAX;
+        } else {
+          process.env.RATE_LIMIT_CHAT_MAX = previous;
+        }
+      }
+    });
+  });
+
+  describe('the plan', () => {
+    let capped;
+    let lapsed;
+
+    beforeAll(async () => {
+      capped = await Company.create({ name: 'Capped Sockets' });
+      await Subscription.create({
+        company: capped._id, planId: 'basic', status: 'active',
+        limitOverrides: { aiResponsesPerMonth: 0 }
+      });
+
+      lapsed = await Company.create({ name: 'Lapsed Sockets' });
+      await Subscription.create({ company: lapsed._id, planId: 'basic', status: 'suspended' });
+    });
+
+    afterAll(async () => {
+      await Subscription.deleteMany({ company: { $in: [capped._id, lapsed._id] } });
+    });
+
+    it('tells the visitor the chat is unavailable, without calling the model, when replies are used up', async () => {
+      const { socket, sessionId } = await startVisitor('capped', capped.widgetKey);
+
+      say(socket, 'hello');
+
+      const reply = await waitFor(socket, 'bot-message');
+      expect(reply.text).toBe(usageService.UNAVAILABLE_MESSAGE);
+      expect(replyService.generate).not.toHaveBeenCalled();
+
+      // Said in the transcript too, so an operator reading it later
+      // understands the gap.
+      const conversation = await Conversation.findOne({ sessionId });
+      expect(conversation.messages.map(m => m.sender)).toEqual(['user', 'bot']);
+    });
+
+    it('starts no conversation for a suspended tenant, and says so', async () => {
+      const socket = await connectVisitor(lapsed.widgetKey);
+      const sessionId = `ws-lapsed-${Date.now()}`;
+      const unavailable = waitFor(socket, 'bot-message');
+
+      const session = await resume(socket, sessionId);
+      expect(session.rejected).toBe(false);
+      expect(session.sessionToken).toBeNull();
+      expect((await unavailable).text).toBe(usageService.UNAVAILABLE_MESSAGE);
+
+      say(socket, 'anyone there?');
+      expect((await waitFor(socket, 'bot-message')).text).toBe(usageService.UNAVAILABLE_MESSAGE);
+
+      expect(await Conversation.findOne({ sessionId })).toBeNull();
+      expect(replyService.generate).not.toHaveBeenCalled();
     });
   });
 
@@ -315,7 +557,7 @@ describe('WebSockets', () => {
       await Conversation.create({ sessionId, company: acme._id, messages: [] });
 
       const intruder = await connectOperator(globexOperator);
-      intruder.emit('operator-takeover', { sessionId, operatorName: 'Gus' });
+      intruder.emit('operator-takeover', { sessionId });
 
       expect((await waitFor(intruder, 'error')).message).toMatch(/do not have access/);
       expect((await Conversation.findOne({ sessionId })).hasOperator).toBe(false);
@@ -332,47 +574,64 @@ describe('WebSockets', () => {
       expect((await Conversation.findOne({ sessionId })).messages).toHaveLength(0);
     });
 
-    it('takes over their own tenant\'s conversation and the visitor hears about it', async () => {
-      const visitor = await connectVisitor(acme.widgetKey);
-      const sessionId = `ws-takeover-${Date.now()}`;
-      visitor.emit('join', sessionId);
-      await waitFor(visitor, 'joined-room');
-      visitor.emit('user-message', {
-        sessionId, messageId: 'm1', message: 'I need help', timestamp: new Date().toISOString()
-      });
+    it('takes over under the name on their account, not the name in the payload', async () => {
+      const { socket: visitor, sessionId } = await startVisitor('takeover');
+      say(visitor, 'I need help');
       await waitFor(visitor, 'bot-message');
 
       const operator = await connectOperator(acmeOperator);
-      operator.emit('operator-takeover', { sessionId, operatorName: 'Ada' });
+      operator.emit('operator-takeover', { sessionId, operatorName: 'Mallory from Head Office' });
 
       const announcement = await waitFor(visitor, 'operator-message');
-      expect(announcement.text).toMatch(/Ada has joined/);
+      expect(announcement.text).toMatch(/^Ada has joined/);
+      expect(announcement.senderName).toBe('Ada');
 
       const conversation = await eventually(async () => {
         const found = await Conversation.findOne({ sessionId });
         return found && found.hasOperator ? found : null;
       });
       expect(conversation.operatorName).toBe('Ada');
+      expect(String(conversation.operatorId)).toBe(String(acmeOperator._id));
+    });
+
+    it('cannot take a conversation a colleague is holding, unless an admin forces it', async () => {
+      const { socket: visitor, sessionId } = await startVisitor('held');
+      const ada = await connectOperator(acmeOperator);
+      ada.emit('operator-takeover', { sessionId });
+      await waitFor(visitor, 'operator-message');
+
+      const bea = await connectOperator(acmeSecondOperator);
+      bea.emit('operator-takeover', { sessionId });
+      expect((await waitFor(bea, 'error')).message).toMatch(/Ada is already handling/);
+
+      // Force from a plain operator counts for nothing.
+      bea.emit('operator-takeover', { sessionId, force: true });
+      expect((await waitFor(bea, 'error')).message).toMatch(/already handling/);
+      expect((await Conversation.findOne({ sessionId })).operatorName).toBe('Ada');
+
+      const dana = await connectOperator(acmeAdmin);
+      const taken = waitFor(ada, 'chat-taken-from-you');
+      dana.emit('operator-takeover', { sessionId, force: true });
+
+      expect((await waitFor(visitor, 'operator-message')).text).toMatch(/^Dana has joined/);
+      expect((await taken).takenBy).toBe('Dana');
+      expect((await Conversation.findOne({ sessionId })).operatorName).toBe('Dana');
     });
 
     it('answers, and the visitor gets the words the operator typed', async () => {
-      const visitor = await connectVisitor(acme.widgetKey);
-      const sessionId = `ws-operator-reply-${Date.now()}`;
-      visitor.emit('join', sessionId);
-      await waitFor(visitor, 'joined-room');
-      visitor.emit('user-message', {
-        sessionId, messageId: 'm1', message: 'where is my order', timestamp: new Date().toISOString()
-      });
+      const { socket: visitor, sessionId } = await startVisitor('operator-reply');
+      say(visitor, 'where is my order');
       await waitFor(visitor, 'bot-message');
 
       const operator = await connectOperator(acmeOperator);
-      operator.emit('operator-takeover', { sessionId, operatorName: 'Ada' });
+      operator.emit('operator-takeover', { sessionId });
       await waitFor(visitor, 'operator-message');
 
       operator.emit('operator-message', { sessionId, message: 'It went out this morning.' });
 
       const delivered = await waitFor(visitor, 'operator-message');
       expect(delivered.text).toBe('It went out this morning.');
+      expect(delivered.senderName).toBe('Ada');
 
       const conversation = await eventually(async () => {
         const found = await Conversation.findOne({ sessionId });
@@ -381,16 +640,125 @@ describe('WebSockets', () => {
       expect(conversation.messages.at(-1).content).toBe('It went out this morning.');
     });
 
+    it('gets a drafted reply in their own room, and colleagues do not', async () => {
+      const ada = await connectOperator(acmeOperator);
+      const bea = await connectOperator(acmeSecondOperator);
+      ada.emit('join-operator-room');
+      bea.emit('join-operator-room');
+      await pause(50);
+
+      const beaSaw = jest.fn();
+      bea.on('operator-suggestion', beaSaw);
+
+      const { socket: visitor, sessionId } = await startVisitor('suggest');
+      say(visitor, 'first');
+      await waitFor(visitor, 'bot-message');
+
+      ada.emit('operator-takeover', { sessionId });
+      // Taking over drafts a reply to the last thing the visitor said.
+      expect((await waitFor(ada, 'operator-suggestion')).suggestion).toMatch(/order number/);
+
+      say(visitor, 'can you check for me?', 'm2');
+      const drafted = await waitFor(ada, 'operator-suggestion');
+      expect(drafted.userMessage).toBe('can you check for me?');
+      expect(drafted.sessionId).toBe(sessionId);
+
+      expect(beaSaw).not.toHaveBeenCalled();
+      expect(replyService.generate).toHaveBeenCalledTimes(1);
+    });
+
+    it('uses a suggestion from the text in the payload', async () => {
+      const { socket: visitor, sessionId } = await startVisitor('use-suggestion');
+      const operator = await connectOperator(acmeOperator);
+      operator.emit('operator-takeover', { sessionId });
+      await waitFor(visitor, 'operator-message');
+
+      operator.emit('use-suggestion', { sessionId, suggestion: 'Try asking for their order number', edited: '' });
+
+      const delivered = await waitFor(visitor, 'operator-message');
+      expect(delivered.text).toBe('Try asking for their order number');
+      expect(delivered.senderName).toBe('Ada');
+
+      const conversation = await Conversation.findOne({ sessionId });
+      expect(conversation.messages.at(-1)).toMatchObject({ sender: 'operator', content: 'Try asking for their order number' });
+    });
+
+    it('is told when a suggestion could not be sent by email', async () => {
+      const sessionId = `ws-email-${Date.now()}`;
+      await Conversation.create({
+        sessionId, company: acme._id, channel: 'email',
+        email: { subject: 'Help', from: 'jordan@example.com', messageIds: [] },
+        messages: [{ content: 'hello', sender: 'user' }]
+      });
+
+      const operator = await connectOperator(acmeOperator);
+      operator.emit('use-suggestion', { sessionId, suggestion: 'We can help with that.' });
+
+      // The email channel is not enabled for this company, so the reply
+      // cannot go out - and the operator has to hear that, not assume it did.
+      expect((await waitFor(operator, 'error')).message).toMatch(/Could not send that email/);
+      expect((await Conversation.findOne({ sessionId })).messages).toHaveLength(1);
+    });
+
+    it('leaving without handing to the bot puts the chat back in the queue rather than nowhere', async () => {
+      const { socket: visitor, sessionId } = await startVisitor('leave');
+      const operator = await connectOperator(acmeOperator);
+      operator.emit('operator-takeover', { sessionId });
+      await waitFor(visitor, 'operator-message');
+
+      operator.emit('operator-leave', { sessionId, passToBot: false });
+
+      const farewell = await waitFor(visitor, 'operator-message');
+      expect(farewell.text).toMatch(/Ada has left/);
+
+      const conversation = await Conversation.findOne({ sessionId });
+      expect(conversation.operatorId).toBeNull();
+      expect(conversation.hasOperator).toBe(false);
+      expect(conversation.awaitingOperatorSince).toBeInstanceOf(Date);
+      // Nobody else is online, so the bot answers in the meantime.
+      expect(conversation.botEnabled).toBe(true);
+    });
+
+    it('keeps their chats through a refresh, and releases them if they do not come back', async () => {
+      const previous = process.env.OPERATOR_GRACE_MS;
+      process.env.OPERATOR_GRACE_MS = '150';
+
+      try {
+        const { socket: visitor, sessionId } = await startVisitor('grace');
+        const operator = await connectOperator(acmeOperator);
+        operator.emit('operator-takeover', { sessionId });
+        await waitFor(visitor, 'operator-message');
+
+        // A refresh: gone and back inside the grace period.
+        operator.close();
+        await pause(40);
+        const again = await connectOperator(acmeOperator);
+        await pause(200);
+        expect(String((await Conversation.findOne({ sessionId })).operatorId)).toBe(String(acmeOperator._id));
+
+        // Gone for good.
+        const notice = waitFor(visitor, 'operator-message');
+        again.close();
+
+        expect((await notice).text).toMatch(/disconnected/);
+        const released = await Conversation.findOne({ sessionId });
+        expect(released.operatorId).toBeNull();
+        expect(released.awaitingOperatorSince).toBeInstanceOf(Date);
+        expect(released.botEnabled).toBe(true);
+      } finally {
+        if (previous === undefined) {
+          delete process.env.OPERATOR_GRACE_MS;
+        } else {
+          process.env.OPERATOR_GRACE_MS = previous;
+        }
+      }
+    });
+
     it('ends a chat, and the visitor is asked to rate it', async () => {
-      const visitor = await connectVisitor(acme.widgetKey);
-      const sessionId = `ws-end-${Date.now()}`;
-      visitor.emit('join', sessionId);
-      await waitFor(visitor, 'joined-room');
+      const { socket: visitor, sessionId } = await startVisitor('end');
 
       for (const text of ['first', 'second']) {
-        visitor.emit('user-message', {
-          sessionId, messageId: text, message: text, timestamp: new Date().toISOString()
-        });
+        say(visitor, text, text);
         await waitFor(visitor, 'bot-message');
       }
 
@@ -403,15 +771,27 @@ describe('WebSockets', () => {
     });
   });
 
+  describe('a superadmin', () => {
+    it('acts on any tenant, and the tenant\'s operators hear about it', async () => {
+      const ada = await connectOperator(acmeOperator);
+      ada.emit('join-operator-room');
+      await pause(50);
+
+      const { socket: visitor, sessionId } = await startVisitor('root');
+      const root = await connectOperator(superadmin);
+      root.emit('operator-takeover', { sessionId });
+
+      expect((await waitFor(visitor, 'operator-message')).text).toMatch(/^Root has joined/);
+      // Announced to acme's room, resolved from the conversation, rather than
+      // to an "unassigned" room nobody is in.
+      expect((await waitFor(ada, 'operator-joined')).operatorName).toBe('Root');
+    });
+  });
+
   describe('a visitor asking for a person', () => {
     it('is queued rather than abandoned when nobody is available', async () => {
-      const visitor = await connectVisitor(acme.widgetKey);
-      const sessionId = `ws-queue-${Date.now()}`;
-      visitor.emit('join', sessionId);
-      await waitFor(visitor, 'joined-room');
-      visitor.emit('user-message', {
-        sessionId, messageId: 'm1', message: 'can I speak to someone', timestamp: new Date().toISOString()
-      });
+      const { socket: visitor, sessionId } = await startVisitor('queue');
+      say(visitor, 'can I speak to someone');
       await waitFor(visitor, 'bot-message');
 
       visitor.emit('request-operator');
@@ -429,13 +809,8 @@ describe('WebSockets', () => {
 
   describe('ratings', () => {
     it('records the score against the socket\'s own session', async () => {
-      const visitor = await connectVisitor(acme.widgetKey);
-      const sessionId = `ws-rating-${Date.now()}`;
-      visitor.emit('join', sessionId);
-      await waitFor(visitor, 'joined-room');
-      visitor.emit('user-message', {
-        sessionId, messageId: 'm1', message: 'thanks', timestamp: new Date().toISOString()
-      });
+      const { socket: visitor, sessionId } = await startVisitor('rating');
+      say(visitor, 'thanks');
       await waitFor(visitor, 'bot-message');
 
       visitor.emit('submit-rating', { score: 5, comment: 'quick and clear' });
@@ -453,13 +828,8 @@ describe('WebSockets', () => {
         messages: [{ content: 'hello', sender: 'user' }, { content: 'hi', sender: 'bot' }]
       });
 
-      const attacker = await connectVisitor(acme.widgetKey);
-      const ownSessionId = `ws-attacker-${Date.now()}`;
-      attacker.emit('join', ownSessionId);
-      await waitFor(attacker, 'joined-room');
-      attacker.emit('user-message', {
-        sessionId: ownSessionId, messageId: 'm1', message: 'hello', timestamp: new Date().toISOString()
-      });
+      const { socket: attacker } = await startVisitor('attacker');
+      say(attacker, 'hello');
       await waitFor(attacker, 'bot-message');
 
       attacker.emit('submit-rating', { sessionId: victimSessionId, score: 1, comment: 'sabotage' });
@@ -483,7 +853,6 @@ describe('WebSockets', () => {
       );
 
       const socket = connect({ auth: { token: forged } });
-      sockets.push(socket);
       await waitFor(socket, 'connect');
 
       const sessionId = `ws-forged-${Date.now()}`;
@@ -492,9 +861,36 @@ describe('WebSockets', () => {
       // As a visitor the join succeeds, but it is a visitor's join: nothing
       // operator-only follows from it.
       socket.emit('operator-message', { sessionId, message: 'I should not be able to say this' });
-      await new Promise(resolve => setTimeout(resolve, 150));
+      await pause(150);
 
       expect((await Conversation.findOne({ sessionId })).messages).toHaveLength(0);
+    });
+
+    it('treats a token from before a password change as a visitor', async () => {
+      await User.findByIdAndUpdate(acmeOperator._id, { tokenVersion: 2 });
+      const sessionId = `ws-stale-${Date.now()}`;
+      await Conversation.create({ sessionId, company: acme._id, messages: [] });
+
+      try {
+        // Issued before versions existed, and issued against the old version.
+        for (const extra of [{}, { tv: 1 }]) {
+          const stale = await connectOperator(acmeOperator, extra);
+          stale.emit('operator-message', { sessionId, message: 'from an old session' });
+          await pause(150);
+          expect((await Conversation.findOne({ sessionId })).messages).toHaveLength(0);
+        }
+
+        // The current version still works.
+        const current = await connectOperator(acmeOperator, { tv: 2 });
+        current.emit('operator-message', { sessionId, message: 'from a fresh login' });
+        const conversation = await eventually(async () => {
+          const found = await Conversation.findOne({ sessionId });
+          return found.messages.length ? found : null;
+        });
+        expect(conversation.messages[0].content).toBe('from a fresh login');
+      } finally {
+        await User.findByIdAndUpdate(acmeOperator._id, { tokenVersion: 0 });
+      }
     });
 
     it('answers a heartbeat, which is how the widget knows it is still connected', async () => {

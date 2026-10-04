@@ -54,10 +54,10 @@ function setupTaskManagement(token) {
             // If we don't have the conversation object with _id, we need to fetch it
             fetch(`/api/admin/chat/${selectedChatId}`, {
               headers: {
-                'x-auth-token': localStorage.getItem('chatbot-auth-token')
+                'x-auth-token': authToken()
               }
             })
-              .then(response => response.json())
+              .then(parseJsonResponse)
               .then(data => {
                 if (data && data._id) {
                   // Set the conversation ID filter
@@ -71,7 +71,7 @@ function setupTaskManagement(token) {
               })
               .catch(error => {
                 logger.error('Error fetching conversation details:', error);
-                showNotification('Error', 'Failed to load conversation details', 'error');
+                showNotification('Error', errorMessage(error, 'Failed to load conversation details'), 'error');
               });
           }
         }, 100);
@@ -198,7 +198,13 @@ function setupTaskSocketListeners() {
 
   socket.on('task-assigned', function(data) {
     // If the task is assigned to current user, show notification
-    if (data.task.assignee === window.currentUser._id) {
+    // The login payload calls it `id`; a populated task may carry the assignee
+    // as an object. Compare the two as strings so neither shape misses.
+    const assignee = data.task.assignee && typeof data.task.assignee === 'object'
+      ? data.task.assignee._id
+      : data.task.assignee;
+    const me = window.currentUser && (window.currentUser.id || window.currentUser._id);
+    if (assignee && me && String(assignee) === String(me)) {
       showNotification('Task assigned to you', `Task "${data.task.title}" has been assigned to you`);
     }
 
@@ -261,7 +267,7 @@ function loadTasksForConversation(conversationId) {
     method: 'GET',
     headers: {
       'Content-Type': 'application/json',
-      'x-auth-token': localStorage.getItem('chatbot-auth-token')
+      'x-auth-token': authToken()
     }
   })
     .then(response => {
@@ -281,7 +287,7 @@ function loadTasksForConversation(conversationId) {
     })
     .catch(error => {
       logger.error('Error loading tasks for conversation:', error);
-      showNotification('Error', 'Failed to load tasks for conversation', 'error');
+      showNotification('Error', errorMessage(error, 'Failed to load tasks for conversation'), 'error');
     });
 }
 
@@ -314,7 +320,7 @@ function loadTasks(token) {
     method: 'GET',
     headers: {
       'Content-Type': 'application/json',
-      'x-auth-token': token || localStorage.getItem('chatbot-auth-token')
+      'x-auth-token': token || authToken()
     }
   })
     .then(response => {
@@ -328,7 +334,7 @@ function loadTasks(token) {
     })
     .catch(error => {
       logger.error('Error loading tasks:', error);
-      showNotification('Error', 'Failed to load tasks', 'error');
+      showNotification('Error', errorMessage(error, 'Failed to load tasks'), 'error');
     });
 }
 
@@ -499,7 +505,7 @@ function loadTaskDetails(taskId) {
     method: 'GET',
     headers: {
       'Content-Type': 'application/json',
-      'x-auth-token': localStorage.getItem('chatbot-auth-token')
+      'x-auth-token': authToken()
     }
   })
     .then(response => {
@@ -515,7 +521,7 @@ function loadTaskDetails(taskId) {
     })
     .catch(error => {
       logger.error('Error loading task details:', error);
-      showNotification('Error', 'Failed to load task details', 'error');
+      showNotification('Error', errorMessage(error, 'Failed to load task details'), 'error');
     });
 }
 
@@ -523,7 +529,9 @@ function displayTaskDetails(task) {
   // Hide task list and show task details
   document.getElementById('task-detail-container').style.display = 'block';
   document.getElementById('task-detail-container').dataset.taskId = task._id;
-  document.querySelector('.row.mb-3').style.display = 'none';
+  // By id: the first `.row.mb-3` in the document is whichever section
+  // happens to come first, not the task list.
+  document.getElementById('task-list-container').style.display = 'none';
 
   // Show parent task info if this is a follow-up task
   const parentTaskInfo = document.getElementById('parent-task-info');
@@ -639,7 +647,7 @@ function loadTaskComments(taskId) {
     method: 'GET',
     headers: {
       'Content-Type': 'application/json',
-      'x-auth-token': localStorage.getItem('chatbot-auth-token')
+      'x-auth-token': authToken()
     }
   })
     .then(response => {
@@ -653,7 +661,7 @@ function loadTaskComments(taskId) {
     })
     .catch(error => {
       logger.error('Error loading comments:', error);
-      showNotification('Error', 'Failed to load comments', 'error');
+      showNotification('Error', errorMessage(error, 'Failed to load comments'), 'error');
     });
 }
 
@@ -662,7 +670,7 @@ function loadTaskActivities(taskId) {
     method: 'GET',
     headers: {
       'Content-Type': 'application/json',
-      'x-auth-token': localStorage.getItem('chatbot-auth-token')
+      'x-auth-token': authToken()
     }
   })
     .then(response => {
@@ -752,7 +760,7 @@ function loadFollowUpTasks(taskId) {
     method: 'GET',
     headers: {
       'Content-Type': 'application/json',
-      'x-auth-token': localStorage.getItem('chatbot-auth-token')
+      'x-auth-token': authToken()
     }
   })
     .then(response => {
@@ -766,7 +774,7 @@ function loadFollowUpTasks(taskId) {
     })
     .catch(error => {
       logger.error('Error loading follow-up tasks:', error);
-      showNotification('Error', 'Failed to load follow-up tasks', 'error');
+      showNotification('Error', errorMessage(error, 'Failed to load follow-up tasks'), 'error');
     });
 }
 
@@ -881,13 +889,13 @@ function displayComments(comments) {
 
 function showTaskList() {
   document.getElementById('task-detail-container').style.display = 'none';
-  document.querySelector('.row.mb-3').style.display = 'block';
+  document.getElementById('task-list-container').style.display = 'block';
 }
 
 function openTaskModal(conversationId = null, task = null) {
   document.getElementById('task-form').reset();
 
-  loadOperators(localStorage.getItem('chatbot-auth-token'))
+  loadOperators(authToken())
     .then(() => {
       const taskModal = new bootstrap.Modal(document.getElementById('taskModal'));
       taskModal.show();
@@ -921,11 +929,16 @@ function openTaskModal(conversationId = null, task = null) {
         }
       }
     } else {
-      fetch(`/api/chat/session/${conversationId}`, {
+      // `/api/chat/session/:id` does not exist - `routes/chat.js` defines only
+      // `/history` and `/message` - so this fell through to the catch-all 404
+      // and opening a task from a conversation never filled in the contact
+      // details. The conversation a member of staff may read is served by
+      // `/api/admin/chat/:sessionId`, tenant-scoped.
+      fetch(`/api/admin/chat/${encodeURIComponent(conversationId)}`, {
         method: 'GET',
         headers: {
           'Content-Type': 'application/json',
-          'x-auth-token': localStorage.getItem('chatbot-auth-token')
+          'x-auth-token': authToken()
         }
       })
         .then(response => {
@@ -934,26 +947,23 @@ function openTaskModal(conversationId = null, task = null) {
           }
           return response.json();
         })
-        .then(data => {
-          const metadata = data.conversation.metadata;
-          if (metadata) {
-            if (metadata.get('name')) {
-              document.getElementById('contact-name-input').value = metadata.get('name');
-            }
-            if (metadata.get('email')) {
-              document.getElementById('contact-email-input').value = metadata.get('email');
-            }
-            if (metadata.get('phone')) {
-              document.getElementById('contact-phone-input').value = metadata.get('phone');
-            }
-          }
+        .then(conversation => {
+          // The route flattens Maps, so this is a plain object - the previous
+          // code called `metadata.get(...)` on it, which would have thrown even
+          // if the URL had been right.
+          const metadata = (conversation && conversation.metadata) || {};
 
-          document.getElementById('name-missing').style.display = metadata && !metadata.get('name') ? 'block' : 'none';
-          document.getElementById('email-missing').style.display = metadata && !metadata.get('email') ? 'block' : 'none';
-          document.getElementById('phone-missing').style.display = metadata && !metadata.get('phone') ? 'block' : 'none';
+          document.getElementById('contact-name-input').value = metadata.name || '';
+          document.getElementById('contact-email-input').value = metadata.email || '';
+          document.getElementById('contact-phone-input').value = metadata.phone || '';
+
+          document.getElementById('name-missing').style.display = !metadata.name ? 'block' : 'none';
+          document.getElementById('email-missing').style.display = !metadata.email ? 'block' : 'none';
+          document.getElementById('phone-missing').style.display = !metadata.phone ? 'block' : 'none';
         })
         .catch(error => {
           logger.error('Error loading conversation:', error);
+          showNotification('Error', errorMessage(error, 'Failed to load the conversation'), 'error');
         });
     }
   }
@@ -971,7 +981,9 @@ function openTaskModal(conversationId = null, task = null) {
     document.getElementById('task-due-date-input').value = formattedDate;
 
     document.getElementById('task-priority-input').value = task.priority;
-    document.getElementById('task-assignee-input').value = task.assignee;
+    document.getElementById('task-assignee-input').value = task.assignee && typeof task.assignee === 'object'
+      ? (task.assignee._id || '')
+      : (task.assignee || '');
 
     // Show parent task info if this is a follow-up task
     if (task.parentTaskId) {
@@ -1080,7 +1092,7 @@ function saveTask(token) {
     method: method,
     headers: {
       'Content-Type': 'application/json',
-      'x-auth-token': token || localStorage.getItem('chatbot-auth-token')
+      'x-auth-token': token || authToken()
     },
     body: JSON.stringify(taskData)
   })
@@ -1106,7 +1118,7 @@ function saveTask(token) {
       })
     .catch(error => {
       logger.error('Error saving task:', error);
-      showNotification('Error', 'Failed to save task', 'error');
+      showNotification('Error', errorMessage(error, 'Failed to save task'), 'error');
     });
 }
 
@@ -1117,7 +1129,7 @@ function updateTaskStatus(token, status) {
     method: 'PUT',
     headers: {
       'Content-Type': 'application/json',
-      'x-auth-token': token || localStorage.getItem('chatbot-auth-token')
+      'x-auth-token': token || authToken()
     },
     body: JSON.stringify({ status })
   })
@@ -1135,7 +1147,7 @@ function updateTaskStatus(token, status) {
       })
     .catch(error => {
       logger.error('Error updating task status:', error);
-      showNotification('Error', 'Failed to update task status', 'error');
+      showNotification('Error', errorMessage(error, 'Failed to update task status'), 'error');
     });
 }
 
@@ -1151,7 +1163,7 @@ function addComment(token) {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'x-auth-token': token || localStorage.getItem('chatbot-auth-token')
+      'x-auth-token': token || authToken()
     },
     body: JSON.stringify({ content })
   })
@@ -1170,7 +1182,7 @@ function addComment(token) {
       })
     .catch(error => {
       logger.error('Error adding comment:', error);
-      showNotification('Error', 'Failed to add comment', 'error');
+      showNotification('Error', errorMessage(error, 'Failed to add comment'), 'error');
     });
 }
 
@@ -1182,7 +1194,7 @@ function openFollowUpTaskModal(parentTaskId) {
     method: 'GET',
     headers: {
       'Content-Type': 'application/json',
-      'x-auth-token': localStorage.getItem('chatbot-auth-token')
+      'x-auth-token': authToken()
     }
   })
     .then(response => {
@@ -1230,7 +1242,7 @@ function openFollowUpTaskModal(parentTaskId) {
       document.getElementById('save-task-btn').textContent = 'Create Follow-up Task';
 
       // Load operators and show modal
-      loadOperators(localStorage.getItem('chatbot-auth-token'))
+      loadOperators(authToken())
         .then(() => {
           const taskModal = new bootstrap.Modal(document.getElementById('taskModal'));
           taskModal.show();
@@ -1238,7 +1250,7 @@ function openFollowUpTaskModal(parentTaskId) {
     })
     .catch(error => {
       logger.error('Error loading parent task details:', error);
-      showNotification('Error', 'Failed to load parent task details', 'error');
+      showNotification('Error', errorMessage(error, 'Failed to load parent task details'), 'error');
     });
 }
 
@@ -1247,7 +1259,7 @@ function editTaskFromDetails(taskId) {
     method: 'GET',
     headers: {
       'Content-Type': 'application/json',
-      'x-auth-token': localStorage.getItem('chatbot-auth-token')
+      'x-auth-token': authToken()
     }
   })
     .then(response => {
@@ -1261,7 +1273,7 @@ function editTaskFromDetails(taskId) {
     })
     .catch(error => {
       logger.error('Error loading task for editing:', error);
-      showNotification('Error', 'Failed to load task for editing', 'error');
+      showNotification('Error', errorMessage(error, 'Failed to load task for editing'), 'error');
     });
 }
 
@@ -1270,7 +1282,7 @@ function deleteTask(taskId) {
     method: 'DELETE',
     headers: {
       'Content-Type': 'application/json',
-      'x-auth-token': localStorage.getItem('chatbot-auth-token')
+      'x-auth-token': authToken()
     }
   })
     .then(response => {
@@ -1292,6 +1304,6 @@ function deleteTask(taskId) {
       })
     .catch(error => {
       logger.error('Error deleting task:', error);
-      showNotification('Error', 'Failed to delete task', 'error');
+      showNotification('Error', errorMessage(error, 'Failed to delete task'), 'error');
     });
 }

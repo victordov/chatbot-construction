@@ -1,5 +1,19 @@
+const crypto = require('crypto');
 const { google } = require('googleapis');
 const GoogleToken = require('../models/googleToken');
+
+// How long a consent screen may sit open before the callback is refused.
+const STATE_TTL_MS = 10 * 60 * 1000;
+
+function stateSecret() {
+  return process.env.JWT_SECRET || 'chatbot-jwt-secret';
+}
+
+function stateSignature(userId, issuedAt) {
+  return crypto.createHmac('sha256', stateSecret())
+    .update(`${userId}.${issuedAt}`)
+    .digest('hex');
+}
 
 class GoogleAuthService {
   constructor() {
@@ -28,11 +42,61 @@ class GoogleAuthService {
     );
   }
 
-  generateAuthUrl(state) {
+  /**
+   * The OAuth `state` for a user: who started the flow, when, and a signature
+   * over both.
+   *
+   * The state used to be the bare user id. Google hands it back untouched, so
+   * anyone who could reach the callback URL could name any user id and attach
+   * their own Google account to that person's login - after which every
+   * spreadsheet import that user ran read from the attacker's Drive.
+   */
+  signState(userId) {
+    const issuedAt = Date.now();
+    return `${userId}.${issuedAt}.${stateSignature(userId, issuedAt)}`;
+  }
+
+  /**
+   * The user id a state was issued for, or null when it was not issued by us
+   * within the last ten minutes.
+   */
+  verifyState(state) {
+    if (typeof state !== 'string') {
+      return null;
+    }
+
+    const parts = state.split('.');
+    if (parts.length !== 3) {
+      return null;
+    }
+
+    const [userId, issuedAtText, signature] = parts;
+    const issuedAt = Number(issuedAtText);
+
+    if (!userId || !Number.isFinite(issuedAt)) {
+      return null;
+    }
+
+    if (issuedAt > Date.now() || Date.now() - issuedAt > STATE_TTL_MS) {
+      return null;
+    }
+
+    const expected = Buffer.from(stateSignature(userId, issuedAt), 'hex');
+    const given = Buffer.from(signature, 'hex');
+
+    if (expected.length !== given.length || !crypto.timingSafeEqual(expected, given)) {
+      return null;
+    }
+
+    return userId;
+  }
+
+  generateAuthUrl(userId) {
     if (!this.isConfigured) {
       throw new Error('Google OAuth is not configured');
     }
 
+    const state = this.signState(userId);
     const client = this.createOAuthClient();
     const scopes = [
       'https://www.googleapis.com/auth/spreadsheets.readonly',
@@ -47,14 +111,27 @@ class GoogleAuthService {
     });
   }
 
-  async handleOAuthCallback(userId, code) {
+  /**
+   * Exchange the callback for tokens and store them against the user the
+   * state names. Verified before the exchange, so a forged state costs
+   * nothing and stores nothing.
+   */
+  async handleOAuthCallback(state, code) {
     if (!this.isConfigured) {
       throw new Error('Google OAuth is not configured');
+    }
+
+    const userId = this.verifyState(state);
+    if (!userId) {
+      const error = new Error('Invalid or expired OAuth state');
+      error.code = 'INVALID_STATE';
+      throw error;
     }
 
     const client = this.createOAuthClient();
     const { tokens } = await client.getToken(code);
     await this.saveTokens(userId, tokens);
+    return userId;
   }
 
   async saveTokens(userId, tokens) {

@@ -1,5 +1,6 @@
 const KnowledgeDocument = require('../models/knowledgeDocument');
 const GoogleSheetsService = require('./googleSheets');
+const { containsRegex } = require('../utils/query');
 const { logger } = require('./logging');
 
 class KnowledgeService {
@@ -25,10 +26,12 @@ class KnowledgeService {
   }
 
   async list(userId, query = '') {
+    // Escaped, like every other search in the codebase: a raw search term goes
+    // into a RegExp here, so `(a+)+$` was a way to hang the process.
     const q = query
       ? { $or: [
-        { title: { $regex: query, $options: 'i' } },
-        { spreadsheetId: { $regex: query, $options: 'i' } }
+        { title: containsRegex(query) },
+        { spreadsheetId: containsRegex(query) }
       ] }
       : {};
     return KnowledgeDocument.find({ userId, ...q }).select('spreadsheetId title sheet createdAt');

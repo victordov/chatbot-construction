@@ -17,7 +17,30 @@ const initializeServices = (socketManager) => {
 };
 
 const runtimeServiceRef = () => runtimeRegistry.getRuntimeService();
-const operatorAssistServiceRef = () => runtimeRegistry.getOperatorAssistService();
+
+/**
+ * What of the request's `context` reaches the workflow.
+ *
+ * The body used to be passed through whole, so a caller could name any
+ * session id (the tag node then wrote to it), assert `contact_verified`
+ * (the flow then read account details), or switch on `simulate`. Only the
+ * fields a client legitimately owns are copied, and the identity variables
+ * are stripped - they come from the conversation's contact, never a request.
+ */
+function safeContext(context = {}) {
+  const { stripReservedVariables } = require('./workflow');
+  const clean = {};
+
+  if (context.sessionId) {
+    clean.sessionId = String(context.sessionId);
+  }
+  if (context.state && typeof context.state === 'object') {
+    clean.state = context.state;
+  }
+  clean.variables = stripReservedVariables(context.variables);
+
+  return clean;
+}
 
 /**
  * Execute workflow for a user message
@@ -26,7 +49,7 @@ const operatorAssistServiceRef = () => runtimeRegistry.getOperatorAssistService(
 router.post('/execute', authenticate, async (req, res) => {
   try {
     const { message, chatHistory = [], context = {} } = req.body;
-    const tenantId = req.user.company?.id || req.user.id;
+    const tenantId = String(req.user.company?.id || req.user.id);
 
     if (!message) {
       return res.status(400).json({
@@ -35,38 +58,6 @@ router.post('/execute', authenticate, async (req, res) => {
       });
     }
 
-    // Check if conversation has operator assistance
-    const conversationId = context.conversationId || `conv_${Date.now()}`;
-    const isAssisted = operatorAssistServiceRef().isConversationAssisted(conversationId);
-
-    if (isAssisted) {
-      // Generate suggested response for operator instead of auto-responding
-      const assistInfo = operatorAssistServiceRef().getAssistanceInfo(conversationId);
-
-      // Get workflow for suggestion generation
-      const workflowStatus = runtimeServiceRef().getWorkflowStatus(tenantId);
-      if (workflowStatus?.status === 'active') {
-        await operatorAssistServiceRef().generateSuggestedResponse(
-          conversationId,
-          message,
-          chatHistory,
-          workflowStatus.workflow.compiledChain
-        );
-      }
-
-      return res.json({
-        success: true,
-        response: null, // No automatic response
-        mode: 'operator_assist',
-        assistInfo: {
-          operatorId: assistInfo.operatorId,
-          sessionId: assistInfo.sessionId,
-          mode: assistInfo.mode
-        }
-      });
-    }
-
-    // Normal workflow execution
     if (!runtimeServiceRef()) {
       return res.status(503).json({
         success: false,
@@ -74,11 +65,14 @@ router.post('/execute', authenticate, async (req, res) => {
       });
     }
 
+    // No conversation id: nothing here is attached to a stored conversation,
+    // and an id the caller made up must not become one for the task node to
+    // reference. Any write a node makes is scoped to this tenant.
     const result = await runtimeServiceRef().executeWorkflow(
       tenantId,
       message,
-      chatHistory,
-      { ...context, conversationId }
+      Array.isArray(chatHistory) ? chatHistory.slice(-10) : [],
+      { ...safeContext(context), conversationId: null }
     );
 
     res.json({
@@ -113,7 +107,7 @@ router.post('/execute', authenticate, async (req, res) => {
  */
 router.get('/status', authenticate, admin, (req, res) => {
   try {
-    const tenantId = req.user.company?.id || req.user.id;
+    const tenantId = String(req.user.company?.id || req.user.id);
 
     if (!runtimeServiceRef()) {
       return res.status(503).json({
@@ -172,7 +166,7 @@ router.get('/all-active', authenticate, superadmin, (req, res) => {
 router.post('/reload', authenticate, admin, async (req, res) => {
   try {
     const { workflowId } = req.body;
-    const tenantId = req.user.company?.id || req.user.id;
+    const tenantId = String(req.user.company?.id || req.user.id);
 
     if (!workflowId) {
       return res.status(400).json({
@@ -253,155 +247,6 @@ router.get('/health', (req, res) => {
   }
 });
 
-// Operator Assist Routes
-
-/**
- * Join conversation as operator
- * POST /api/workflow-execution/operator/join
- */
-router.post('/operator/join', authenticate, operator, async (req, res) => {
-  try {
-    const { conversationId } = req.body;
-    const operatorId = req.user.id;
-    const tenantId = req.user.company?.id || req.user.id;
-
-    if (!conversationId) {
-      return res.status(400).json({
-        success: false,
-        error: 'Conversation ID is required'
-      });
-    }
-
-    if (!operatorAssistServiceRef()) {
-      return res.status(503).json({
-        success: false,
-        error: 'Operator assist service not available'
-      });
-    }
-
-    const result = await operatorAssistServiceRef().joinConversation(
-      operatorId,
-      conversationId,
-      tenantId
-    );
-
-    res.json(result);
-
-  } catch (error) {
-    logger.error('Error joining conversation:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
-/**
- * Leave conversation as operator
- * POST /api/workflow-execution/operator/leave
- */
-router.post('/operator/leave', authenticate, operator, async (req, res) => {
-  try {
-    const { sessionId } = req.body;
-
-    if (!sessionId) {
-      return res.status(400).json({
-        success: false,
-        error: 'Session ID is required'
-      });
-    }
-
-    if (!operatorAssistServiceRef()) {
-      return res.status(503).json({
-        success: false,
-        error: 'Operator assist service not available'
-      });
-    }
-
-    const result = await operatorAssistServiceRef().leaveConversation(sessionId);
-
-    res.json(result);
-
-  } catch (error) {
-    logger.error('Error leaving conversation:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
-/**
- * Send operator response
- * POST /api/workflow-execution/operator/respond
- */
-router.post('/operator/respond', authenticate, operator, async (req, res) => {
-  try {
-    const { sessionId, message, conversationId } = req.body;
-
-    if (!sessionId || !message || !conversationId) {
-      return res.status(400).json({
-        success: false,
-        error: 'Session ID, message, and conversation ID are required'
-      });
-    }
-
-    if (!operatorAssistServiceRef()) {
-      return res.status(503).json({
-        success: false,
-        error: 'Operator assist service not available'
-      });
-    }
-
-    const result = await operatorAssistServiceRef().sendOperatorResponse(
-      sessionId,
-      message,
-      conversationId
-    );
-
-    res.json(result);
-
-  } catch (error) {
-    logger.error('Error sending operator response:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
-/**
- * Get operator statistics
- * GET /api/workflow-execution/operator/stats
- */
-router.get('/operator/stats', authenticate, admin, (req, res) => {
-  try {
-    const tenantId = req.user.company?.id || req.user.id;
-
-    if (!operatorAssistServiceRef()) {
-      return res.status(503).json({
-        success: false,
-        error: 'Operator assist service not available'
-      });
-    }
-
-    const stats = operatorAssistServiceRef().getOperatorStats(tenantId);
-
-    res.json({
-      success: true,
-      stats
-    });
-
-  } catch (error) {
-    logger.error('Error getting operator stats:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
-// Export initialization function
 router.initializeServices = initializeServices;
 
 module.exports = router;

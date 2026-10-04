@@ -9,26 +9,6 @@
 (function() {
   let notifications = [];
 
-  function token() {
-    return localStorage.getItem('chatbot-auth-token');
-  }
-
-  async function api(path, options = {}) {
-    const response = await fetch(`/api/notifications${path}`, {
-      ...options,
-      headers: {
-        'Content-Type': 'application/json',
-        'x-auth-token': token(),
-        ...options.headers
-      }
-    });
-
-    const body = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      throw new Error(body.error || `Request failed (${response.status})`);
-    }
-    return body;
-  }
 
   const ICONS = {
     task_overdue: { icon: 'alert-circle', className: 'text-danger' },
@@ -77,7 +57,7 @@
 
   async function load() {
     try {
-      const { notifications: fetched } = await api('');
+      const { notifications: fetched } = await api('/api/notifications');
       notifications = fetched || [];
       render();
     } catch (error) {
@@ -92,7 +72,7 @@
       notification.read = true;
       render();
       try {
-        await api(`/${encodeURIComponent(notificationId)}/read`, { method: 'PUT' });
+        await api(`/api/notifications/${encodeURIComponent(notificationId)}/read`, { method: 'PUT' });
       } catch (error) {
         // Revert so the badge does not lie about what has been read.
         notification.read = false;
@@ -117,7 +97,7 @@
     render();
 
     try {
-      await api('/read-all', { method: 'PUT' });
+      await api('/api/notifications/read-all', { method: 'PUT' });
     } catch (error) {
       notifications.forEach((n, i) => {
         n.read = previous[i];

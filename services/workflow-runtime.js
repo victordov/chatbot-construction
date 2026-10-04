@@ -7,6 +7,17 @@ const EventEmitter = require('events');
 const WorkflowCompilerService = require('./workflow-compiler');
 const { logger } = require('./logging');
 
+/**
+ * How long a cached workflow is trusted before the database is asked whether
+ * it is still the published one.
+ *
+ * The cache is per process. A publish on one instance hot-swaps that instance
+ * only; every other instance behind the load balancer kept serving the old
+ * graph until it restarted. Re-checking is one indexed query on `_id`,
+ * `version` and `publishedAt`, so it is cheap enough to do often.
+ */
+const CACHE_TTL_MS = parseInt(process.env.WORKFLOW_CACHE_TTL_MS, 10) || 30000;
+
 class WorkflowRuntimeService extends EventEmitter {
   constructor(socketManager) {
     super();
@@ -39,10 +50,12 @@ class WorkflowRuntimeService extends EventEmitter {
         id: workflow._id,
         name: workflow.name,
         version: workflow.version,
+        publishedAt: workflow.publishedAt || null,
         compiledChain: compilationResult.compiledChain,
         executionPlan: compilationResult.executionPlan,
         warnings: compilationResult.warnings,
         loadedAt: new Date(),
+        checkedAt: Date.now(),
         executionCount: 0
       });
 
@@ -87,10 +100,12 @@ class WorkflowRuntimeService extends EventEmitter {
         id: newWorkflow._id,
         name: newWorkflow.name,
         version: newWorkflow.version,
+        publishedAt: newWorkflow.publishedAt || null,
         compiledChain: compilationResult.compiledChain,
         executionPlan: compilationResult.executionPlan,
         warnings: compilationResult.warnings,
         loadedAt: new Date(),
+        checkedAt: Date.now(),
         executionCount: 0
       };
 
@@ -141,24 +156,49 @@ class WorkflowRuntimeService extends EventEmitter {
    */
   async ensureWorkflowLoaded(tenantId) {
     const existing = this.activeWorkflows.get(tenantId);
-    if (existing) {
+
+    if (existing && Date.now() - existing.checkedAt < CACHE_TTL_MS) {
       return existing;
     }
 
     try {
       const Workflow = require('../models/workflow');
+
+      if (existing) {
+        // Cheap check: is what we hold still what is published? A publish,
+        // archive or edit on another instance changes one of these.
+        const current = await Workflow.getActiveWorkflow(tenantId)
+          .select('_id version publishedAt')
+          .lean();
+
+        if (!current) {
+          logger.info(`Published workflow for tenant ${tenantId} is gone; unloading`);
+          this.unloadWorkflow(tenantId);
+          return null;
+        }
+
+        if (sameRelease(existing, current)) {
+          existing.checkedAt = Date.now();
+          return existing;
+        }
+
+        logger.info(`Published workflow for tenant ${tenantId} changed elsewhere; reloading`);
+      }
+
       const published = await Workflow.getActiveWorkflow(tenantId);
 
       if (!published) {
         return null;
       }
 
-      logger.info(`Lazily loading published workflow for tenant ${tenantId}`);
+      logger.info(`Loading published workflow for tenant ${tenantId}`);
       await this.loadWorkflow(tenantId, published);
       return this.activeWorkflows.get(tenantId);
     } catch (error) {
-      logger.error(`Unable to lazily load workflow for tenant ${tenantId}`, { error: error.message });
-      return null;
+      logger.error(`Unable to load workflow for tenant ${tenantId}`, { error: error.message });
+      // Serve what we have rather than nothing: a database blip should not
+      // take a working bot down.
+      return existing || null;
     }
   }
 
@@ -200,6 +240,7 @@ class WorkflowRuntimeService extends EventEmitter {
         metadata: {
           ...result.metadata,
           responseTime,
+          workflowId: String(activeWorkflow.id),
           workflowVersion: activeWorkflow.version,
           executionId: this.generateExecutionId()
         }
@@ -339,4 +380,17 @@ class WorkflowRuntimeService extends EventEmitter {
   }
 }
 
+/**
+ * Whether a cached entry and the published record are the same release.
+ */
+function sameRelease(cached, current) {
+  const cachedPublished = cached.publishedAt ? new Date(cached.publishedAt).getTime() : null;
+  const currentPublished = current.publishedAt ? new Date(current.publishedAt).getTime() : null;
+
+  return String(cached.id) === String(current._id) &&
+    cached.version === current.version &&
+    cachedPublished === currentPublished;
+}
+
 module.exports = WorkflowRuntimeService;
+module.exports.CACHE_TTL_MS = CACHE_TTL_MS;

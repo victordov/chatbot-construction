@@ -1,38 +1,90 @@
 const express = require('express');
 const Conversation = require('../models/conversation');
 const socketManager = require('../socketManager');
-const AIService = require('../services/ai');
 const tenantService = require('../services/tenant');
 const { logger } = require('../services/logging');
 const usageService = require('../services/usage');
 const contactService = require('../services/contacts');
 const replyService = require('../services/reply');
+const sessionToken = require('../services/session-token');
 
 const router = express.Router();
 
 const MAX_MESSAGE_LENGTH = 4000;
 const HISTORY_CONTEXT = 10;
 
+/**
+ * Which conversation a request is about, and whether it may touch it.
+ *
+ * The session id comes from the cookie session by default; a client that
+ * cannot hold a cookie (the reason this REST path exists) may name one in the
+ * body or query instead. Either way the id alone proves nothing - it appears
+ * in dashboard URLs and exports - so a conversation that has a token demands
+ * it. One without a token predates tokens; it is accepted and upgraded on the
+ * spot, so the next request has something to present.
+ *
+ * @returns {Promise<{sessionId: string, conversation: object|null,
+ *                    issuedToken: string|null, forbidden: boolean}>}
+ */
+async function resolveSession(req) {
+  const supplied = req.body?.sessionId || req.query?.sessionId;
+  const sessionId = typeof supplied === 'string' && supplied
+    ? supplied
+    : (req.session && req.session.sessionId);
+
+  if (!sessionId) {
+    return { sessionId: null, conversation: null, issuedToken: null, forbidden: false };
+  }
+
+  const conversation = await Conversation.findOne({ sessionId }).select('+sessionTokenHash');
+
+  if (!conversation) {
+    return { sessionId, conversation: null, issuedToken: null, forbidden: false };
+  }
+
+  const presented = req.body?.sessionToken || req.query?.sessionToken;
+
+  if (conversation.sessionTokenHash) {
+    return {
+      sessionId,
+      conversation,
+      issuedToken: null,
+      forbidden: !sessionToken.verify(conversation.sessionTokenHash, presented)
+    };
+  }
+
+  // Legacy conversation: accept this once and issue a token for next time.
+  const issued = sessionToken.issue();
+  conversation.sessionTokenHash = sessionToken.hash(issued);
+  await conversation.save();
+
+  return { sessionId, conversation, issuedToken: issued, forbidden: false };
+}
+
 // Get chat history for the current session
 router.get('/history', async (req, res) => {
   try {
-    if (!req.session || !req.session.sessionId) {
+    const { sessionId, conversation, issuedToken, forbidden } = await resolveSession(req);
+
+    if (!sessionId) {
       return res.status(400).json({ error: 'No active session' });
     }
 
-    const conversation = await Conversation.findOne(
-      { sessionId: req.session.sessionId },
-      { messages: 1 }
-    ).lean();
+    if (forbidden) {
+      return res.status(403).json({ error: 'Invalid session token' });
+    }
 
     if (!conversation) {
       return res.json({ messages: [] });
     }
 
     res.json({
+      sessionToken: issuedToken || undefined,
       messages: (conversation.messages || []).map(msg => ({
+        id: msg._id ? msg._id.toString() : undefined,
         content: msg.content,
         sender: msg.sender,
+        operatorName: msg.operatorName || undefined,
         timestamp: msg.timestamp
       }))
     });
@@ -53,10 +105,6 @@ router.get('/history', async (req, res) => {
  */
 router.post('/message', async (req, res) => {
   try {
-    if (!req.session || !req.session.sessionId) {
-      return res.status(400).json({ error: 'No active session' });
-    }
-
     const { message } = req.body;
 
     if (!message || typeof message !== 'string' || !message.trim()) {
@@ -67,9 +115,20 @@ router.post('/message', async (req, res) => {
       return res.status(400).json({ error: `Message must be ${MAX_MESSAGE_LENGTH} characters or fewer` });
     }
 
-    const sessionId = req.session.sessionId;
+    const resolved = await resolveSession(req);
+    const { sessionId, forbidden } = resolved;
+    let { conversation, issuedToken } = resolved;
+
+    if (!sessionId) {
+      return res.status(400).json({ error: 'No active session' });
+    }
+
+    if (forbidden) {
+      return res.status(403).json({ error: 'Invalid session token' });
+    }
+
     const origin = req.get('Origin') || req.get('Referer');
-    let conversation = await Conversation.findOne({ sessionId });
+    const text = message.trim();
 
     if (!conversation) {
       // Attribute the conversation to a tenant, otherwise it is invisible to
@@ -79,8 +138,26 @@ router.post('/message', async (req, res) => {
         origin
       });
 
+      // A tenant over their conversation allowance, or with a lapsed plan,
+      // gets no new conversation. The visitor is told the chat is unavailable
+      // rather than being shown a quota, which is the tenant's business.
+      const quota = await usageService.check(companyId, 'conversationsPerMonth');
+      if (!quota.allowed) {
+        logger.warn('Conversation refused by plan', { companyId: String(companyId), reason: quota.reason });
+        usageService.recordLimitHit(companyId);
+        return res.json({
+          success: true,
+          unavailable: true,
+          message: { content: usageService.UNAVAILABLE_MESSAGE, sender: 'bot', timestamp: new Date() }
+        });
+      }
+
+      // The token is shown to the client exactly once, in this response.
+      issuedToken = sessionToken.issue();
+
       conversation = new Conversation({
         sessionId,
+        sessionTokenHash: sessionToken.hash(issuedToken),
         company: companyId || undefined,
         domain: origin || 'unknown',
         messages: []
@@ -105,7 +182,7 @@ router.post('/message', async (req, res) => {
     }
 
     conversation.messages.push({
-      content: message.trim(),
+      content: text,
       sender: 'user',
       timestamp: new Date()
     });
@@ -116,7 +193,7 @@ router.post('/message', async (req, res) => {
 
     socketManager.emitToOperators(companyId, 'new-message', {
       sessionId,
-      message: message.trim(),
+      message: text,
       sender: 'user',
       timestamp: new Date()
     });
@@ -124,12 +201,51 @@ router.post('/message', async (req, res) => {
     usageService.record(companyId, { messages: 1 });
 
     // A human has the conversation: don't talk over them.
-    if (conversation.hasOperator) {
-      return res.json({ success: true, pendingOperator: true, message: null });
+    if (conversation.hasOperator || conversation.botEnabled === false) {
+      return res.json({
+        success: true,
+        pendingOperator: true,
+        message: null,
+        sessionToken: issuedToken || undefined
+      });
     }
 
-    if (conversation.botEnabled === false) {
-      return res.json({ success: true, pendingOperator: true, message: null });
+    /** Store and deliver a bot message, whoever composed it. */
+    const deliverBotMessage = async (content, extra = {}) => {
+      conversation.messages.push({ content, sender: 'bot', timestamp: new Date() });
+      conversation.lastActivity = new Date();
+      await conversation.save();
+
+      socketManager.emitToSession(sessionId, 'bot-message', {
+        id: conversation.messages.at(-1)._id.toString(),
+        text: content,
+        ...extra,
+        timestamp: new Date()
+      });
+
+      socketManager.emitToOperators(companyId, 'new-message', {
+        sessionId,
+        message: content,
+        sender: 'bot',
+        timestamp: new Date()
+      });
+
+      return {
+        content,
+        sender: 'bot',
+        ...extra,
+        timestamp: new Date()
+      };
+    };
+
+    // Checked before the model is called, not after: a refused reply that had
+    // already been generated would be paid for and thrown away.
+    const quota = await usageService.check(companyId, 'aiResponsesPerMonth');
+    if (!quota.allowed) {
+      logger.warn('Automated reply refused by plan', { companyId: String(companyId), reason: quota.reason });
+      usageService.recordLimitHit(companyId);
+      const unavailable = await deliverBotMessage(usageService.UNAVAILABLE_MESSAGE);
+      return res.json({ success: true, unavailable: true, message: unavailable, sessionToken: issuedToken || undefined });
     }
 
     const history = conversation.messages
@@ -143,33 +259,18 @@ router.post('/message', async (req, res) => {
     // if they have one, otherwise their assistant. Two entry points answering
     // the same message differently is how a REST fallback quietly stops
     // behaving like the product.
-    const reply = await replyService.generate({
-      conversation,
-      message: message.trim(),
-      history
-    });
+    let reply;
+    try {
+      reply = await replyService.generate({ conversation, message: text, history });
+    } catch (error) {
+      logger.error('Failed to generate a reply', { sessionId, error: error.message });
+      const apology = await deliverBotMessage(usageService.REPLY_FAILED_MESSAGE);
+      return res.json({ success: true, failed: true, message: apology, sessionToken: issuedToken || undefined });
+    }
 
-    const botResponse = reply.text;
-
-    conversation.messages.push({
-      content: botResponse,
-      sender: 'bot',
-      timestamp: new Date()
-    });
-    conversation.lastActivity = new Date();
-    await conversation.save();
-
-    socketManager.emitToSession(sessionId, 'bot-message', {
-      text: botResponse,
+    const delivered = await deliverBotMessage(reply.text, {
       choices: reply.choices || undefined,
-      timestamp: new Date()
-    });
-
-    socketManager.emitToOperators(companyId, 'new-message', {
-      sessionId,
-      message: botResponse,
-      sender: 'bot',
-      timestamp: new Date()
+      cards: reply.cards || undefined
     });
 
     // Only an assistant reply is a model call; a workflow that answered from a
@@ -180,12 +281,8 @@ router.post('/message', async (req, res) => {
 
     res.json({
       success: true,
-      message: {
-        content: botResponse,
-        sender: 'bot',
-        choices: reply.choices || undefined,
-        timestamp: new Date()
-      }
+      sessionToken: issuedToken || undefined,
+      message: delivered
     });
   } catch (error) {
     logger.error('Failed to process chat message', { error });

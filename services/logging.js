@@ -93,6 +93,37 @@ const logger = winston.createLogger({
   exitOnError: false
 });
 
+// Query parameters that are credentials. An inbound-email secret or a
+// password-reset token in the access log is a copy of that credential in
+// every log shipper, dashboard and backup the log ever reaches.
+const SENSITIVE_QUERY_PARAMS = ['secret', 'token', 'key', 'reset'];
+
+/**
+ * The request URL with credential-bearing query values replaced.
+ *
+ * Parsed from `originalUrl` rather than patched with a string replace, so an
+ * encoded or repeated parameter cannot slip past; and from `originalUrl`
+ * rather than `req.path`, which at response time still reflects whichever
+ * router the request ended in.
+ */
+function redactedUrl(req) {
+  const original = req.originalUrl || req.url || '';
+  const [base, ...rest] = original.split('?');
+
+  if (rest.length === 0) {
+    return base;
+  }
+
+  const params = new URLSearchParams(rest.join('?'));
+  for (const name of Array.from(params.keys())) {
+    if (SENSITIVE_QUERY_PARAMS.includes(name.toLowerCase())) {
+      params.set(name, '[redacted]');
+    }
+  }
+
+  return `${base}?${params.toString()}`;
+}
+
 // Add request logger for HTTP requests
 const httpLogger = (req, res, next) => {
   const start = Date.now();
@@ -100,7 +131,8 @@ const httpLogger = (req, res, next) => {
   // Process the request
   res.on('finish', () => {
     const duration = Date.now() - start;
-    const message = `${req.method} ${req.originalUrl} ${res.statusCode} ${duration}ms`;
+    const url = redactedUrl(req);
+    const message = `${req.method} ${url} ${res.statusCode} ${duration}ms`;
 
     // Determine log level based on status code
     const level = res.statusCode >= 500 ? 'error' :
@@ -108,7 +140,7 @@ const httpLogger = (req, res, next) => {
 
     logger.log(level, message, {
       method: req.method,
-      url: req.originalUrl,
+      url,
       ip: req.ip,
       statusCode: res.statusCode,
       userAgent: req.get('user-agent'),
@@ -124,6 +156,7 @@ const httpLogger = (req, res, next) => {
 module.exports = {
   logger,
   httpLogger,
+  redactedUrl,
 
   // Shorthand logging methods
   error: (message, meta) => logger.error(message, meta),

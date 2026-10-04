@@ -387,17 +387,6 @@ describe('Visual Workflow Editor Integration', () => {
       expect(knowledgeNode.data.config.sheetId).toBe('1234567890');
     });
 
-    test('should validate knowledge source configuration', async () => {
-      const response = await request(app)
-        .get('/api/workflows/knowledge-sources')
-        .set('x-auth-token', authToken);
-
-      expect(response.status).toBe(200);
-      expect(response.body.success).toBe(true);
-      expect(response.body.sources).toContain('google_sheets');
-      expect(response.body.sources).toContain('pdf');
-      expect(response.body.sources).toContain('vector_store');
-    });
   });
 
   describe('Security and Multi-tenancy', () => {

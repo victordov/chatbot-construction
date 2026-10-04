@@ -9,27 +9,6 @@
 (function() {
   let events = [];
 
-  function token() {
-    return localStorage.getItem('chatbot-auth-token');
-  }
-
-  async function api(path, options = {}) {
-    const response = await fetch(`/api/webhooks${path}`, {
-      ...options,
-      headers: {
-        'Content-Type': 'application/json',
-        'x-auth-token': token(),
-        ...options.headers
-      }
-    });
-
-    const body = await response.json().catch(() => ({}));
-
-    if (!response.ok) {
-      throw new Error(body.error || `Request failed (${response.status})`);
-    }
-    return body;
-  }
 
   const eventLabel = id => (events.find(event => event.id === id) || {}).label || id;
 
@@ -48,7 +27,7 @@
     container.innerHTML = '<p class="text-muted">Loading…</p>';
 
     try {
-      const { webhooks } = await api('');
+      const { webhooks } = await api('/api/webhooks');
 
       if (webhooks.length === 0) {
         container.innerHTML = `
@@ -96,15 +75,15 @@
               </div>` : ''}
 
             <div class="mt-2 d-flex gap-2 flex-wrap">
-              <button class="btn btn-sm btn-outline-primary" data-test="${hook._id}">Send a test</button>
-              <button class="btn btn-sm btn-outline-secondary" data-toggle-hook="${hook._id}"
+              <button class="btn btn-sm btn-outline-primary" data-test="${escapeHtml(hook._id)}">Send a test</button>
+              <button class="btn btn-sm btn-outline-secondary" data-toggle-hook="${escapeHtml(hook._id)}"
                       data-enabled="${hook.enabled}">
                 ${hook.enabled ? 'Turn off' : 'Turn on'}
               </button>
-              <button class="btn btn-sm btn-outline-secondary" data-rotate="${hook._id}">Rotate secret</button>
-              <button class="btn btn-sm btn-outline-danger" data-delete-hook="${hook._id}">Delete</button>
+              <button class="btn btn-sm btn-outline-secondary" data-rotate="${escapeHtml(hook._id)}">Rotate secret</button>
+              <button class="btn btn-sm btn-outline-danger" data-delete-hook="${escapeHtml(hook._id)}">Delete</button>
             </div>
-            <div class="mt-2" data-result="${hook._id}"></div>
+            <div class="mt-2" data-result="${escapeHtml(hook._id)}"></div>
           </div>
         </div>`).join('');
 
@@ -122,12 +101,12 @@
         target.innerHTML = '<span class="small text-muted">Sending…</span>';
 
         try {
-          const { result } = await api(`/${button.dataset.test}/test`, { method: 'POST' });
+          const { result } = await api(`/api/webhooks/${button.dataset.test}/test`, { method: 'POST' });
 
           target.innerHTML = `
             <div class="alert alert-${result.delivered ? 'success' : 'danger'} py-2 px-3 small mb-0">
               ${result.delivered
-    ? `Delivered — your endpoint returned ${result.status}.`
+    ? `Delivered — your endpoint returned ${escapeHtml(result.status)}.`
     : escapeHtml(result.error || 'The endpoint did not accept it.')}
             </div>`;
         } catch (error) {
@@ -143,7 +122,7 @@
     container.querySelectorAll('[data-toggle-hook]').forEach(button => {
       button.addEventListener('click', async () => {
         try {
-          await api(`/${button.dataset.toggleHook}`, {
+          await api(`/api/webhooks/${button.dataset.toggleHook}`, {
             method: 'PUT',
             body: JSON.stringify({ enabled: button.dataset.enabled !== 'true' })
           });
@@ -161,7 +140,7 @@
         }
 
         try {
-          const result = await api(`/${button.dataset.rotate}/rotate-secret`, { method: 'POST' });
+          const result = await api(`/api/webhooks/${button.dataset.rotate}/rotate-secret`, { method: 'POST' });
           showSecret(result.secret, result.secretNotice);
           loadWebhooks();
         } catch (error) {
@@ -177,7 +156,7 @@
         }
 
         try {
-          await api(`/${button.dataset.deleteHook}`, { method: 'DELETE' });
+          await api(`/api/webhooks/${button.dataset.deleteHook}`, { method: 'DELETE' });
           loadWebhooks();
           loadDeliveries();
         } catch (error) {
@@ -229,7 +208,7 @@ const ok = crypto.timingSafeEqual(Buffer.from(v1), Buffer.from(expected))
 
   async function loadEvents() {
     try {
-      const body = await api('/events');
+      const body = await api('/api/webhooks/events');
       events = body.events || [];
 
       const container = document.getElementById('webhook-events');
@@ -257,7 +236,7 @@ const ok = crypto.timingSafeEqual(Buffer.from(v1), Buffer.from(expected))
     button.disabled = true;
 
     try {
-      const result = await api('', {
+      const result = await api('/api/webhooks', {
         method: 'POST',
         body: JSON.stringify({
           url: document.getElementById('webhook-url').value.trim(),
@@ -291,7 +270,7 @@ const ok = crypto.timingSafeEqual(Buffer.from(v1), Buffer.from(expected))
 
     try {
       const status = document.getElementById('webhook-delivery-filter')?.value || '';
-      const { deliveries, retentionDays } = await api(`/deliveries${status ? `?status=${status}` : ''}`);
+      const { deliveries, retentionDays } = await api(`/api/webhooks/deliveries${status ? `?status=${status}` : ''}`);
 
       const note = document.getElementById('webhook-retention-note');
       if (note && retentionDays) {
@@ -311,7 +290,7 @@ const ok = crypto.timingSafeEqual(Buffer.from(v1), Buffer.from(expected))
           <td class="small text-nowrap">${escapeHtml(new Date(delivery.createdAt).toLocaleString())}</td>
           <td class="small">${escapeHtml(eventLabel(delivery.event))}</td>
           <td><span class="badge bg-${tone[delivery.status]}">${escapeHtml(delivery.status)}</span></td>
-          <td class="small">${delivery.responseStatus || '—'}</td>
+          <td class="small">${escapeHtml(delivery.responseStatus || '—')}</td>
           <td class="small text-muted text-break">
             ${escapeHtml(delivery.error || delivery.responseBody || '')}
             ${delivery.status === 'pending' && delivery.nextAttemptAt

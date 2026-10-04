@@ -166,6 +166,30 @@ describe('Email channel', () => {
       expect(second.created).toBe(false);
     });
 
+    test('a provider retry of the same Message-ID is not appended twice', async () => {
+      // Providers retry a webhook that answered 5xx. Before this the same
+      // email landed twice and the operator answered a question the customer
+      // asked once.
+      const first = await emailChannel.receive(acme._id, inbound());
+      const retry = await emailChannel.receive(acme._id, inbound());
+
+      expect(retry.duplicate).toBe(true);
+      expect(retry.created).toBe(false);
+      expect(retry.conversation._id.toString()).toBe(first.conversation._id.toString());
+      expect((await Conversation.findById(first.conversation._id)).messages).toHaveLength(1);
+    });
+
+    test('a retried reply is recognised even though it would thread by header', async () => {
+      await emailChannel.receive(acme._id, inbound());
+      const reply = inbound({ messageId: 'msg-2@example.com', inReplyTo: 'msg-1@example.com', text: 'Any update?' });
+
+      await emailChannel.receive(acme._id, reply);
+      const retry = await emailChannel.receive(acme._id, reply);
+
+      expect(retry.duplicate).toBe(true);
+      expect(retry.conversation.messages).toHaveLength(2);
+    });
+
     test('a different subject from the same person starts a new thread', async () => {
       await emailChannel.receive(acme._id, inbound());
 

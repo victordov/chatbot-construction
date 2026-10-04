@@ -44,11 +44,10 @@ function loadOperators(token) {
     })
     .catch(error => {
       logger.error('Error loading operators:', error);
-      showNotification('Error', 'Failed to load operators', 'error');
+      showNotification('Error', errorMessage(error, 'Failed to load operators'), 'error');
       return [];
     });
 }
-
 
 // Set up contact information management
 function setupContactInfoManagement(token) {
@@ -126,7 +125,7 @@ function saveContactInfo(token) {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'x-auth-token': token || localStorage.getItem('chatbot-auth-token')
+      'x-auth-token': token || authToken()
     },
     body: JSON.stringify(contactInfo)
   })
@@ -171,7 +170,7 @@ function saveContactInfo(token) {
       })
     .catch(error => {
       logger.error('Error saving contact information:', error);
-      showNotification('Error', 'Failed to save contact information', 'error');
+      showNotification('Error', errorMessage(error, 'Failed to save contact information'), 'error');
     });
 }
 
@@ -188,13 +187,9 @@ function requestUserInfo() {
   }
 }
 
-function showNotification(title, message, type = 'info') {
-  showToast(`${title}: ${message}`, type);
-}
-
 // Load all operators (including inactive)
 function loadAllOperators() {
-  const token = localStorage.getItem('chatbot-auth-token');
+  const token = authToken();
 
   fetch('/api/admin/all-operators', {
     method: 'GET',
@@ -203,7 +198,7 @@ function loadAllOperators() {
       'x-auth-token': token
     }
   })
-    .then(response => response.json())
+    .then(parseJsonResponse)
     .then(data => {
       const tableBody = document.getElementById('operators-table-body');
       tableBody.innerHTML = '';
@@ -217,11 +212,13 @@ function loadAllOperators() {
           ? new Date(operator.lastLogin).toLocaleDateString()
           : 'Never';
 
+        // Every one of these is typed by somebody: escaped, or it is script
+        // running in whoever opens the operators tab.
         row.innerHTML = `
-          <td>${operator.username}</td>
-          <td>${operator.displayName || '-'}</td>
-          <td>${operator.name || '-'}</td>
-          <td>${operator.email}</td>
+          <td>${escapeHtml(operator.username)}</td>
+          <td>${escapeHtml(operator.displayName || '-')}</td>
+          <td>${escapeHtml(operator.name || '-')}</td>
+          <td>${escapeHtml(operator.email)}</td>
           <td>
             <span class="badge ${operator.isActive ? 'bg-success' : 'bg-danger'}">
               ${operator.isActive ? 'Active' : 'Inactive'}
@@ -231,12 +228,12 @@ function loadAllOperators() {
           <td>${lastLogin}</td>
           <td>
             <div class="btn-group">
-              <button class="btn btn-sm btn-primary edit-operator" 
-                      data-id="${operator._id}">
+              <button class="btn btn-sm btn-primary edit-operator"
+                      data-id="${escapeHtml(operator._id)}">
                 Edit
               </button>
-              <button class="btn btn-sm ${operator.isActive ? 'btn-warning' : 'btn-success'} toggle-status" 
-                      data-id="${operator._id}" 
+              <button class="btn btn-sm ${operator.isActive ? 'btn-warning' : 'btn-success'} toggle-status"
+                      data-id="${escapeHtml(operator._id)}" 
                       data-status="${operator.isActive}">
                 ${operator.isActive ? 'Deactivate' : 'Activate'}
               </button>
@@ -259,7 +256,7 @@ function loadAllOperators() {
     })
     .catch(error => {
       console.error('Error loading operators:', error);
-      showToast('Failed to load operators', 'danger');
+      showToast(errorMessage(error, 'Failed to load operators'), 'danger');
     });
 }
 
@@ -269,7 +266,7 @@ function toggleOperatorStatus(event) {
   const operatorId = button.dataset.id;
   const currentStatus = button.dataset.status === 'true';
   const newStatus = !currentStatus;
-  const token = localStorage.getItem('chatbot-auth-token');
+  const token = authToken();
 
   fetch(`/api/admin/operators/${operatorId}`, {
     method: 'PATCH',
@@ -279,7 +276,7 @@ function toggleOperatorStatus(event) {
     },
     body: JSON.stringify({ isActive: newStatus })
   })
-    .then(response => response.json())
+    .then(parseJsonResponse)
     .then(data => {
       if (data.success) {
         showToast(`Operator ${newStatus ? 'activated' : 'deactivated'} successfully`, 'success');
@@ -290,14 +287,14 @@ function toggleOperatorStatus(event) {
     })
     .catch(error => {
       console.error('Error updating operator status:', error);
-      showToast('Failed to update operator status', 'danger');
+      showToast(errorMessage(error, 'Failed to update operator status'), 'danger');
     });
 }
 
 // Load companies for dropdowns
 function loadCompaniesForDropdown(selectElement, selectedCompanyId = null) {
-  const token = localStorage.getItem('chatbot-auth-token');
-  const currentUser = JSON.parse(localStorage.getItem('chatbot-user'));
+  const token = authToken();
+  const currentUser = getStoredUser() || {};
 
   // Clear existing options (except the first one)
   while (selectElement.options.length > 1) {
@@ -325,7 +322,7 @@ function loadCompaniesForDropdown(selectElement, selectedCompanyId = null) {
       'x-auth-token': token
     }
   })
-    .then(response => response.json())
+    .then(parseJsonResponse)
     .then(data => {
       data.companies.forEach(company => {
         const option = document.createElement('option');
@@ -342,13 +339,13 @@ function loadCompaniesForDropdown(selectElement, selectedCompanyId = null) {
     })
     .catch(error => {
       console.error('Error loading companies:', error);
-      showToast('Failed to load companies', 'danger');
+      showToast(errorMessage(error, 'Failed to load companies'), 'danger');
     });
 }
 
 // Handle role selection changes
 function handleRoleChange(roleSelect, companySelect, companyContainer) {
-  const currentUser = JSON.parse(localStorage.getItem('chatbot-user'));
+  const currentUser = getStoredUser() || {};
 
   // Hide superadmin option for non-superadmins
   const superadminOption = roleSelect.querySelector('option[value="superadmin"]');
@@ -434,7 +431,7 @@ function createOperator() {
   const companyId = document.getElementById('operator-company').value;
   const password = document.getElementById('operator-password').value;
   const confirmPassword = document.getElementById('operator-confirm-password').value;
-  const token = localStorage.getItem('chatbot-auth-token');
+  const token = authToken();
 
   if (!username || !email || !password || !confirmPassword) {
     showToast('Please fill in all required fields', 'warning');
@@ -469,7 +466,7 @@ function createOperator() {
       confirmPassword
     })
   })
-    .then(response => response.json())
+    .then(parseJsonResponse)
     .then(data => {
       if (data.success) {
         showToast('Operator created successfully', 'success');
@@ -486,55 +483,16 @@ function createOperator() {
     })
     .catch(error => {
       console.error('Error creating operator:', error);
-      showToast('Failed to create operator', 'danger');
+      showToast(errorMessage(error, 'Failed to create operator'), 'danger');
     });
 }
 
-// Helper function to show toast notifications
-function showToast(message, type = 'info') {
-  const container = document.querySelector('.toast-container');
-  if (!container) {
-    return;
-  }
-
-  const wrapper = document.createElement('div');
-  wrapper.className = `toast align-items-center text-bg-${type} border-0`;
-  wrapper.role = 'alert';
-  wrapper.setAttribute('aria-live', 'assertive');
-  wrapper.setAttribute('aria-atomic', 'true');
-  wrapper.innerHTML = `
-    <div class="d-flex">
-      <div class="toast-body">${escapeHtml(message)}</div>
-      <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
-    </div>`;
-  container.appendChild(wrapper);
-  const toast = new bootstrap.Toast(wrapper, { delay: 5000 });
-  toast.show();
-  toast._element.addEventListener('hidden.bs.toast', () => wrapper.remove());
-}
-
-// Toggle loading state for buttons
-function setLoading(button, isLoading) {
-  if (!button) {
-    return;
-  }
-  if (isLoading) {
-    button.dataset.originalContent = button.innerHTML;
-    button.disabled = true;
-    button.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>';
-  } else {
-    if (button.dataset.originalContent) {
-      button.innerHTML = button.dataset.originalContent;
-      delete button.dataset.originalContent;
-    }
-    button.disabled = false;
-  }
-}
+// showToast and setLoading live in admin-utils.js.
 
 // Open edit operator modal
 function openEditOperatorModal(event) {
   const operatorId = event.currentTarget.dataset.id;
-  const token = localStorage.getItem('chatbot-auth-token');
+  const token = authToken();
 
   // Fetch operator details
   fetch('/api/admin/all-operators', {
@@ -544,7 +502,7 @@ function openEditOperatorModal(event) {
       'x-auth-token': token
     }
   })
-    .then(response => response.json())
+    .then(parseJsonResponse)
     .then(data => {
       const operator = data.operators.find(op => op._id === operatorId);
 
@@ -587,7 +545,7 @@ function openEditOperatorModal(event) {
     })
     .catch(error => {
       console.error('Error fetching operator details:', error);
-      showToast('Failed to fetch operator details', 'danger');
+      showToast(errorMessage(error, 'Failed to fetch operator details'), 'danger');
     });
 }
 
@@ -612,8 +570,8 @@ function editOperator() {
   const email = document.getElementById('edit-operator-email').value;
   const role = document.getElementById('edit-operator-role').value;
   const companyId = document.getElementById('edit-operator-company').value;
-  const token = localStorage.getItem('chatbot-auth-token');
-  const currentUser = JSON.parse(localStorage.getItem('chatbot-user'));
+  const token = authToken();
+  const currentUser = getStoredUser() || {};
 
   if (!username || !email) {
     showToast('Username and email are required', 'warning');
@@ -647,7 +605,7 @@ function editOperator() {
       companyId: role !== 'superadmin' ? companyId : null
     })
   })
-    .then(response => response.json())
+    .then(parseJsonResponse)
     .then(data => {
       if (data.success) {
         showToast('Operator details updated successfully', 'success');
@@ -663,7 +621,7 @@ function editOperator() {
     })
     .catch(error => {
       console.error('Error updating operator details:', error);
-      showToast('Failed to update operator details', 'danger');
+      showToast(errorMessage(error, 'Failed to update operator details'), 'danger');
     });
 }
 
@@ -671,7 +629,7 @@ function resetPassword() {
   const operatorId = document.getElementById('reset-password-operator-id').value;
   const password = document.getElementById('reset-password-new').value;
   const confirmPassword = document.getElementById('reset-password-confirm').value;
-  const token = localStorage.getItem('chatbot-auth-token');
+  const token = authToken();
 
   if (!password || !confirmPassword) {
     showToast('Password and confirm password are required', 'warning');
@@ -691,7 +649,7 @@ function resetPassword() {
     },
     body: JSON.stringify({ password, confirmPassword })
   })
-    .then(response => response.json())
+    .then(parseJsonResponse)
     .then(data => {
       if (data.success) {
         showToast('Password reset successfully', 'success');
@@ -713,7 +671,7 @@ function resetPassword() {
     })
     .catch(error => {
       console.error('Error resetting password:', error);
-      showToast('Failed to reset password', 'danger');
+      showToast(errorMessage(error, 'Failed to reset password'), 'danger');
     });
 }
 
@@ -721,9 +679,9 @@ function resetPassword() {
 function connectGoogleAccount(event) {
   const btn = event?.currentTarget;
   setLoading(btn, true);
-  const token = localStorage.getItem('chatbot-auth-token');
+  const token = authToken();
   fetch('/api/google/auth/url', { headers: { 'x-auth-token': token } })
-    .then(res => res.json())
+    .then(parseJsonResponse)
     .then(data => {
       const w = window.open(data.url, '_blank');
       const poll = setInterval(() => {
@@ -738,9 +696,9 @@ function connectGoogleAccount(event) {
 }
 
 function checkGoogleStatus() {
-  const token = localStorage.getItem('chatbot-auth-token');
+  const token = authToken();
   fetch('/api/google/status', { headers: { 'x-auth-token': token } })
-    .then(res => res.json())
+    .then(parseJsonResponse)
     .then(data => {
       const btn = document.getElementById('connect-google');
       if (btn) {
@@ -760,24 +718,19 @@ let currentDocId = null;
 function loadSpreadsheet(event) {
   const btn = event?.currentTarget;
   setLoading(btn, true);
-  const token = localStorage.getItem('chatbot-auth-token');
+  const token = authToken();
   const spreadsheetId = document.getElementById('spreadsheet-id').value;
   const defaultSheet = document.getElementById('default-sheet').checked;
   const sheet = defaultSheet ? 'Sheet1' : document.getElementById('sheet-select').value;
-  const excludeInput = document.getElementById('exclude-columns');
-  const exclude = excludeInput
-    ? excludeInput.value
-      .split(',')
-      .map(s => s.trim())
-      .filter(Boolean)
-    : [];
+  // Columns are chosen in the next step, once the sheet has been read.
+  const exclude = [];
 
   fetch('/api/google/knowledge/import', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-auth-token': token },
     body: JSON.stringify({ spreadsheetId, sheet, exclude })
   })
-    .then(res => res.json())
+    .then(parseJsonResponse)
     .then(data => {
       if (document.getElementById('knowledge-list')) {
         refreshKnowledge();
@@ -793,10 +746,10 @@ function loadSpreadsheet(event) {
 function searchDrive(event) {
   const btn = event?.currentTarget;
   setLoading(btn, true);
-  const token = localStorage.getItem('chatbot-auth-token');
+  const token = authToken();
   const query = document.getElementById('drive-query').value;
   fetch(`/api/google/drive/search?q=${encodeURIComponent(query)}`, { headers: { 'x-auth-token': token } })
-    .then(res => res.json())
+    .then(parseJsonResponse)
     .then(data => {
       const list = document.getElementById('drive-results');
       list.innerHTML = '';
@@ -829,15 +782,10 @@ function openLoadModal(id, name) {
   });
 }
 
-function importSpreadsheet(id) {
-  document.getElementById('spreadsheet-id').value = id;
-  fetchSheetNames(id);
-}
-
 function fetchSheetNames(id) {
-  const token = localStorage.getItem('chatbot-auth-token');
+  const token = authToken();
   return fetch(`/api/google/sheets/${id}/names`, { headers: { 'x-auth-token': token } })
-    .then(res => res.json())
+    .then(parseJsonResponse)
     .then(data => {
       const select = document.getElementById('sheet-select');
       select.innerHTML = '';
@@ -851,64 +799,15 @@ function fetchSheetNames(id) {
     .catch(() => showToast('Failed to fetch sheet names', 'danger'));
 }
 
-function fetchModalSheetNames(id) {
-  const token = localStorage.getItem('chatbot-auth-token');
-  return fetch(`/api/google/sheets/${id}/names`, { headers: { 'x-auth-token': token } })
-    .then(res => res.json())
-    .then(data => {
-      const select = document.getElementById('modal-sheet-select');
-      select.innerHTML = '';
-      data.names.forEach(n => {
-        const opt = document.createElement('option');
-        opt.value = n;
-        opt.textContent = n;
-        select.appendChild(opt);
-      });
-    })
-    .catch(() => showToast('Failed to fetch sheet names', 'danger'));
-}
-
-function loadFromModal(event) {
-  const btn = event?.currentTarget;
-  setLoading(btn, true);
-  const token = localStorage.getItem('chatbot-auth-token');
-  const spreadsheetId = document.getElementById('modal-spreadsheet-id').value;
-  const defaultSheet = document.getElementById('modal-default-sheet').checked;
-  const sheet = defaultSheet ? 'Sheet1' : document.getElementById('modal-sheet-select').value;
-  const excludeInput = document.getElementById('exclude-columns');
-  const exclude = excludeInput
-    ? excludeInput.value
-      .split(',')
-      .map(s => s.trim())
-      .filter(Boolean)
-    : [];
-  fetch('/api/google/knowledge/import', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-auth-token': token },
-    body: JSON.stringify({ spreadsheetId, sheet, exclude })
-  })
-    .then(res => res.json())
-    .then(data => {
-      bootstrap.Modal.getInstance(document.getElementById('loadSheetModal')).hide();
-      if (document.getElementById('knowledge-list')) {
-        refreshKnowledge();
-      }
-      currentDocId = data.doc._id;
-      expandKnowledge(data.doc._id);
-    })
-    .catch(() => showToast('Failed to load spreadsheet', 'danger'))
-    .finally(() => setLoading(btn, false));
-}
-
 function refreshKnowledge(query = '', event) {
   const btn = event?.currentTarget;
   if (btn) {
     setLoading(btn, true);
   }
-  const token = localStorage.getItem('chatbot-auth-token');
+  const token = authToken();
   const url = '/api/google/knowledge' + (query ? `?q=${encodeURIComponent(query)}` : '');
   fetch(url, { headers: { 'x-auth-token': token } })
-    .then(res => res.json())
+    .then(parseJsonResponse)
     .then(data => {
       const list = document.getElementById('knowledge-list');
       list.innerHTML = '';
@@ -947,18 +846,18 @@ function refreshKnowledge(query = '', event) {
 function refreshDocument(id, event) {
   const btn = event?.currentTarget;
   setLoading(btn, true);
-  const token = localStorage.getItem('chatbot-auth-token');
+  const token = authToken();
   fetch(`/api/google/knowledge/${id}/refresh`, { method: 'POST', headers: { 'x-auth-token': token } })
-    .then(res => res.json())
+    .then(parseJsonResponse)
     .then(() => refreshKnowledge())
     .catch(() => showToast('Refresh failed', 'danger'))
     .finally(() => setLoading(btn, false));
 }
 
 function expandKnowledge(id) {
-  const token = localStorage.getItem('chatbot-auth-token');
+  const token = authToken();
   fetch(`/api/google/knowledge/${id}`, { headers: { 'x-auth-token': token } })
-    .then(res => res.json())
+    .then(parseJsonResponse)
     .then(data => {
       currentDocId = data.doc._id;
       const table = document.getElementById('spreadsheet-table');
@@ -1037,7 +936,7 @@ function updateColumns(id) {
       }
     });
   });
-  const token = localStorage.getItem('chatbot-auth-token');
+  const token = authToken();
   fetch(`/api/google/knowledge/${id}/columns`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-auth-token': token },
@@ -1144,7 +1043,7 @@ function saveKnowledgeConfig(event) {
       excluded.push(name);
     }
   });
-  const token = localStorage.getItem('chatbot-auth-token');
+  const token = authToken();
   fetch(`/api/google/knowledge/${currentDocId}/columns`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-auth-token': token },
@@ -1156,9 +1055,9 @@ function saveKnowledgeConfig(event) {
 }
 
 function showSummary(id) {
-  const token = localStorage.getItem('chatbot-auth-token');
+  const token = authToken();
   fetch(`/api/google/knowledge/${id}`, { headers: { 'x-auth-token': token } })
-    .then(res => res.json())
+    .then(parseJsonResponse)
     .then(data => {
       const ul = document.getElementById('kb-summary-details');
       if (!ul) {
@@ -1185,9 +1084,9 @@ function showSummary(id) {
 function deleteKnowledge(id, event) {
   const btn = event?.currentTarget;
   setLoading(btn, true);
-  const token = localStorage.getItem('chatbot-auth-token');
+  const token = authToken();
   fetch(`/api/google/knowledge/${id}`, { method: 'DELETE', headers: { 'x-auth-token': token } })
-    .then(res => res.json())
+    .then(parseJsonResponse)
     .then(() => {
       if (currentDocId === id) {
         currentDocId = null;
@@ -1260,19 +1159,6 @@ document.addEventListener('DOMContentLoaded', function() {
       }
     });
   }
-  const modalLoadBtn = document.getElementById('modal-load-btn');
-  if (modalLoadBtn) {
-    modalLoadBtn.addEventListener('click', loadFromModal);
-  }
-  const modalDefaultCb = document.getElementById('modal-default-sheet');
-  const modalSheetSelect = document.getElementById('modal-sheet-select');
-  if (modalDefaultCb && modalSheetSelect) {
-    modalDefaultCb.addEventListener('change', function() {
-      modalSheetSelect.disabled = this.checked;
-    });
-    modalSheetSelect.disabled = modalDefaultCb.checked;
-  }
-
   const changeSpreadsheetBtn = document.getElementById('kb-change-spreadsheet');
   if (changeSpreadsheetBtn) {
     changeSpreadsheetBtn.addEventListener('click', () => showStep('kb-step-search'));

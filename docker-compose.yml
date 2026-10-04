@@ -1,9 +1,37 @@
-version: '3.8'
+# Runs the platform with its database. Copy .env.example to .env first; the
+# app reads it, and the MONGODB_URI below overrides whatever it says so the
+# app finds the MongoDB container rather than localhost.
+#
+#   docker compose up -d --build
+#   docker compose --profile redis up -d --build   # with Redis (see below)
 
 services:
-  # Main MongoDB container for the application
+  app:
+    build: .
+    container_name: chatbot-app
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      - MONGODB_URI=mongodb://mongodb:27017/chatbot
+      # For more than one app instance set REDIS_URL=redis://redis:6379 (and
+      # start the redis profile); it switches socket.io to the Redis adapter so
+      # an operator on one instance can reach a visitor on another.
+      # - REDIS_URL=redis://redis:6379
+    ports:
+      - "3000:3000"
+    volumes:
+      # Chat attachments and backups are written to local disk. Without these
+      # volumes a rebuild throws them away.
+      - uploads:/app/uploads
+      - backups:/app/backups
+    restart: unless-stopped
+    networks:
+      - chatbot-network
+
   mongodb:
-    image: mongo:latest
+    image: mongo:7
     container_name: chatbot-mongodb
     ports:
       - "27017:27017"
@@ -11,20 +39,23 @@ services:
       - mongodb_data:/data/db
     environment:
       - MONGO_INITDB_DATABASE=chatbot
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     restart: unless-stopped
     networks:
       - chatbot-network
 
-  # MongoDB container for testing
-  mongodb-test:
-    image: mongo:latest
-    container_name: chatbot-mongodb-test
-    ports:
-      - "27018:27017"
-    volumes:
-      - mongodb_test_data:/data/db
-    environment:
-      - MONGO_INITDB_DATABASE=chatbot-test
+  # Optional. Only needed when running more than one app instance:
+  #   docker compose --profile redis up -d
+  # and set REDIS_URL=redis://redis:6379 on every app instance.
+  redis:
+    image: redis:7-alpine
+    container_name: chatbot-redis
+    profiles: ["redis"]
     restart: unless-stopped
     networks:
       - chatbot-network
@@ -35,4 +66,5 @@ networks:
 
 volumes:
   mongodb_data:
-  mongodb_test_data:
+  uploads:
+  backups:

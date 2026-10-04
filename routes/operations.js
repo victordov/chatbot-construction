@@ -7,7 +7,6 @@ const router = express.Router();
 const { auth, admin, superadmin } = require('../middleware/auth');
 const BackupService = require('../services/backup');
 const TenantBackupService = require('../services/tenant-backup');
-const WidgetUpdateService = require('../services/widgetUpdate');
 const Company = require('../models/company');
 const audit = require('../services/audit');
 const { logger } = require('../services/logging');
@@ -15,7 +14,6 @@ const { logger } = require('../services/logging');
 // Initialize services
 const backupService = new BackupService();
 const tenantBackupService = new TenantBackupService();
-const widgetUpdateService = new WidgetUpdateService();
 
 // Get system status
 router.get('/status', auth, admin, async (req, res) => {
@@ -186,76 +184,6 @@ router.post('/backups/restore', auth, superadmin, async (req, res) => {
   } catch (error) {
     logger.error('Error restoring backup', { error });
     res.status(500).json({ error: 'Failed to restore backup' });
-  }
-});
-
-// Widget version management routes
-router.get('/widget/versions', auth, superadmin, async (req, res) => {
-  try {
-    const versions = widgetUpdateService.getVersions();
-
-    const versionDetails = versions.all.map(version =>
-      widgetUpdateService.getVersionInfo(version)
-    ).filter(info => info !== null);
-
-    res.json({
-      current: versions.current,
-      latest: versions.latest,
-      lastUpdated: versions.lastUpdated,
-      versions: versionDetails
-    });
-  } catch (error) {
-    logger.error('Error getting widget versions', { error });
-    res.status(500).json({ error: 'Failed to get widget versions' });
-  }
-});
-
-router.post('/widget/deploy', auth, superadmin, async (req, res) => {
-  try {
-    const { version } = req.body;
-
-    if (!version) {
-      return res.status(400).json({ error: 'Version is required' });
-    }
-
-    const success = widgetUpdateService.deployVersion(version);
-
-    if (success) {
-      res.json({
-        success: true,
-        message: `Widget version ${version} deployed successfully`
-      });
-    } else {
-      res.status(500).json({
-        success: false,
-        error: 'Deployment failed'
-      });
-    }
-  } catch (error) {
-    logger.error('Error deploying widget version', { error });
-    res.status(500).json({ error: error.message || 'Failed to deploy widget version' });
-  }
-});
-
-router.post('/widget/archive-current', auth, superadmin, async (req, res) => {
-  try {
-    const success = widgetUpdateService.archiveCurrentVersion();
-
-    if (success) {
-      res.json({
-        success: true,
-        message: 'Current widget version archived successfully',
-        version: widgetUpdateService.currentVersion
-      });
-    } else {
-      res.status(500).json({
-        success: false,
-        error: 'Archiving failed'
-      });
-    }
-  } catch (error) {
-    logger.error('Error archiving widget version', { error });
-    res.status(500).json({ error: 'Failed to archive widget version' });
   }
 });
 

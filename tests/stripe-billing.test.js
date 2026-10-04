@@ -20,6 +20,7 @@ const Company = require('../models/company');
 const Subscription = require('../models/subscription');
 const User = require('../models/user');
 const usageService = require('../services/usage');
+const stripe = require('../services/stripe');
 
 const WEBHOOK_SECRET = 'whsec_test_secret';
 
@@ -97,7 +98,9 @@ describe('Stripe billing', () => {
 
   beforeEach(async () => {
     await Subscription.deleteMany({ company: acme._id });
+    await stripe.StripeEvent.deleteMany({});
     usageService.invalidateSubscription(acme._id);
+    delete process.env.STRIPE_ALLOW_CLIENT_REFERENCE;
   });
 
   afterAll(async () => {
@@ -126,20 +129,35 @@ describe('Stripe billing', () => {
       expect(response.body).toMatchObject({ received: true, handled: true });
     });
 
-    it('accepts a payment link, which carries the tenant as client_reference_id', async () => {
-      const response = await send({
-        id: 'evt_link',
-        type: 'checkout.session.completed',
-        created: Math.floor(Date.now() / 1000),
-        data: {
-          object: {
-            customer: 'cus_link',
-            subscription: 'sub_link',
-            client_reference_id: String(acme._id),
-            metadata: { planId: 'basic' }
-          }
+    const paymentLinkCheckout = () => ({
+      id: `evt_link_${Math.random().toString(36).slice(2)}`,
+      type: 'checkout.session.completed',
+      created: Math.floor(Date.now() / 1000),
+      data: {
+        object: {
+          customer: 'cus_link',
+          subscription: 'sub_link',
+          client_reference_id: String(acme._id),
+          metadata: { planId: 'basic' }
         }
-      });
+      }
+    });
+
+    it('does not let client_reference_id name the tenant by default', async () => {
+      // The field is whatever the customer put in the payment link's URL, so
+      // trusting it lets anyone apply a plan to a company id they found.
+      const response = await send(paymentLinkCheckout());
+
+      expect(response.status).toBe(200);
+      expect(response.body.handled).toBe(false);
+      expect(response.body.reason).toBe('no matching tenant');
+      expect(await Subscription.findOne({ company: acme._id })).toBeNull();
+    });
+
+    it('accepts a payment link when the deployment has opted in', async () => {
+      process.env.STRIPE_ALLOW_CLIENT_REFERENCE = 'true';
+
+      const response = await send(paymentLinkCheckout());
 
       expect(response.body.handled).toBe(true);
       expect((await Subscription.findOne({ company: acme._id })).planId).toBe('basic');
@@ -288,6 +306,32 @@ describe('Stripe billing', () => {
       expect(subscription.planId).toBe('trial');
       expect(subscription.status).toBe('active');
     });
+
+    it('leaves a trial alone when a checkout names no plan we know', async () => {
+      const response = await send({
+        id: 'evt_mystery',
+        type: 'checkout.session.completed',
+        created: Math.floor(Date.now() / 1000),
+        data: {
+          object: {
+            customer: 'cus_mystery',
+            subscription: 'sub_mystery',
+            metadata: { companyId: String(acme._id) }
+          }
+        }
+      });
+
+      expect(response.body.handled).toBe(true);
+
+      const subscription = await Subscription.findOne({ company: acme._id });
+      // Activating them would put a paying customer on trial limits with no
+      // trial clock; the subscription event that follows carries the price.
+      expect(subscription.planId).toBe('trial');
+      expect(subscription.status).toBe('trialing');
+      expect(subscription.trialEndsAt).toBeInstanceOf(Date);
+      // But the customer is remembered, so that later event can find them.
+      expect(subscription.externalCustomerId).toBe('cus_mystery');
+    });
   });
 
   describe('retries and ordering', () => {
@@ -301,6 +345,48 @@ describe('Stripe billing', () => {
 
       expect(await Subscription.countDocuments({ company: acme._id })).toBe(1);
       expect((await Subscription.findOne({ company: acme._id })).planId).toBe('professional');
+    });
+
+    it('acknowledges a redelivered event id without applying it again', async () => {
+      const event = subscriptionEvent('customer.subscription.created', {
+        metadata: { companyId: String(acme._id) }
+      });
+      await send(event);
+
+      // A person suspends the tenant in between.
+      await request(app)
+        .patch(`/api/billing/companies/${acme._id}/subscription`)
+        .set('x-auth-token', superToken)
+        .send({ status: 'suspended' });
+
+      const again = await send(event);
+
+      expect(again.status).toBe(200);
+      expect(again.body).toMatchObject({ received: true, applied: false, reason: 'duplicate event' });
+      // The retry's "active" must not undo the suspension.
+      expect((await Subscription.findOne({ company: acme._id })).status).toBe('suspended');
+    });
+
+    it('does not let a newer-looking Stripe event overwrite a manual suspension made after it', async () => {
+      await send(subscriptionEvent('customer.subscription.created', {
+        metadata: { companyId: String(acme._id) }
+      }));
+
+      await request(app)
+        .patch(`/api/billing/companies/${acme._id}/subscription`)
+        .set('x-auth-token', superToken)
+        .send({ status: 'suspended' });
+
+      // A different event, raised a moment before the superadmin acted.
+      const stale = await send({
+        id: 'evt_before_suspension',
+        type: 'invoice.payment_succeeded',
+        created: Math.floor(Date.now() / 1000) - 30,
+        data: { object: { customer: 'cus_123', subscription: 'sub_123' } }
+      });
+
+      expect(stale.body.applied).toBe(false);
+      expect((await Subscription.findOne({ company: acme._id })).status).toBe('suspended');
     });
 
     it('does not let a redelivered older event undo a newer one', async () => {
@@ -360,6 +446,25 @@ describe('Stripe billing', () => {
         .send({ planId: 'basic' });
 
       expect(response.status).toBe(404);
+    });
+
+    it('reports an expired trial as expired rather than as trialing', async () => {
+      const subscription = await Subscription.forCompany(acme._id);
+      // The clock starts at creation now, so a fresh tenant has an end date.
+      expect(subscription.trialEndsAt).toBeInstanceOf(Date);
+      expect(subscription.trialEndsAt.getTime()).toBeGreaterThan(Date.now());
+
+      subscription.trialEndsAt = new Date(Date.now() - 86400000);
+      await subscription.save();
+      usageService.invalidateSubscription(acme._id);
+
+      const response = await request(app)
+        .get(`/api/billing/companies/${acme._id}`)
+        .set('x-auth-token', superToken);
+
+      expect(response.status).toBe(200);
+      expect(response.body.subscription.status).toBe('trial_expired');
+      expect(response.body.subscription.entitled).toBe(false);
     });
 
     it('takes effect immediately rather than when a cache expires', async () => {

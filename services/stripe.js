@@ -13,11 +13,93 @@
  */
 
 const crypto = require('crypto');
+const mongoose = require('mongoose');
 const { PLANS } = require('../config/plans');
 const { logger } = require('./logging');
 
 /** How far out of date a signature may be. Stripe's own default. */
 const TOLERANCE_SECONDS = 5 * 60;
+
+/**
+ * How long a processed event id is remembered. Stripe retries a delivery for
+ * up to three days; a month is comfortably past that, and past the point at
+ * which anyone replays a captured request by hand.
+ */
+const EVENT_MEMORY_DAYS = 30;
+
+/**
+ * Whether `client_reference_id` may name the tenant.
+ *
+ * It is the only field a Payment Link can carry, which makes it convenient -
+ * and it is also whatever the customer typed into the link's URL, which makes
+ * it attacker-chosen. Anyone who can find another tenant's company id can
+ * buy the cheapest plan and have it applied to that tenant, or to themselves
+ * under a company they do not own. So it is off unless the operator has
+ * decided that convenience is worth it for their deployment.
+ */
+function clientReferenceAllowed() {
+  return String(process.env.STRIPE_ALLOW_CLIENT_REFERENCE || '').toLowerCase() === 'true';
+}
+
+/**
+ * Every Stripe event this deployment has acted on, so a redelivery is
+ * acknowledged rather than applied a second time.
+ *
+ * The ordering check on `externalEventAt` is not enough by itself: a
+ * redelivered event carries the same timestamp as the original, so it is not
+ * "older" and would be applied again. Most events are idempotent in effect,
+ * but not all - a plan change re-applied after a manual suspension would undo
+ * the suspension.
+ *
+ * Kept in this file rather than under models/ because nothing else has a
+ * reason to know it exists.
+ */
+const StripeEventSchema = new mongoose.Schema({
+  eventId: { type: String, required: true, unique: true },
+  type: { type: String },
+  receivedAt: { type: Date, default: Date.now }
+});
+
+StripeEventSchema.index({ receivedAt: 1 }, { expireAfterSeconds: EVENT_MEMORY_DAYS * 24 * 60 * 60 });
+
+const StripeEvent = mongoose.models.StripeEvent || mongoose.model('StripeEvent', StripeEventSchema);
+
+/**
+ * Claim an event id before processing it.
+ *
+ * The unique index is what makes this safe under two deliveries arriving at
+ * once: whichever insert lands second gets a duplicate-key error, not a
+ * second application.
+ *
+ * @returns {Promise<boolean>} true if this is the first time the id was seen
+ */
+async function claimEvent(eventId, type) {
+  if (!eventId) {
+    // An event with no id cannot be deduplicated; let it through and rely on
+    // the timestamp ordering, which is what happened before this existed.
+    return true;
+  }
+
+  try {
+    await StripeEvent.create({ eventId: String(eventId), type });
+    return true;
+  } catch (error) {
+    if (error && error.code === 11000) {
+      return false;
+    }
+    throw error;
+  }
+}
+
+/**
+ * Give an event back, so Stripe's retry of a delivery we failed to process is
+ * treated as new rather than as a duplicate of the failure.
+ */
+async function releaseEvent(eventId) {
+  if (eventId) {
+    await StripeEvent.deleteOne({ eventId: String(eventId) }).catch(() => {});
+  }
+}
 
 /**
  * Verify a `Stripe-Signature` header against the raw request body.
@@ -135,19 +217,50 @@ function translate(event) {
   switch (event.type) {
   case 'checkout.session.completed': {
     // The moment a customer has actually paid. The company id is whatever we
-    // put in the metadata when creating the session — or `client_reference_id`,
-    // which is the only field a Stripe Payment Link can carry. Reading both
-    // means a tenant can be signed up with a link and no integration code at
-    // all, which is how a small operator will actually start taking money.
+    // put in the metadata when creating the session. `client_reference_id`
+    // is the only field a Payment Link can carry, and also the only one the
+    // customer can choose, so it counts only when the deployment has opted in.
     const metadata = object.metadata || {};
+    let companyId = metadata.companyId;
+
+    if (!companyId && object.client_reference_id) {
+      if (clientReferenceAllowed()) {
+        companyId = object.client_reference_id;
+      } else {
+        logger.warn('Ignoring client_reference_id on a checkout; set STRIPE_ALLOW_CLIENT_REFERENCE=true to honour it', {
+          clientReferenceId: String(object.client_reference_id).slice(0, 40)
+        });
+      }
+    }
+
+    const lookup = { companyId, customerId: object.customer, subscriptionId: object.subscription };
+    const planId = planFor({ metadata });
+
+    if (!planId) {
+      // Somebody paid for something we cannot name. Activating them on their
+      // current plan would put a paying customer on trial limits and clear a
+      // trial clock we would then have no reason to restart; leaving the plan
+      // alone and remembering the customer means the subscription event that
+      // follows, which carries the price, can still put them where they
+      // belong.
+      logger.warn('Checkout completed without a plan we recognise; leaving the plan alone', {
+        customer: object.customer,
+        subscription: object.subscription
+      });
+      return {
+        lookup,
+        changes: {
+          externalCustomerId: object.customer,
+          externalSubscriptionId: object.subscription,
+          eventAt
+        }
+      };
+    }
+
     return {
-      lookup: {
-        companyId: metadata.companyId || object.client_reference_id,
-        customerId: object.customer,
-        subscriptionId: object.subscription
-      },
+      lookup,
       changes: {
-        planId: planFor({ metadata }),
+        planId,
         status: 'active',
         externalCustomerId: object.customer,
         externalSubscriptionId: object.subscription,
@@ -231,4 +344,14 @@ function translate(event) {
   }
 }
 
-module.exports = { verifyEvent, translate, planFor, TOLERANCE_SECONDS };
+module.exports = {
+  verifyEvent,
+  translate,
+  planFor,
+  claimEvent,
+  releaseEvent,
+  clientReferenceAllowed,
+  StripeEvent,
+  TOLERANCE_SECONDS,
+  EVENT_MEMORY_DAYS
+};

@@ -46,9 +46,7 @@ module.exports = {
       },
       globals: {
         io: 'readonly',
-        nacl: 'readonly',
         Chart: 'readonly',
-        EncryptionUtil: 'readonly',
         feather: 'readonly',
         bootstrap: 'readonly',
         marked: 'readonly',

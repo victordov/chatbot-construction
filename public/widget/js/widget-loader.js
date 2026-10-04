@@ -16,7 +16,6 @@
 
 (function() {
   const defaultConfig = {
-    serverUrl: 'http://localhost:3000',
     chatbotName: 'Assistant',
     primaryColor: '#2196f3',
     position: 'right' // 'right' or 'left'
@@ -33,12 +32,46 @@
     })();
 
   /**
+   * Where the widget's server is, when the snippet does not say.
+   *
+   * The loader was fetched from somewhere, and that somewhere is the server:
+   * a snippet with `data-server-url` dropped still works. There is no
+   * localhost fallback - a production embed pointing at a developer's laptop
+   * is a widget that silently does nothing.
+   */
+  function inferredServerUrl() {
+    if (ownScript && ownScript.src) {
+      try {
+        return new URL(ownScript.src, window.location.href).origin;
+      } catch (error) {
+        // Fall through.
+      }
+    }
+    return window.location.origin;
+  }
+
+  /** "true"/"false"/"1"/"0"/"yes"/"no" -> boolean, or null when unparseable. */
+  function parseBoolean(value) {
+    if (value === null || value === undefined) {
+      return null;
+    }
+    const normalised = String(value).trim().toLowerCase();
+    if (['true', '1', 'yes', 'on', 'required'].includes(normalised)) {
+      return true;
+    }
+    if (['false', '0', 'no', 'off', 'optional'].includes(normalised)) {
+      return false;
+    }
+    return null;
+  }
+
+  /**
    * Read only the attributes the site author actually set.
    * @returns {{overrides: object, serverUrl: string, widgetKey: string|null}}
    */
   function extractConfig() {
     const overrides = {};
-    let serverUrl = defaultConfig.serverUrl;
+    let serverUrl = inferredServerUrl();
     let widgetKey = null;
 
     if (!ownScript) {
@@ -64,28 +97,36 @@
       overrides.userHash = attr('data-user-hash');
     }
 
-    // Default the server URL to wherever this script was loaded from, so a
-    // snippet still works if data-server-url is dropped.
     if (attr('data-server-url')) {
-      serverUrl = attr('data-server-url');
-    } else if (ownScript.src) {
-      try {
-        serverUrl = new URL(ownScript.src).origin;
-      } catch (error) {
-        // Keep the default.
-      }
+      serverUrl = attr('data-server-url').replace(/\/+$/, '');
     }
 
     const map = {
       'data-chatbot-name': 'chatbotName',
       'data-primary-color': 'primaryColor',
       'data-position': 'position',
-      'data-initial-message': 'initialMessage'
+      'data-initial-message': 'initialMessage',
+      'data-privacy-policy-url': 'privacyPolicyUrl'
     };
 
     Object.keys(map).forEach(function(attribute) {
       if (attr(attribute)) {
         overrides[map[attribute]] = attr(attribute);
+      }
+    });
+
+    // Which details the pre-chat form asks for. Strings on the tag, booleans
+    // in the config.
+    const flags = {
+      'data-require-name': 'requireName',
+      'data-require-email': 'requireEmail',
+      'data-require-phone': 'requirePhone'
+    };
+
+    Object.keys(flags).forEach(function(attribute) {
+      const parsed = parseBoolean(attr(attribute));
+      if (parsed !== null) {
+        overrides[flags[attribute]] = parsed;
       }
     });
 
@@ -128,6 +169,14 @@
         if (s.welcomeMessage) {
           settings.initialMessage = s.welcomeMessage;
         }
+        if (s.privacyPolicyUrl) {
+          settings.privacyPolicyUrl = s.privacyPolicyUrl;
+        }
+        ['requireName', 'requireEmail', 'requirePhone'].forEach(function(key) {
+          if (typeof s[key] === 'boolean') {
+            settings[key] = s[key];
+          }
+        });
 
         return {
           settings: settings,
@@ -158,6 +207,7 @@
 
       const script = document.createElement('script');
       script.src = widgetSrc;
+      script.async = true;
 
       script.onload = function() {
         if (!window.ChatbotWidget) {
@@ -188,7 +238,7 @@
         console.error('Failed to load Chatbot Widget script');
       };
 
-      document.body.appendChild(script);
+      document.head.appendChild(script);
     });
   }
 

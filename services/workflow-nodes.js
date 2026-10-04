@@ -30,6 +30,133 @@ const { logger } = require('./logging');
 /** How many times a badly answered question is asked again before giving up. */
 const MAX_ASK_ATTEMPTS = 3;
 
+/** Longest pattern a tenant may write. Real validation patterns are short. */
+const MAX_PATTERN_LENGTH = 200;
+
+/**
+ * Why a tenant-authored regular expression is refused, or null if it is fine.
+ *
+ * The patterns come from a tenant admin, not a visitor, but a single
+ * `(\w+)*$` in an Ask node runs against every visitor's every answer, and one
+ * badly chosen pattern would make the whole tenant's bot hang - which is also
+ * the thread every other tenant's replies run on. There is no safe-regex
+ * library here, so this is a length cap plus a detector for the shape that
+ * causes catastrophic backtracking: a quantified group (something inside it
+ * can repeat) that is itself quantified.
+ */
+function unsafePatternReason(pattern) {
+  const text = String(pattern);
+
+  if (text.length > MAX_PATTERN_LENGTH) {
+    return `is longer than ${MAX_PATTERN_LENGTH} characters`;
+  }
+
+  // Walk the pattern once, tracking groups. A group is "quantified inside"
+  // when an unescaped *, + or {n,} appears in it outside a character class;
+  // if that group is then followed by a quantifier the pattern can backtrack
+  // exponentially. Nested groups inherit: `((a+)b)*` is as bad as `(a+)*`.
+  const stack = [];
+  let inClass = false;
+  let lastClosedGroupQuantified = false;
+  let justClosedGroup = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+
+    if (char === '\\') {
+      i++;
+      justClosedGroup = false;
+      continue;
+    }
+
+    if (inClass) {
+      if (char === ']') {
+        inClass = false;
+      }
+      justClosedGroup = false;
+      continue;
+    }
+
+    if (char === '[') {
+      inClass = true;
+      justClosedGroup = false;
+      continue;
+    }
+
+    if (char === '(') {
+      stack.push({ quantified: false });
+      justClosedGroup = false;
+      continue;
+    }
+
+    if (char === ')') {
+      const closed = stack.pop() || { quantified: false };
+      lastClosedGroupQuantified = closed.quantified;
+      if (closed.quantified && stack.length > 0) {
+        stack[stack.length - 1].quantified = true;
+      }
+      justClosedGroup = true;
+      continue;
+    }
+
+    // Only an unbounded repetition matters: `(\d+)?` tries at most two ways,
+    // `(\d+)*` tries exponentially many.
+    const unbounded = char === '*' || char === '+' ||
+      (char === '{' && /^\{\d+,\}/.test(text.slice(i)));
+
+    if (unbounded && justClosedGroup && lastClosedGroupQuantified) {
+      return 'repeats a group that already contains a repetition, which can ' +
+        'take exponential time to match (for example (a+)+ or (.*)*)';
+    }
+
+    if (unbounded && stack.length > 0) {
+      stack[stack.length - 1].quantified = true;
+    }
+
+    justClosedGroup = false;
+  }
+
+  return null;
+}
+
+// Patterns are compiled once and reused: a published workflow runs the same
+// three or four patterns against every message, and construction is the
+// expensive part. Bounded so a flood of distinct patterns cannot grow it.
+const compiledPatterns = new Map();
+const MAX_COMPILED_PATTERNS = 500;
+
+/**
+ * Compile a tenant-authored pattern, or explain why it cannot be used.
+ *
+ * @returns {{regex: RegExp}|{error: string}}
+ */
+function compilePattern(pattern, flags = '') {
+  const key = `${flags}/${pattern}`;
+  const cached = compiledPatterns.get(key);
+  if (cached) {
+    return cached;
+  }
+
+  let result;
+  const reason = unsafePatternReason(pattern);
+
+  if (reason) {
+    result = { error: `Pattern "${String(pattern).slice(0, 40)}" ${reason}` };
+  } else {
+    try {
+      result = { regex: new RegExp(pattern, flags) };
+    } catch (error) {
+      result = { error: `Pattern "${String(pattern).slice(0, 40)}" is not a valid regular expression: ${error.message}` };
+    }
+  }
+
+  if (compiledPatterns.size >= MAX_COMPILED_PATTERNS) {
+    compiledPatterns.clear();
+  }
+  compiledPatterns.set(key, result);
+  return result;
+}
+
 /**
  * Report what a node would have done, instead of doing it.
  *
@@ -80,14 +207,14 @@ function validateAnswer(value, kind = 'any', pattern = null) {
   }
 
   if (pattern) {
-    try {
-      // Authored by a tenant admin, not a visitor, but the input is capped so a
-      // catastrophically backtracking pattern stays bounded.
-      if (!new RegExp(pattern).test(text.slice(0, 500))) {
-        return { valid: false, message: 'That does not look right — could you try again?' };
-      }
-    } catch {
-      logger.warn('Ask node has an invalid pattern', { pattern });
+    // Refused patterns are caught at validation time; one that slipped through
+    // (a workflow saved before the check existed) is ignored rather than run,
+    // and the input is capped so even an accepted pattern stays bounded.
+    const compiled = compilePattern(pattern);
+    if (compiled.error) {
+      logger.warn('Ask node has an unusable pattern', { pattern, error: compiled.error });
+    } else if (!compiled.regex.test(text.slice(0, 500))) {
+      return { valid: false, message: 'That does not look right — could you try again?' };
     }
   }
 
@@ -176,10 +303,12 @@ function matchChoice(reply, choices = []) {
     return null;
   }
 
+  // Everything through String(): a choice built from a capability result has
+  // whatever id the tenant's system used, which is often a number.
   const exact = choices.find(choice =>
-    choice.id.toLowerCase() === text ||
+    String(choice.id).toLowerCase() === text ||
     String(choice.value).toLowerCase() === text ||
-    choice.label.toLowerCase() === text);
+    String(choice.label).toLowerCase() === text);
 
   if (exact) {
     return exact;
@@ -192,7 +321,7 @@ function matchChoice(reply, choices = []) {
 
   // Last resort: a label contained in the reply, so "the second one, refunds"
   // still lands.
-  return choices.find(choice => text.includes(choice.label.toLowerCase())) || null;
+  return choices.find(choice => text.includes(String(choice.label).toLowerCase())) || null;
 }
 
 /**
@@ -217,11 +346,8 @@ const COMPARATORS = {
   greater_than: (left, right) => Number(left) > Number(right),
   less_than: (left, right) => Number(left) < Number(right),
   matches: (left, right) => {
-    try {
-      return new RegExp(right, 'i').test(left.slice(0, 500));
-    } catch {
-      return false;
-    }
+    const compiled = compilePattern(right, 'i');
+    return compiled.regex ? compiled.regex.test(left.slice(0, 500)) : false;
   }
 };
 
@@ -343,13 +469,17 @@ async function runTag(step, context) {
     return wouldHave(`Tag the conversation: ${tags.join(', ')}`);
   }
 
-  if (!context.sessionId) {
+  // Both halves of the filter are required. A session id is something a
+  // caller can name, and the execute endpoint takes one from the request, so
+  // without the company in the filter a workflow could tag another tenant's
+  // conversation.
+  if (!context.sessionId || !context.companyId) {
     return {};
   }
 
   try {
     await Conversation.updateOne(
-      { sessionId: context.sessionId },
+      { sessionId: context.sessionId, company: context.companyId },
       { $addToSet: { tags: { $each: tags } } }
     );
   } catch (error) {
@@ -569,7 +699,9 @@ async function runCapability(step, context) {
     variables,
     // Rendered as cards by the widget rather than described in a sentence.
     cards: { type: capability.returns.list || capability.returns.one, items },
-    choices: data.offerAsChoices
+    // The editor stores this as the words "yes"/"no", and "no" is truthy, so
+    // every capability node used to offer buttons whether asked to or not.
+    choices: isEnabled(data.offerAsChoices)
       ? items.slice(0, 6).map(item => ({
         id: item.id,
         label: item.title || item.label || formatSlotLabel(item),
@@ -577,6 +709,16 @@ async function runCapability(step, context) {
       }))
       : undefined
   };
+}
+
+/**
+ * Read a yes/no setting the editor may have stored as a boolean or a word.
+ */
+function isEnabled(value) {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  return ['yes', 'true', '1', 'on'].includes(String(value || '').trim().toLowerCase());
 }
 
 /**
@@ -616,6 +758,10 @@ module.exports = {
   matchChoice,
   validateAnswer,
   wouldHave,
+  isEnabled,
+  compilePattern,
+  unsafePatternReason,
+  MAX_PATTERN_LENGTH,
   COMPARATORS,
   VALIDATORS,
   MAX_ASK_ATTEMPTS

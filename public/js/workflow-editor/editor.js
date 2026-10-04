@@ -72,7 +72,7 @@
           placeholder: 'Answer the question using the knowledge provided.\n\nQuestion: {{user_input}}',
           help: 'Use {{user_input}} and {{knowledge_result}} as placeholders.' },
         { key: 'model', label: 'Model', type: 'select',
-          options: ['gpt-4o-mini', 'gpt-4o', 'gpt-3.5-turbo'] },
+          options: ['gpt-4o', 'gpt-4o-mini', 'gpt-4.1', 'gpt-4.1-mini'] },
         { key: 'temperature', label: 'Temperature', type: 'range', min: 0, max: 1, step: 0.1 }
       ]
     },
@@ -505,6 +505,9 @@
       this.selectedNodeId = null;
       this.selectedEdgeId = null;
       this.dirty = false;
+      // The graph as it stands on the server, in pushHistory's snapshot
+      // format, so undo can tell when it has walked back to a saved state.
+      this.savedSnapshot = null;
       this.validationErrors = [];
       // Where the preview conversation has got to. Reset when the panel is
       // restarted or the canvas changes shape underneath it.
@@ -527,6 +530,17 @@
     async init() {
       if (!this.token) {
         location.href = '/admin/login.html';
+        return;
+      }
+
+      // Keep the loading overlay up until the server has accepted the token,
+      // so a stale session never sees the editor flash before the redirect.
+      if (document.getElementById('wf-loading')) {
+        this.setBusy(true);
+      }
+      if (!(await this.verifyToken())) {
+        localStorage.removeItem(AUTH_TOKEN_KEY);
+        location.href = '/admin/login.html?expired=1';
         return;
       }
 
@@ -554,6 +568,24 @@
         await this.openWorkflow(this.workflowId);
       } else {
         this.startBlankWorkflow();
+        this.setBusy(false);
+      }
+    }
+
+    /**
+     * Whether the server still accepts the stored token. A rejected token
+     * is false; a server that cannot be reached at all is treated as
+     * accepted, because the token may well be fine and the editor's own
+     * requests will surface the outage. Only a real 401 signs anyone out.
+     */
+    async verifyToken() {
+      try {
+        const response = await fetch('/api/auth/verify', {
+          headers: { 'x-auth-token': this.token }
+        });
+        return response.ok;
+      } catch {
+        return true;
       }
     }
 
@@ -648,7 +680,7 @@
         this.makeNode('llm', { x: 360, y: 220 })
       ];
       this.edges = [{ id: this.uid('edge'), source: this.nodes[1].id, target: this.nodes[2].id }];
-      this.dirty = false;
+      this.markSaved();
       this.pushHistory();
       this.render();
     }
@@ -666,7 +698,7 @@
           data: { ...(n.data || {}) }
         }));
         this.edges = (workflow.edges || []).map(e => ({ ...e }));
-        this.dirty = false;
+        this.markSaved();
         this.history = [];
         this.historyIndex = -1;
         this.pushHistory();
@@ -737,13 +769,20 @@
       if (index < 0 || index >= this.history.length) {
         return;
       }
-      const { nodes, edges } = JSON.parse(this.history[index]);
+      const snapshot = this.history[index];
+      const { nodes, edges } = JSON.parse(snapshot);
       this.nodes = nodes;
       this.edges = edges;
       this.historyIndex = index;
       this.selectedNodeId = null;
       this.selectedEdgeId = null;
-      this.markDirty();
+      // Undoing back to exactly what the server holds is not an unsaved
+      // change; render() resets the label when the flag is clear.
+      if (snapshot === this.savedSnapshot) {
+        this.dirty = false;
+      } else {
+        this.markDirty();
+      }
       this.render();
     }
 
@@ -758,6 +797,24 @@
       this.dirty = true;
       this.el.saveState.textContent = 'Unsaved changes';
       this.el.saveState.className = 'wf-save-state text-warning';
+    }
+
+    /** The graph now matches what the server holds. */
+    markSaved() {
+      this.dirty = false;
+      this.savedSnapshot = JSON.stringify({ nodes: this.nodes, edges: this.edges });
+    }
+
+    /**
+     * Push a history entry once an edit is finished rather than on every
+     * keystroke: `change` covers selects, ranges and committed text, `blur`
+     * catches a text field left without one. pushHistory ignores a snapshot
+     * identical to the last, so a field that fires both is recorded once.
+     */
+    commitOnChange(input) {
+      const commit = () => this.pushHistory();
+      input.addEventListener('change', commit);
+      input.addEventListener('blur', commit);
     }
 
     // -- coordinate conversion -------------------------------------------
@@ -925,7 +982,16 @@
         this.addNode(type, { x: point.x - NODE_WIDTH / 2, y: point.y - NODE_HEIGHT / 2 });
       });
 
-      canvas.addEventListener('mousedown', e => {
+      // Pointer events rather than mouse events so a finger can drag nodes,
+      // pan and connect ports too. Without this the browser would scroll or
+      // zoom the page instead of sending us pointermove.
+      canvas.style.touchAction = 'none';
+
+      canvas.addEventListener('pointerdown', e => {
+        // Right and middle buttons, and a second finger, do nothing here.
+        if (e.button !== 0 || !e.isPrimary) {
+          return;
+        }
         const port = e.target.closest('[data-port]');
         const nodeEl = e.target.closest('[data-node-id]');
         const edgeEl = e.target.closest('[data-edge-id]');
@@ -971,7 +1037,10 @@
         this.render();
       });
 
-      window.addEventListener('mousemove', e => {
+      window.addEventListener('pointermove', e => {
+        if (!e.isPrimary) {
+          return;
+        }
         if (this.linking) {
           this.linking.to = this.toCanvas(e.clientX, e.clientY);
           this.renderEdges();
@@ -1013,9 +1082,18 @@
         this.renderEdges();
       });
 
-      window.addEventListener('mouseup', e => {
+      const endPointer = e => {
+        if (!e.isPrimary) {
+          return;
+        }
         if (this.linking) {
-          const port = e.target.closest('[data-port="in"]');
+          // A touch is captured by the element it started on, so `e.target`
+          // is the source port; look at what is actually under the pointer.
+          // A cancelled pointer (the browser took the gesture) connects nothing.
+          const under = e.type === 'pointerup'
+            ? document.elementFromPoint(e.clientX, e.clientY)
+            : null;
+          const port = under ? under.closest('[data-port="in"]') : null;
           if (port && port.dataset.nodeId !== this.linking.source) {
             this.connect(this.linking.source, port.dataset.nodeId, this.linking.sourceHandle);
           }
@@ -1029,7 +1107,9 @@
           this.pushHistory();
         }
         this.drag = null;
-      });
+      };
+      window.addEventListener('pointerup', endPointer);
+      window.addEventListener('pointercancel', endPointer);
 
       canvas.addEventListener('wheel', e => {
         e.preventDefault();
@@ -1857,25 +1937,36 @@
         };
         input.addEventListener('input', handler);
         input.addEventListener('change', handler);
+        // After the handler, so the snapshot holds the new value.
+        this.commitOnChange(input);
       });
 
       this.el.properties.querySelector('#wf-auth-type')?.addEventListener('change', e => {
         node.data.auth = { ...(node.data.auth || {}), type: e.target.value };
         this.markDirty();
+        this.pushHistory();
         this.renderProperties();
       });
 
-      this.el.properties.querySelector('#wf-auth-header')?.addEventListener('input', e => {
+      const authHeader = this.el.properties.querySelector('#wf-auth-header');
+      authHeader?.addEventListener('input', e => {
         node.data.auth = { ...(node.data.auth || {}), header: e.target.value };
         this.markDirty();
       });
+      if (authHeader) {
+        this.commitOnChange(authHeader);
+      }
 
-      this.el.properties.querySelector('#wf-auth-value')?.addEventListener('input', e => {
+      const authValue = this.el.properties.querySelector('#wf-auth-value');
+      authValue?.addEventListener('input', e => {
         // Only sent when non-empty, so leaving the field blank keeps whatever
         // is already stored rather than wiping it.
         node.data.auth = { ...(node.data.auth || {}), value: e.target.value };
         this.markDirty();
       });
+      if (authValue) {
+        this.commitOnChange(authValue);
+      }
 
       this.el.properties.querySelector('#wf-add-output')?.addEventListener('click', () => {
         node.data.outputs = node.data.outputs || [];
@@ -1906,6 +1997,7 @@
             node.data.outputs[index][e.target.dataset.outputField] = e.target.value;
             this.markDirty();
           });
+          this.commitOnChange(input);
         });
       });
 
@@ -1968,6 +2060,7 @@
                   this.markDirty();
                   this.renderNodes();
                 });
+                this.commitOnChange(input);
               });
           });
       });
@@ -1978,6 +2071,7 @@
           node.data.input[event.target.dataset.capabilityInput] = event.target.value;
           this.markDirty();
         });
+        this.commitOnChange(input);
       });
 
       this.el.properties.querySelectorAll('[data-taglist]').forEach(input => {
@@ -1989,6 +2083,7 @@
           this.markDirty();
           this.renderNodes();
         });
+        this.commitOnChange(input);
       });
 
       this.el.properties.querySelector('#wf-action-preset')?.addEventListener('change', event => {
@@ -2121,6 +2216,7 @@
               this.renderProperties();
             }
           });
+          this.commitOnChange(input);
         });
       });
     }
@@ -2516,13 +2612,13 @@
           }
           return;
         }
-        if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'd') {
-          e.preventDefault();
-          this.duplicateSelectedNode();
+        if (typing) {
           return;
         }
 
-        if (typing) {
+        if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'd') {
+          e.preventDefault();
+          this.duplicateSelectedNode();
           return;
         }
 
@@ -2588,20 +2684,25 @@
       this.applyTransform();
     }
 
+    /** @returns {boolean} whether a name was given (false when cancelled). */
     rename() {
       const name = prompt('Workflow name', this.workflow?.name || '');
       if (name && name.trim()) {
         this.workflow.name = name.trim();
         this.markDirty();
         this.render();
+        return true;
       }
+      return false;
     }
 
+    /** @returns {Promise<boolean>} true once saved, false if cancelled or failed. */
     async save() {
       if (!this.workflow?.name?.trim()) {
         this.toast('Give the workflow a name first', 'warning');
-        this.rename();
-        return;
+        if (!this.rename()) {
+          return false;
+        }
       }
 
       this.setBusy(true);
@@ -2619,7 +2720,7 @@
         this.workflow = result.workflow;
         const isNew = !this.workflowId;
         this.workflowId = result.workflow._id;
-        this.dirty = false;
+        this.markSaved();
         this.render();
         this.toast('Workflow saved', 'success');
 
@@ -2628,8 +2729,10 @@
           history.replaceState({}, '', `?id=${encodeURIComponent(this.workflowId)}`);
           this.loadWorkflowList();
         }
+        return true;
       } catch (error) {
         this.toast(`Save failed: ${error.message}`, 'danger');
+        return false;
       } finally {
         this.setBusy(false);
       }
@@ -2683,8 +2786,16 @@
     }
 
     async publish() {
-      if (this.dirty) {
-        await this.save();
+      // A workflow that has never been saved has nothing to publish yet, so
+      // save it first even when nothing on the canvas has changed.
+      if (this.dirty || !this.workflowId) {
+        const saved = await this.save();
+        if (!saved) {
+          this.toast(this.workflow?.name?.trim()
+            ? 'Publishing cancelled: the workflow could not be saved'
+            : 'Publishing cancelled: the workflow needs a name', 'warning');
+          return;
+        }
       }
       if (!this.workflowId) {
         return;
@@ -2781,6 +2892,9 @@
           })
         });
         this.toast('Workflow duplicated', 'success');
+        // The copy holds everything on the canvas, so leaving is not losing
+        // work; clear the flag or beforeunload asks anyway.
+        this.dirty = false;
         location.href = `?id=${encodeURIComponent(result.workflow._id)}`;
       } catch (error) {
         this.toast(`Duplicate failed: ${error.message}`, 'danger');

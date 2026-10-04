@@ -4,7 +4,6 @@ const Conversation = require('./models/conversation');
 const Company = require('./models/company');
 const User = require('./models/user');
 const AIService = require('./services/ai');
-const EncryptionService = require('./services/encryption');
 const tenantService = require('./services/tenant');
 const usageService = require('./services/usage');
 const contactService = require('./services/contacts');
@@ -13,13 +12,107 @@ const csatService = require('./services/csat');
 const assignmentService = require('./services/assignment');
 const replyService = require('./services/reply');
 const webhookService = require('./services/webhooks');
-const { operatorRoom, GLOBAL_OPERATOR_ROOM } = require('./socketManager');
+const sessionToken = require('./services/session-token');
+const { operatorRoom, userRoom, GLOBAL_OPERATOR_ROOM } = require('./socketManager');
 const { logger } = require('./services/logging');
 
-function setupWebSockets(server) {
-  // Initialize encryption service
-  const encryptionService = new EncryptionService();
+const STAFF_ROLES = ['operator', 'company_admin', 'superadmin'];
+const MAX_MESSAGE_LENGTH = 4000;
+const MAX_SESSION_ID_LENGTH = 128;
+/** How much of a conversation is replayed to a returning visitor. */
+const HISTORY_REPLAY = 50;
 
+/** Rooms a client may never ask to join by name: they are joined by role. */
+const RESERVED_ROOM_PREFIXES = ['operators:', 'user:'];
+
+/**
+ * Grace timers for operators who have dropped off, keyed by user id.
+ *
+ * A page refresh is a disconnect followed a second later by a reconnect, and
+ * releasing somebody's chats on every refresh would hand them to a colleague
+ * mid-sentence. So a disconnect starts a clock, and only when it runs out
+ * without the person coming back do their conversations move on.
+ */
+const graceTimers = new Map();
+
+function envInt(name, fallback) {
+  const value = parseInt(process.env[name], 10);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+class QuotaRefusedError extends Error {
+  constructor(quota) {
+    super(quota.reason || 'refused by plan');
+    this.name = 'QuotaRefusedError';
+    this.quota = quota;
+  }
+}
+
+/**
+ * Share rooms across processes when a Redis is configured.
+ *
+ * With one process the in-memory adapter is exactly right. With two, an
+ * operator connected to one process never hears a visitor connected to the
+ * other, which looks like messages silently vanishing. Failure here is logged
+ * and the in-memory adapter kept, because a Redis outage at boot should not
+ * take chat down with it.
+ */
+async function attachRedisAdapter(io) {
+  const url = process.env.REDIS_URL;
+  if (!url) {
+    return false;
+  }
+
+  try {
+    const { createClient } = require('redis');
+    const { createAdapter } = require('@socket.io/redis-adapter');
+
+    const pub = createClient({ url });
+    const sub = pub.duplicate();
+    // Without a listener a client error is an unhandled 'error' event, which
+    // is a crash.
+    pub.on('error', error => logger.error('Redis pub client error', { error: error.message }));
+    sub.on('error', error => logger.error('Redis sub client error', { error: error.message }));
+
+    await Promise.all([pub.connect(), sub.connect()]);
+    io.adapter(createAdapter(pub, sub));
+    logger.info('Socket.io using the Redis adapter');
+    return true;
+  } catch (error) {
+    logger.warn('Redis adapter unavailable; continuing with the in-memory adapter', {
+      error: error.message
+    });
+    return false;
+  }
+}
+
+/** The shape a stored message is replayed in. */
+function toReplayPayload(message) {
+  const payload = {
+    id: message._id ? message._id.toString() : undefined,
+    text: message.content,
+    sender: message.sender,
+    isOperator: message.sender === 'operator',
+    operatorName: message.operatorName || undefined,
+    timestamp: message.timestamp || new Date()
+  };
+
+  if (message.fileId) {
+    payload.fileId = message.fileId;
+    payload.fileName = message.fileName;
+    payload.fileUrl = `/api/upload/${message.fileId}`;
+  }
+
+  return payload;
+}
+
+/** The last message on a conversation, once saved, has a database id. */
+function lastMessageId(conversation) {
+  const last = conversation.messages && conversation.messages[conversation.messages.length - 1];
+  return last && last._id ? last._id.toString() : 'temp-id';
+}
+
+function setupWebSockets(server) {
   const io = socketIO(server, {
     cors: {
       origin: function (origin, callback) {
@@ -49,6 +142,10 @@ function setupWebSockets(server) {
     }
   });
 
+  attachRedisAdapter(io).catch(error => {
+    logger.warn('Redis adapter setup failed', { error: error.message });
+  });
+
   // Middleware for authenticating operators
   io.use(async (socket, next) => {
     try {
@@ -65,9 +162,24 @@ function setupWebSockets(server) {
       const decoded = jwt.verify(token, process.env.JWT_SECRET || 'chatbot-jwt-secret');
 
       // Check if user still exists and is active
-      const user = await User.findById(decoded.id).select('username displayName role company isActive');
+      const user = await User.findById(decoded.id)
+        .select('username displayName role company isActive tokenVersion acceptingChats');
       if (!user || !user.isActive) {
         return next(new Error('Authentication failed'));
+      }
+
+      // A token issued before a password change or reset is a token somebody
+      // else may hold. It is treated like a forged one: the connection becomes
+      // a visitor's, with nothing operator-only reachable from it.
+      const currentVersion = user.tokenVersion || 0;
+      const stale = decoded.tv !== undefined
+        ? decoded.tv !== currentVersion
+        : currentVersion > 0;
+
+      if (stale) {
+        logger.warn('Socket token refused: stale token version', { user: user.username });
+        socket.user = { role: 'user' };
+        return next();
       }
 
       // Add user info to socket. `company` is required so operator events can
@@ -77,38 +189,133 @@ function setupWebSockets(server) {
         username: user.username,
         displayName: user.displayName,
         role: user.role,
-        companyId: user.company ? user.company.toString() : null
+        companyId: user.company ? user.company.toString() : null,
+        acceptingChats: user.acceptingChats !== false
       };
 
       next();
     } catch (error) {
-      if (error.name === 'JsonWebTokenError') {
+      if (error.name === 'JsonWebTokenError' || error.name === 'TokenExpiredError') {
         socket.user = { role: 'user' }; // Treat as regular user if token is invalid
         return next();
       }
       next(new Error('Authentication failed'));
     }
-  });  // Handle socket connections
+  });
+
+  /**
+   * An operator who did not come back: move their conversations on.
+   *
+   * Each open conversation is offered to a colleague; failing that it goes
+   * back to the queue with the bot answering, and the visitor is told rather
+   * than left wondering why the person they were talking to has gone quiet.
+   */
+  const releaseOperatorChats = async (userId, username) => {
+    graceTimers.delete(String(userId));
+
+    try {
+      const held = await Conversation.find({ operatorId: userId, status: 'active' });
+
+      for (const conversation of held) {
+        const result = await assignmentService.release(conversation, { exclude: [userId] });
+        const sessionId = conversation.sessionId;
+
+        io.to(sessionId).emit('operator-message', {
+          text: result.assigned
+            ? `${result.operator.displayName} has joined the conversation and will assist you.`
+            : 'Your operator has been disconnected. Someone will be with you shortly; in the meantime the assistant can help.',
+          senderName: result.assigned ? result.operator.displayName : 'Support',
+          timestamp: new Date()
+        });
+
+        io.to(operatorRoom(conversation.company)).emit('operator-left', {
+          sessionId,
+          operatorId: userId,
+          operatorName: username,
+          reason: 'disconnected',
+          reassignedTo: result.assigned ? result.operator.displayName : null,
+          timestamp: new Date()
+        });
+        io.to(GLOBAL_OPERATOR_ROOM).emit('operator-left', {
+          sessionId,
+          operatorId: userId,
+          operatorName: username,
+          reason: 'disconnected',
+          timestamp: new Date()
+        });
+      }
+
+      if (held.length > 0) {
+        logger.info('Released conversations of a disconnected operator', {
+          operator: username,
+          count: held.length
+        });
+      }
+    } catch (error) {
+      logger.error('Failed to release a disconnected operator\'s conversations', {
+        operator: username,
+        error: error.message
+      });
+    }
+  };
+
+  // Handle socket connections
   io.on('connection', (socket) => {
     logger.info('New client connected');
 
-    // Track client's session and role
-    let clientSessionId = null;
-    let encryptionEnabled = false;
     // Every staff role counts as an operator here. The old check looked for a
     // role named 'admin', which does not exist in the User schema, so
     // superadmins and company admins were silently treated as visitors.
-    const STAFF_ROLES = ['operator', 'company_admin', 'superadmin'];
     const isOperator = Boolean(socket.user && STAFF_ROLES.includes(socket.user.role));
     const isSuperadmin = Boolean(socket.user && socket.user.role === 'superadmin');
+    const canForceTakeover = Boolean(
+      socket.user && ['company_admin', 'superadmin'].includes(socket.user.role)
+    );
+    // Null for a superadmin, who belongs to no tenant.
     const operatorCompanyId = socket.user ? socket.user.companyId : null;
+    // The name every operator-originated message carries. Server-side only:
+    // a name in the payload would let anyone claim to be anyone.
     const operatorDisplayName = socket.user
-      ? (socket.user.displayName || socket.user.username)
+      ? (socket.user.displayName || socket.user.username || 'Operator')
       : 'Operator';
+
+    /**
+     * The one conversation this socket has proved it owns.
+     *
+     * Set only by a successful `resume-session`, and the only session any
+     * visitor event may act on. A session id in a payload is ignored: it is
+     * not a credential, and honouring it let one visitor write into another's
+     * conversation.
+     */
+    let boundSessionId = null;
 
     // Company of the visitor on the other end of this socket, resolved from the
     // widget key / origin so their events reach only their tenant's operators.
     let clientCompanyId = null;
+
+    /**
+     * Messages per minute this socket may send, as a token bucket.
+     *
+     * Per socket rather than per IP, so a shared office address is not
+     * throttled by its neighbours, and in memory because the count only has
+     * to be right for the life of one connection.
+     */
+    const rateLimit = (() => {
+      const capacity = envInt('RATE_LIMIT_CHAT_MAX', 20);
+      let tokens = capacity;
+      let refilledAt = Date.now();
+
+      return () => {
+        const now = Date.now();
+        tokens = Math.min(capacity, tokens + ((now - refilledAt) * capacity) / 60000);
+        refilledAt = now;
+        if (tokens < 1) {
+          return false;
+        }
+        tokens -= 1;
+        return true;
+      };
+    })();
 
     /**
      * Where this socket connected from, captured once at connection time.
@@ -155,12 +362,25 @@ function setupWebSockets(server) {
     };
 
     /**
+     * The tenant an operator-originated event about a conversation belongs
+     * to. For an operator that is their own company; for a superadmin, who
+     * has none, it is the conversation's - otherwise their actions would be
+     * announced to an `operators:unassigned` room nobody is in.
+     */
+    const tenantOf = conversation => {
+      if (conversation && conversation.company) {
+        return conversation.company.toString();
+      }
+      return operatorCompanyId;
+    };
+
+    /**
      * Guard for operator actions on a specific conversation. Without this an
      * operator could join, read, answer or end any session id they can guess,
      * including conversations belonging to another company.
      */
     const canOperateOn = async (sessionId) => {
-      if (!isOperator || !sessionId) {
+      if (!isOperator || typeof sessionId !== 'string' || !sessionId) {
         return false;
       }
       if (isSuperadmin) {
@@ -204,6 +424,9 @@ function setupWebSockets(server) {
     /**
      * Find or create the conversation for a session, always stamping the
      * resolved company so multi-tenant filtering works downstream.
+     *
+     * @throws {QuotaRefusedError} when the tenant may not start another
+     *         conversation this month; nothing is created
      */
     const getOrCreateConversation = async (sessionId, hints = {}) => {
       // Where the visitor is chatting from. Operators use this to know which
@@ -214,6 +437,19 @@ function setupWebSockets(server) {
 
       if (!conversation) {
         const companyId = await resolveClientCompany(sessionId, hints);
+
+        // Checked before anything is written: a conversation the plan does
+        // not allow must not exist, or it would be counted next month too.
+        const quota = await usageService.check(companyId, 'conversationsPerMonth');
+        if (!quota.allowed) {
+          logger.warn('Conversation refused by plan', {
+            companyId: companyId ? String(companyId) : null,
+            reason: quota.reason
+          });
+          usageService.recordLimitHit(companyId);
+          throw new QuotaRefusedError(quota);
+        }
+
         conversation = new Conversation({
           sessionId,
           company: companyId || undefined,
@@ -275,157 +511,307 @@ function setupWebSockets(server) {
       return conversation;
     };
 
-    // Staff get a personal room so notifications can be delivered to one user
-    // rather than broadcast to every connected client.
-    if (isOperator && socket.user.id) {
-      socket.join(`user:${socket.user.id}`);
-    }
+    /**
+     * Tell the visitor the chat is unavailable, in the bot's voice.
+     *
+     * Persisted when there is a conversation to persist it on, so the
+     * transcript an operator reads later explains the gap.
+     */
+    const sendUnavailable = async (sessionId, conversation) => {
+      const payload = { text: usageService.UNAVAILABLE_MESSAGE, timestamp: new Date() };
 
-    // Send server's public key to client for encryption setup
-    const serverPublicKey = encryptionService.getServerPublicKey();
-    socket.emit('encryption-init', {
-      serverPublicKey: serverPublicKey
-    });
+      if (conversation) {
+        conversation.messages.push({ content: payload.text, sender: 'bot', timestamp: payload.timestamp });
+        conversation.lastActivity = new Date();
+        await conversation.save();
+        payload.id = lastMessageId(conversation);
+      }
 
-    // Handle client's public key for end-to-end encryption
-    socket.on('client-public-key', (data) => {
-      const { sessionId, publicKey } = data;
-      clientSessionId = sessionId;
+      socket.emit('bot-message', payload);
+    };
 
-      // Register client's public key
-      const success = encryptionService.registerClientPublicKey(sessionId, publicKey);
+    /**
+     * Draft a reply for the operator holding a conversation.
+     *
+     * One helper for the three places that want it, which used to be three
+     * copies of the same block. The draft goes to the holding operator's own
+     * room rather than to every operator of the tenant: it is a suggestion
+     * for the person answering, not an announcement.
+     *
+     * A suggestion is a model call, so it is metered as one and only offered
+     * on plans that include the feature.
+     */
+    const offerSuggestion = async (conversation, targetMessage, options = {}) => {
+      if (!conversation || !targetMessage || conversation.suggestionsEnabled === false) {
+        return;
+      }
 
-      if (success) {
-        encryptionEnabled = true;
-        socket.emit('encryption-ready', { success: true });
-        logger.info(`End-to-end encryption enabled for session: ${sessionId}`);
-      } else {
-        socket.emit('encryption-ready', {
-          success: false,
-          error: 'Failed to set up encryption'
+      const recipientId = options.to || conversation.operatorId;
+      if (!recipientId) {
+        // Nobody holding it means nobody to draft for.
+        return;
+      }
+
+      const companyId = tenantOf(conversation);
+
+      if (!(await usageService.hasFeature(companyId, 'aiSuggestions'))) {
+        return;
+      }
+
+      const quota = await usageService.check(companyId, 'aiResponsesPerMonth');
+      if (!quota.allowed) {
+        logger.warn('Operator suggestion refused by plan', {
+          companyId: companyId ? String(companyId) : null,
+          reason: quota.reason
+        });
+        usageService.recordLimitHit(companyId);
+        return;
+      }
+
+      const history = conversation.messages
+        .slice(-10)
+        .map(msg => ({
+          role: msg.sender === 'user' ? 'user' : 'assistant',
+          content: msg.content
+        }));
+
+      const aiService = await AIService.forCompany(companyId);
+      const suggestion = await aiService.generateOperatorSuggestion(targetMessage.content, history);
+
+      usageService.record(companyId, { aiResponses: 1 });
+
+      io.to(userRoom(recipientId)).emit('operator-suggestion', {
+        sessionId: conversation.sessionId,
+        userMessageId: targetMessage._id ? targetMessage._id.toString() : undefined,
+        userMessage: targetMessage.content,
+        suggestion,
+        timestamp: new Date()
+      });
+    };
+
+    /**
+     * Persist and deliver an operator's message, over whichever channel the
+     * conversation lives on.
+     *
+     * @returns {Promise<{ok: boolean, error?: string, messageId?: string}>}
+     */
+    const deliverOperatorMessage = async (conversation, text) => {
+      // An email thread is answered from the same composer; only delivery
+      // differs. Sent before persisting so a failure can be reported to the
+      // operator rather than leaving a message that never went out.
+      let delivery = { sent: true };
+
+      if (conversation.channel === 'email') {
+        delivery = await emailChannel.sendReply(conversation, text, operatorDisplayName);
+
+        if (!delivery.sent) {
+          return { ok: false, error: `Could not send that email: ${delivery.reason}` };
+        }
+      }
+
+      conversation.messages.push({
+        content: text,
+        sender: 'operator',
+        operatorId: socket.user.id,
+        operatorName: operatorDisplayName,
+        emailMessageId: delivery.messageId,
+        timestamp: new Date()
+      });
+
+      conversation.lastActivity = new Date();
+      await conversation.save();
+
+      usageService.record(conversation.company, { operatorMessages: 1, messages: 1 });
+
+      const messageId = lastMessageId(conversation);
+
+      // Chat visitors get it over the socket. Email visitors already have it
+      // in their inbox.
+      if (conversation.channel !== 'email') {
+        io.to(conversation.sessionId).emit('operator-message', {
+          id: messageId,
+          text,
+          senderName: operatorDisplayName,
+          timestamp: new Date()
         });
       }
-    });
+
+      return { ok: true, messageId };
+    };
+
+    /** A valid chat message, or the reason it is not one. */
+    const validateMessage = (value) => {
+      if (typeof value !== 'string') {
+        return { error: 'Message must be text' };
+      }
+      const text = value.trim();
+      if (text.length === 0) {
+        return { error: 'Message cannot be empty' };
+      }
+      if (text.length > MAX_MESSAGE_LENGTH) {
+        return { error: `Message must be ${MAX_MESSAGE_LENGTH} characters or fewer` };
+      }
+      return { text };
+    };
+
+    // Staff get a personal room so notifications can be delivered to one user
+    // rather than broadcast to every connected client - and coming back
+    // within the grace period cancels the release of their conversations.
+    if (isOperator && socket.user.id) {
+      socket.join(userRoom(socket.user.id));
+
+      const pending = graceTimers.get(String(socket.user.id));
+      if (pending) {
+        clearTimeout(pending);
+        graceTimers.delete(String(socket.user.id));
+        logger.info('Operator reconnected within the grace period', { operator: socket.user.username });
+      }
+    }
+
     // Join a chat session room
     socket.on('join', async (sessionId) => {
       if (typeof sessionId !== 'string' || !sessionId) {
         return socket.emit('joined-room', { success: false, error: 'Invalid session' });
       }
 
-      // Operators must prove they own the tenant before eavesdropping on a room.
-      if (isOperator && !(await canOperateOn(sessionId))) {
-        logger.warn('Operator denied join for out-of-tenant session', {
-          sessionId,
-          operator: socket.user.username
-        });
+      // Role rooms are joined by role, never by name. A visitor asking for
+      // `operators:all` used to be let in, and from then on received every
+      // tenant's traffic.
+      if (RESERVED_ROOM_PREFIXES.some(prefix => sessionId.startsWith(prefix))) {
+        logger.warn('Join denied for reserved room', { room: sessionId });
         return socket.emit('joined-room', { success: false, error: 'Access denied' });
       }
 
-      clientSessionId = sessionId;
+      if (isOperator) {
+        // Operators must prove they own the tenant before eavesdropping on a room.
+        if (!(await canOperateOn(sessionId))) {
+          logger.warn('Operator denied join for out-of-tenant session', {
+            sessionId,
+            operator: socket.user.username
+          });
+          return socket.emit('joined-room', { success: false, error: 'Access denied' });
+        }
+      } else if (sessionId !== boundSessionId) {
+        // A visitor is in exactly one room: the session they resumed with the
+        // right token. Anything else is somebody else's conversation.
+        logger.warn('Visitor denied join for a session they do not own', { sessionId });
+        return socket.emit('joined-room', { success: false, error: 'Access denied' });
+      }
+
       socket.join(sessionId);
       logger.info(`Client joined room: ${sessionId}`);
       socket.emit('joined-room', {
         success: true,
         room: sessionId
       });
-    });// Handle new session from widget
-    socket.on('resume-session', async (data) => {
-      const { sessionId, publicKey } = data;
-      clientSessionId = sessionId;
-      socket.join(sessionId);
+    });
 
-      // If client provides a public key, set up encryption
-      if (publicKey) {
-        const success = encryptionService.registerClientPublicKey(sessionId, publicKey);
-        encryptionEnabled = success;
+    /**
+     * A visitor establishing, or coming back to, their conversation.
+     *
+     * This is the only way a socket becomes bound to a session, and the token
+     * is what makes the binding worth anything. A session id is public-ish -
+     * it is in dashboard URLs and exports - so a conversation that has a
+     * token demands it, and a resume without the right one gets nothing: no
+     * room, no history, no binding.
+     */
+    socket.on('resume-session', async (data = {}) => {
+      const sessionId = data && data.sessionId;
 
-        socket.emit('encryption-ready', {
-          success,
-          error: success ? null : 'Failed to set up encryption'
-        });
+      if (typeof sessionId !== 'string' || !sessionId || sessionId.length > MAX_SESSION_ID_LENGTH) {
+        return socket.emit('session-rejected', { sessionId: sessionId || null });
       }
 
-      // Find existing conversation
-      const conversation = await Conversation.findOne({ sessionId });
-      if (conversation && conversation.company) {
-        clientCompanyId = conversation.company.toString();
-      } else {
-        await resolveClientCompany(sessionId, data);
-      }
+      try {
+        let conversation = await Conversation.findOne({ sessionId }).select('+sessionTokenHash');
+        let token = null;
 
-      // If there's an existing conversation, send the last few messages
-      if (conversation && conversation.messages.length > 0) {
-        // Send last 10 messages (or fewer if there aren't that many)
-        const lastMessages = conversation.messages.slice(-10);
-
-        // Send each message individually in correct order
-        lastMessages.forEach(message => {
-          // Prepare message data
-          const messageData = {
-            id: message._id.toString(),
-            timestamp: message.timestamp || new Date(),
-            isOperator: message.sender === 'operator',
-            operatorName: message.operatorName
-          };
-
-          // Add file information if present
-          if (message.fileId) {
-            messageData.fileId = message.fileId;
-            messageData.fileName = message.fileName;
-            messageData.fileUrl = `/api/upload/${message.fileId}`;
+        if (conversation && conversation.sessionTokenHash) {
+          if (!sessionToken.verify(conversation.sessionTokenHash, data.sessionToken)) {
+            logger.warn('Session resume rejected: token mismatch', { sessionId });
+            return socket.emit('session-rejected', { sessionId });
           }
-
-          // Encrypt message content if encryption is enabled
-          if (encryptionEnabled && message.content && encryptionService.hasClientPublicKey(sessionId)) {
-            const encrypted = encryptionService.encryptForClient(sessionId, message.content);
-            if (encrypted) {
-              messageData.encrypted = true;
-              messageData.encryptedMessage = encrypted.encryptedMessage;
-              messageData.nonce = encrypted.nonce;
-            } else {
-              messageData.text = message.content;
+          // The token they presented is the token; hand it back so the widget
+          // has one place to read it from.
+          token = data.sessionToken;
+        } else if (conversation) {
+          // Created before tokens existed. Accepted this once, and given a
+          // token so that from now on it is protected like every other.
+          token = sessionToken.issue();
+          conversation.sessionTokenHash = sessionToken.hash(token);
+          await conversation.save();
+        } else {
+          try {
+            conversation = await getOrCreateConversation(sessionId, data);
+          } catch (error) {
+            if (!(error instanceof QuotaRefusedError)) {
+              throw error;
             }
-          } else {
-            messageData.text = message.content;
+            // Nothing exists to hijack, so the socket may hold the id; the
+            // visitor is told why nobody is answering.
+            boundSessionId = sessionId;
+            socket.join(sessionId);
+            socket.emit('session-ready', { sessionId, sessionToken: null });
+            await sendUnavailable(sessionId, null);
+            return;
           }
 
-          if (message.sender === 'user') {
-            socket.emit('user-message', messageData);
-          } else if (message.sender === 'operator') {
-            socket.emit('operator-message', messageData);
-          } else {
-            socket.emit('bot-message', messageData);
-          }
-        });
+          token = sessionToken.issue();
+          conversation.sessionTokenHash = sessionToken.hash(token);
+          await conversation.save();
+        }
 
-        // Mark all messages as read
-        socket.emit('all-messages-read');
+        if (conversation.company) {
+          clientCompanyId = conversation.company.toString();
+        } else {
+          await resolveClientCompany(sessionId, data);
+        }
+
+        boundSessionId = sessionId;
+        socket.join(sessionId);
+
+        socket.emit('session-ready', { sessionId, sessionToken: token });
+
+        // History goes out as one event rather than replayed as live
+        // messages, so the widget can tell "what was said" from "what was
+        // just said" and drop what it already has by id.
+        const messages = (conversation.messages || []).slice(-HISTORY_REPLAY).map(toReplayPayload);
+        socket.emit('session-history', { sessionId, messages });
+
+        logger.info(`Session resumed: ${sessionId}`);
+      } catch (error) {
+        logger.error('Error resuming session', { sessionId, error: error.message });
+        socket.emit('session-rejected', { sessionId });
       }
-
-      logger.info(`Session resumed: ${sessionId}`);
     });
 
     // Handle chat opened event
-    socket.on('chat-opened', async (data) => {
-      const { sessionId } = data;
-      clientSessionId = sessionId;
+    socket.on('chat-opened', async () => {
+      if (isOperator || !boundSessionId) {
+        return;
+      }
 
       // Notify operators that a chat has been opened
-      if (clientSessionId) {
-        await resolveClientCompany(sessionId, data);
-        toOperators(clientCompanyId, 'chat-activity', {
-          type: 'opened',
-          sessionId: clientSessionId,
-          timestamp: new Date()
-        });
-      }
+      await resolveClientCompany(boundSessionId);
+      toOperators(clientCompanyId, 'chat-activity', {
+        type: 'opened',
+        sessionId: boundSessionId,
+        timestamp: new Date()
+      });
     });
 
     // Handle user details from widget
-    socket.on('user-details', async (data) => {
+    socket.on('user-details', async (data = {}) => {
+      if (isOperator || !boundSessionId) {
+        // The widget may send the pre-chat form before the session is
+        // established; the details arrive again with the first message.
+        return;
+      }
+
+      const sessionId = boundSessionId;
+
       try {
-        const { sessionId, name, email, phone } = data;
-        clientSessionId = sessionId;
+        const { name, email, phone } = data;
 
         // Save user details to conversation metadata
         const conversation = await getOrCreateConversation(sessionId, data);
@@ -472,34 +858,169 @@ function setupWebSockets(server) {
 
         logger.info(`User details updated for session: ${sessionId}`);
       } catch (error) {
+        if (error instanceof QuotaRefusedError) {
+          return sendUnavailable(sessionId, null);
+        }
         logger.error('Error handling user details:', error);
-        socket.emit('error', { message: 'Failed to save user details' });
+        socket.emit('error', { sessionId, message: 'Failed to save user details' });
       }
     });
 
-    // Handle user messages from widget
-    socket.on('user-message', async (data) => {
+    /**
+     * The bot's turn.
+     *
+     * The published workflow answers if the tenant has one, otherwise the
+     * assistant. This used to call the assistant directly, which is why a
+     * published workflow had no effect on any live conversation.
+     *
+     * The plan is checked first and the model is not called when it says no;
+     * and a failure to produce a reply is said out loud, in the bot's voice,
+     * rather than left as an error event the widget may or may not show.
+     */
+    const answerAutomatically = async (conversation, message) => {
+      const sessionId = conversation.sessionId;
+      const companyId = clientCompanyId;
+
+      const quota = await usageService.check(companyId, 'aiResponsesPerMonth');
+      if (!quota.allowed) {
+        logger.warn('Automated reply refused by plan', {
+          companyId: companyId ? String(companyId) : null,
+          reason: quota.reason
+        });
+        usageService.recordLimitHit(companyId);
+        return sendUnavailable(sessionId, conversation);
+      }
+
+      const messageHistory = conversation.messages
+        .slice(-10)
+        .map(msg => ({
+          role: msg.sender === 'user' ? 'user' : 'assistant',
+          content: msg.content
+        }));
+
+      io.to(sessionId).emit('bot-typing', { sessionId, typing: true });
+
+      let reply;
       try {
-        const { sessionId, messageId, timestamp } = data;
-        clientSessionId = sessionId;
+        reply = await replyService.generate({
+          conversation,
+          message,
+          history: messageHistory
+        });
+      } catch (error) {
+        logger.error('Failed to generate a reply', { sessionId, error: error.message });
+        io.to(sessionId).emit('bot-typing', { sessionId, typing: false });
 
-        // Decrypt message if encryption is enabled
-        let message = data.message;
-        if (encryptionEnabled && data.encrypted) {
-          message = encryptionService.decryptFromClient(
-            sessionId,
-            data.encryptedMessage,
-            data.nonce
-          );
+        // Said in the bot's voice, and saved, so the transcript shows the gap
+        // and the visitor is not staring at a typing indicator that ends in
+        // nothing.
+        conversation.messages.push({
+          content: usageService.REPLY_FAILED_MESSAGE,
+          sender: 'bot',
+          timestamp: new Date()
+        });
+        conversation.lastActivity = new Date();
+        await conversation.save();
 
-          if (!message) {
-            socket.emit('error', { message: 'Failed to decrypt message' });
-            return;
-          }
-        }
+        socket.emit('bot-message', {
+          id: lastMessageId(conversation),
+          text: usageService.REPLY_FAILED_MESSAGE,
+          timestamp: new Date()
+        });
+        socket.emit('error', { sessionId, message: 'Failed to generate a reply' });
+        return;
+      }
 
+      const botResponse = reply.text;
+
+      // Create a message ID for the bot response
+      const botMessageId = 'bot_' + Date.now();
+
+      conversation.messages.push({
+        content: botResponse,
+        sender: 'bot',
+        messageId: botMessageId,
+        timestamp: new Date()
+      });
+      conversation.lastActivity = new Date();
+      await conversation.save();
+
+      const dbBotMessageId = lastMessageId(conversation);
+
+      io.to(sessionId).emit('bot-typing', { sessionId, typing: false });
+
+      socket.emit('bot-message', {
+        id: dbBotMessageId,
+        clientId: botMessageId,
+        text: botResponse,
+        // Quick replies, when the workflow offered a set of choices. The
+        // widget renders them as buttons; a visitor tapping one is
+        // unambiguous in a way that typing never is.
+        choices: reply.choices || undefined,
+        // Products or appointment times for the widget to render.
+        cards: reply.cards || undefined,
+        timestamp: new Date()
+      });
+
+      // A workflow node can ask for a person. Honour it here rather than
+      // leaving the escalation as a sentence the visitor has to act on.
+      if (reply.escalate && reply.escalate.enabled !== false) {
+        const escalated = await assignmentService.autoAssign(conversation);
+        allOperators(companyId, 'operator-requested', {
+          sessionId,
+          assigned: escalated.assigned,
+          timestamp: new Date()
+        });
+      }
+
+      // Only an assistant reply is a model call. A workflow that answered
+      // from a fixed template or a lookup did not use the model, and
+      // metering it as one would overcharge the tenant.
+      usageService.record(companyId, reply.source === 'workflow'
+        ? { messages: 1 }
+        : { aiResponses: 1, messages: 1 });
+
+      toOperators(companyId, 'new-message', {
+        sessionId,
+        message: botResponse,
+        sender: 'bot',
+        messageId: dbBotMessageId,
+        timestamp: new Date()
+      });
+    };
+
+    // Handle user messages from widget
+    socket.on('user-message', async (data = {}) => {
+      if (isOperator || !boundSessionId) {
+        return socket.emit('error', { message: 'Session not established' });
+      }
+
+      const sessionId = boundSessionId;
+      const { messageId, timestamp } = data;
+
+      const validated = validateMessage(data.message);
+      if (validated.error) {
+        return socket.emit('error', { sessionId, message: validated.error });
+      }
+      const message = validated.text;
+
+      if (!rateLimit()) {
+        logger.warn('Visitor message rate limit exceeded', { sessionId });
+        return socket.emit('error', { sessionId, message: 'You are sending messages too quickly. Please wait a moment.' });
+      }
+
+      let conversation;
+
+      try {
         // Save message to database
-        const conversation = await getOrCreateConversation(sessionId, data);
+        try {
+          conversation = await getOrCreateConversation(sessionId, data);
+        } catch (error) {
+          if (error instanceof QuotaRefusedError) {
+            return sendUnavailable(sessionId, null);
+          }
+          throw error;
+        }
 
         // Check if the conversation was ended and reactivate it if needed
         if (conversation.status === 'ended') {
@@ -524,13 +1045,14 @@ function setupWebSockets(server) {
           });
         }
 
+        const sentAt = timestamp ? new Date(timestamp) : new Date();
+
         // Add the new message with messageId
         const messageDoc = {
           content: message,
           sender: 'user',
           messageId, // Store client-generated message ID for tracking
-          timestamp: new Date(timestamp),
-          encrypted: encryptionEnabled // Track if message was encrypted
+          timestamp: Number.isNaN(sentAt.getTime()) ? new Date() : sentAt
         };
 
         // Add user name to message if available in data or metadata
@@ -546,13 +1068,8 @@ function setupWebSockets(server) {
         conversation.lastActivity = new Date();
 
         await conversation.save();
-        // Get the database ID of the newly added message
-        let dbMessageId = 'temp-id';
-        if (conversation.messages &&
-            conversation.messages.length > 0 &&
-            conversation.messages[conversation.messages.length - 1]._id) {
-          dbMessageId = conversation.messages[conversation.messages.length - 1]._id.toString();
-        }
+        const dbMessageId = lastMessageId(conversation);
+        const storedUserMessage = conversation.messages[conversation.messages.length - 1];
 
         // Broadcast to operators (admin dashboard)
         const broadcastData = {
@@ -573,160 +1090,33 @@ function setupWebSockets(server) {
 
         usageService.record(clientCompanyId, { messages: 1 });
 
-        // Only generate suggestions if there are operators and suggestions are enabled
-        if (conversation.hasOperator) {
-          // Check if suggestions are enabled for this conversation
-          if (conversation.suggestionsEnabled !== false) {
-            // Process with AI to get operator suggestion
-            const aiService = await AIService.forCompany(clientCompanyId);
-
-            // Get conversation history for context
-            const messageHistory = conversation.messages
-              .slice(-10) // Last 10 messages for context
-              .map(msg => ({
-                role: msg.sender === 'user' ? 'user' : 'assistant',
-                content: msg.content
-              }));
-
-            // Get AI suggestion for operator
-            const suggestion = await aiService.generateOperatorSuggestion(message, messageHistory);
-
-            // Import the Suggestion model
-            const Suggestion = require('./models/suggestion');
-
-            // Save suggestion to database
-            const newSuggestion = new Suggestion({
-              conversationId: conversation._id,
-              sessionId,
-              userMessageId: dbMessageId,
-              userMessage: message,
-              content: suggestion,
-              createdAt: new Date()
-            });
-
-            await newSuggestion.save();
-
-            // Send suggestion to operators
-            toOperators(clientCompanyId, 'operator-suggestion', {
-              sessionId,
-              userMessageId: dbMessageId,
-              userMessage: message,
-              suggestion,
-              suggestionId: newSuggestion._id.toString(),
-              timestamp: new Date()
-            });
-          }
-        } else if (conversation.botEnabled !== false) {
-          // No operator connected and bot enabled: the published workflow
-          // answers if the tenant has one, otherwise the assistant does.
-          //
-          // This used to call the assistant directly, which is why a published
-          // workflow had no effect on any live conversation.
-          const messageHistory = conversation.messages
-            .slice(-10)
-            .map(msg => ({
-              role: msg.sender === 'user' ? 'user' : 'assistant',
-              content: msg.content
-            }));
-
-          const reply = await replyService.generate({
-            conversation,
-            message,
-            history: messageHistory
-          });
-
-          const botResponse = reply.text;
-
-          // Create a message ID for the bot response
-          const botMessageId = 'bot_' + Date.now();
-
-          // Save bot response
-          const botMessageDoc = {
-            content: botResponse,
-            sender: 'bot',
-            messageId: botMessageId,
-            timestamp: new Date(),
-            encrypted: encryptionEnabled
-          };
-
-          conversation.messages.push(botMessageDoc);
-          conversation.lastActivity = new Date();
-          await conversation.save();
-
-          // Get the database ID of the bot message
-          let dbBotMessageId = 'temp-bot-id';
-          if (conversation.messages &&
-              conversation.messages.length > 0 &&
-              conversation.messages[conversation.messages.length - 1]._id) {
-            dbBotMessageId = conversation.messages[conversation.messages.length - 1]._id.toString();
-          }
-
-          const responseData = {
-            id: dbBotMessageId,
-            clientId: botMessageId,
-            // Quick replies, when the workflow offered a set of choices. The
-            // widget renders them as buttons; a visitor tapping one is
-            // unambiguous in a way that typing never is.
-            choices: reply.choices || undefined,
-            // Products or appointment times for the widget to render.
-            cards: reply.cards || undefined,
-            timestamp: new Date()
-          };
-
-          if (encryptionEnabled && encryptionService.hasClientPublicKey(sessionId)) {
-            const encrypted = encryptionService.encryptForClient(sessionId, botResponse);
-            if (encrypted) {
-              responseData.encrypted = true;
-              responseData.encryptedMessage = encrypted.encryptedMessage;
-              responseData.nonce = encrypted.nonce;
-            } else {
-              responseData.text = botResponse;
-            }
-          } else {
-            responseData.text = botResponse;
-          }
-
-          socket.emit('bot-message', responseData);
-
-          // A workflow node can ask for a person. Honour it here rather than
-          // leaving the escalation as a sentence the visitor has to act on.
-          if (reply.escalate && reply.escalate.enabled !== false) {
-            const escalated = await assignmentService.autoAssign(conversation);
-            allOperators(clientCompanyId, 'operator-requested', {
-              sessionId,
-              assigned: escalated.assigned,
-              timestamp: new Date()
-            });
-          }
-
-          // Only an assistant reply is a model call. A workflow that answered
-          // from a fixed template or a lookup did not use the model, and
-          // metering it as one would overcharge the tenant.
-          usageService.record(clientCompanyId, reply.source === 'workflow'
-            ? { messages: 1 }
-            : { aiResponses: 1, messages: 1 });
-
-          toOperators(clientCompanyId, 'new-message', {
-            sessionId,
-            message: botResponse,
-            sender: 'bot',
-            messageId: dbBotMessageId,
-            timestamp: new Date()
-          });
-        }
-
-        // Send read receipt for the user message
+        // Send read receipt for the user message before any reply is
+        // generated, so a slow model does not look like a lost message.
         socket.emit('message-read', {
           messageId,
           timestamp: new Date()
         });
+
+        if (conversation.hasOperator) {
+          // A person has it: draft them a reply rather than answering.
+          await offerSuggestion(conversation, storedUserMessage);
+        } else if (conversation.botEnabled !== false) {
+          await answerAutomatically(conversation, message);
+        }
       } catch (error) {
         logger.error('Error handling message:', { error });
-        socket.emit('error', { message: 'Failed to process message' });
+        socket.emit('error', { sessionId, message: 'Failed to process message' });
       }
-    });// Handle file uploads
-    socket.on('file-uploaded', async (data) => {
-      const { sessionId, fileId, fileName, timestamp } = data;
+    });
+
+    // Handle file uploads
+    socket.on('file-uploaded', async (data = {}) => {
+      if (isOperator || !boundSessionId) {
+        return;
+      }
+
+      const sessionId = boundSessionId;
+      const { fileId, fileName, timestamp } = data;
 
       try {
         const conversation = await getOrCreateConversation(sessionId, data);
@@ -765,56 +1155,73 @@ function setupWebSockets(server) {
 
         socket.emit('message-read', { messageId: fileId, timestamp: new Date() });
       } catch (error) {
+        if (error instanceof QuotaRefusedError) {
+          return sendUnavailable(sessionId, null);
+        }
         logger.error('Error handling file upload:', { error });
       }
     });
 
     // Handle typing indicators from users
-    socket.on('user-typing', (data) => {
-      const { sessionId, isTyping } = data;
+    socket.on('user-typing', (data = {}) => {
+      if (isOperator || !boundSessionId) {
+        return;
+      }
 
       // Broadcast typing status to operators
       toOperators(clientCompanyId, 'user-typing', {
-        sessionId,
-        isTyping,
+        sessionId: boundSessionId,
+        isTyping: Boolean(data.isTyping),
         timestamp: new Date()
       });
     });
 
     // Handle typing indicators from operators
-    socket.on('operator-typing', (data) => {
-      if (!isOperator) {
+    socket.on('operator-typing', async (data = {}) => {
+      const { sessionId, isTyping } = data;
+
+      // Being an operator somewhere is not permission to type into somebody
+      // else's conversation. Every other operator handler checks this; this one
+      // did not, so an operator at one tenant could make "someone is typing"
+      // appear in another tenant's chat window.
+      if (!await canOperateOn(sessionId)) {
         return;
       }
-
-      const { sessionId, isTyping } = data;
 
       // Broadcast typing status to users in the session
       io.to(sessionId).emit('operator-typing', {
         isTyping,
+        operatorName: operatorDisplayName,
         timestamp: new Date()
       });
     });
 
     // Handle message read receipts
-    socket.on('message-read', (data) => {
-      const { sessionId, messageId, timestamp } = data;
+    socket.on('message-read', (data = {}) => {
+      if (isOperator || !boundSessionId) {
+        return;
+      }
+
+      const { messageId, timestamp } = data;
+      const readAt = timestamp ? new Date(timestamp) : new Date();
 
       // Broadcast read receipt to operators
       toOperators(clientCompanyId, 'message-read', {
-        sessionId,
+        sessionId: boundSessionId,
         messageId,
-        timestamp: new Date(timestamp)
+        timestamp: Number.isNaN(readAt.getTime()) ? new Date() : readAt
       });
     });
 
     // Handle marking all messages as read
-    socket.on('mark-all-read', (data) => {
-      const { sessionId } = data;
+    socket.on('mark-all-read', () => {
+      if (isOperator || !boundSessionId) {
+        return;
+      }
 
       // Broadcast to operators
       toOperators(clientCompanyId, 'all-messages-read', {
-        sessionId,
+        sessionId: boundSessionId,
         timestamp: new Date()
       });
     });
@@ -836,39 +1243,41 @@ function setupWebSockets(server) {
     });
 
     // Handle operator taking over chat
-    socket.on('operator-takeover', async (data) => {
+    socket.on('operator-takeover', async (data = {}) => {
       if (!isOperator) {
         return;
       }
 
-      const { sessionId, operatorName } = data;
+      const { sessionId } = data;
 
       if (!(await canOperateOn(sessionId))) {
         logger.warn('Operator takeover denied', { sessionId, operator: socket.user.username });
-        return socket.emit('error', { message: 'You do not have access to this conversation' });
+        return socket.emit('error', { sessionId, message: 'You do not have access to this conversation' });
       }
 
-      // Join the session room to receive real-time updates
-      socket.join(sessionId);
-      logger.info(`Operator joined session room: ${sessionId}`);
-
-      // Notify user that operator has joined
-      io.to(sessionId).emit('operator-message', {
-        text: `${operatorName} has joined the conversation and will assist you.`,
-        senderName: operatorName,
-        timestamp: new Date()
-      });
-
-      // Notify all operators that an operator has joined this chat
-      allOperators(operatorCompanyId, 'operator-joined', {
-        sessionId,
-        operatorId: socket.user.id,
-        operatorName,
-        timestamp: new Date()
-      });
-
-      // Update conversation status in database
       try {
+        const current = await Conversation.findOne({ sessionId })
+          .select('operatorId operatorName company')
+          .lean();
+
+        if (!current) {
+          return socket.emit('error', { sessionId, message: 'Conversation not found' });
+        }
+
+        const heldByAnother = current.operatorId &&
+          String(current.operatorId) !== String(socket.user.id);
+
+        // Two people answering one visitor is worse than one. A colleague's
+        // conversation can be taken only deliberately, and only by someone
+        // whose job includes reassigning work.
+        if (heldByAnother && !(data.force === true && canForceTakeover)) {
+          return socket.emit('error', {
+            sessionId,
+            message: `${current.operatorName || 'Another operator'} is already handling this conversation`,
+            heldBy: { id: String(current.operatorId), name: current.operatorName || null }
+          });
+        }
+
         const conversation = await Conversation.findOneAndUpdate(
           { sessionId },
           {
@@ -878,144 +1287,112 @@ function setupWebSockets(server) {
               // — a person and a half-finished flow — is worse than either.
               workflowState: { awaiting: null, variables: {}, updatedAt: new Date() },
               operatorId: socket.user.id,
-              operatorName
-            }
+              operatorName: operatorDisplayName,
+              assignment: { method: 'manual', at: new Date() }
+            },
+            $unset: { awaitingOperatorSince: 1 }
           },
           { new: true }
         );
 
-        // Generate suggestions for the operator if there are messages
-        if (conversation && conversation.messages.length > 0) {
-          // Get the last user message
-          const lastUserMessage = [...conversation.messages]
-            .reverse()
-            .find(msg => msg.sender === 'user');
+        if (!conversation) {
+          return socket.emit('error', { sessionId, message: 'Conversation not found' });
+        }
 
-          if (lastUserMessage) {
-            // Get message history for context (last 5 messages)
-            const messageHistory = conversation.messages
-              .slice(-5)
-              .map(msg => ({
-                role: msg.sender === 'user' ? 'user' : 'assistant',
-                content: msg.content
-              }));
+        // Join the session room to receive real-time updates
+        socket.join(sessionId);
+        logger.info(`Operator joined session room: ${sessionId}`);
 
-            // Generate suggestions
-            const suggestionService = await AIService.forCompany(clientCompanyId);
-            const suggestion = await suggestionService.generateOperatorSuggestion(
-              lastUserMessage.content,
-              messageHistory
-            );
+        const tenantId = tenantOf(conversation);
 
-            // Import the Suggestion model
-            const Suggestion = require('./models/suggestion');
+        // Notify user that operator has joined
+        io.to(sessionId).emit('operator-message', {
+          text: `${operatorDisplayName} has joined the conversation and will assist you.`,
+          senderName: operatorDisplayName,
+          timestamp: new Date()
+        });
 
-            // Save suggestion to database
-            const newSuggestion = new Suggestion({
-              conversationId: conversation._id,
-              sessionId,
-              userMessageId: lastUserMessage._id,
-              userMessage: lastUserMessage.content,
-              content: suggestion,
-              createdAt: new Date()
-            });
+        if (heldByAnother) {
+          // The person who had it is told it has been taken, by name.
+          io.to(userRoom(current.operatorId)).emit('chat-taken-from-you', {
+            sessionId,
+            takenBy: operatorDisplayName,
+            timestamp: new Date()
+          });
+        }
 
-            await newSuggestion.save();
+        // Notify all operators that an operator has joined this chat
+        allOperators(tenantId, 'operator-joined', {
+          sessionId,
+          operatorId: socket.user.id,
+          operatorName: operatorDisplayName,
+          timestamp: new Date()
+        });
 
-            // Send suggestion to the operator
-            socket.emit('operator-suggestion', {
-              sessionId,
-              userMessageId: lastUserMessage._id.toString(),
-              userMessage: lastUserMessage.content,
-              suggestion,
-              suggestionId: newSuggestion._id.toString(),
-              timestamp: new Date()
-            });
-          }
+        // Draft a reply to whatever the visitor last said, for the person
+        // who has just taken over.
+        const lastUserMessage = [...conversation.messages]
+          .reverse()
+          .find(msg => msg.sender === 'user');
+
+        if (lastUserMessage) {
+          await offerSuggestion(conversation, lastUserMessage, { to: socket.user.id });
         }
       } catch (error) {
-        logger.error('Error updating conversation:', { error });
+        logger.error('Error taking over conversation:', { error });
+        socket.emit('error', { sessionId, message: 'Failed to take over the conversation' });
       }
     });
 
     // Handle operator message
     // Operator replies are metered separately from bot replies: they are what
     // a "human hours" style plan would price on.
-    socket.on('operator-message', async (data) => {
+    socket.on('operator-message', async (data = {}) => {
       if (!isOperator) {
         return;
       }
 
+      const { sessionId } = data;
+
       // Tenant guard: never let an operator act on another company's chat.
-      if (!(await canOperateOn(data && data.sessionId))) {
-        return socket.emit('error', { message: 'You do not have access to this conversation' });
+      if (!(await canOperateOn(sessionId))) {
+        return socket.emit('error', { sessionId, message: 'You do not have access to this conversation' });
       }
 
-      const { sessionId, message } = data;
+      const validated = validateMessage(data.message);
+      if (validated.error) {
+        return socket.emit('error', { sessionId, message: validated.error });
+      }
 
       try {
         // Save to database
         const conversation = await Conversation.findOne({ sessionId });
-        if (conversation) {
-          const operatorName = socket.user.displayName || socket.user.username;
+        if (!conversation) {
+          return socket.emit('error', { sessionId, message: 'Conversation not found' });
+        }
 
-          // An email thread is answered from the same composer; only delivery
-          // differs. Sent before persisting so a failure can be reported to
-          // the operator rather than leaving a message that never went out.
-          let delivery = { sent: true };
-
-          if (conversation.channel === 'email') {
-            delivery = await emailChannel.sendReply(conversation, message, operatorName);
-
-            if (!delivery.sent) {
-              socket.emit('error', {
-                message: `Could not send that email: ${delivery.reason}`
-              });
-              return;
-            }
-          }
-
-          conversation.messages.push({
-            content: message,
-            sender: 'operator',
-            operatorId: socket.user.id,
-            operatorName,
-            emailMessageId: delivery.messageId,
-            timestamp: new Date()
-          });
-
-          conversation.lastActivity = new Date();
-          await conversation.save();
-
-          usageService.record(conversation.company, { operatorMessages: 1, messages: 1 });
-
-          // Chat visitors get it over the socket. Email visitors already have
-          // it in their inbox.
-          if (conversation.channel !== 'email') {
-            io.to(sessionId).emit('operator-message', {
-              text: message,
-              senderName: operatorName,
-              timestamp: new Date()
-            });
-          }
+        const result = await deliverOperatorMessage(conversation, validated.text);
+        if (!result.ok) {
+          socket.emit('error', { sessionId, message: result.error });
         }
       } catch (error) {
         logger.error('Error handling operator message:', { error });
+        socket.emit('error', { sessionId, message: 'Failed to send message' });
       }
     });
 
     // Add a new handler for when an operator requests suggestions
-    socket.on('request-suggestions', async (data) => {
+    socket.on('request-suggestions', async (data = {}) => {
       if (!isOperator) {
         return;
       }
 
-      // Tenant guard: never let an operator act on another company's chat.
-      if (!(await canOperateOn(data && data.sessionId))) {
-        return socket.emit('error', { message: 'You do not have access to this conversation' });
-      }
-
       const { sessionId, messageId } = data;
+
+      // Tenant guard: never let an operator act on another company's chat.
+      if (!(await canOperateOn(sessionId))) {
+        return socket.emit('error', { sessionId, message: 'You do not have access to this conversation' });
+      }
 
       try {
         // Find the conversation
@@ -1041,174 +1418,109 @@ function setupWebSockets(server) {
           return;
         }
 
-        // Get message history for context (last 5 messages)
-        const messageHistory = conversation.messages
-          .slice(-5)
-          .map(msg => ({
-            role: msg.sender === 'user' ? 'user' : 'assistant',
-            content: msg.content
-          }));
-
-        // Generate suggestions
-        const suggestionService = await AIService.forCompany(operatorCompanyId);
-        const suggestion = await suggestionService.generateOperatorSuggestion(
-          targetMessage.content,
-          messageHistory
-        );
-
-        // Import the Suggestion model
-        const Suggestion = require('./models/suggestion');
-
-        // Save suggestion to database
-        const newSuggestion = new Suggestion({
-          conversationId: conversation._id,
-          sessionId,
-          userMessageId: targetMessage._id,
-          userMessage: targetMessage.content,
-          content: suggestion,
-          createdAt: new Date()
-        });
-
-        await newSuggestion.save();
-
-        // Send suggestion to the operator
-        socket.emit('operator-suggestion', {
-          sessionId,
-          userMessageId: targetMessage._id.toString(),
-          userMessage: targetMessage.content,
-          suggestion,
-          suggestionId: newSuggestion._id.toString(),
-          timestamp: new Date()
-        });
+        // Whoever asked gets the draft, whether or not they hold the chat.
+        await offerSuggestion(conversation, targetMessage, { to: socket.user.id });
       } catch (error) {
         logger.error('Error generating suggestions:', { error });
       }
     });
 
     // Handle operator using a suggestion
-    socket.on('use-suggestion', async (data) => {
+    socket.on('use-suggestion', async (data = {}) => {
       if (!isOperator) {
         return;
       }
 
+      const { sessionId, suggestion, edited } = data;
+
       // Tenant guard: never let an operator act on another company's chat.
-      if (!(await canOperateOn(data && data.sessionId))) {
-        return socket.emit('error', { message: 'You do not have access to this conversation' });
+      if (!(await canOperateOn(sessionId))) {
+        return socket.emit('error', { sessionId, message: 'You do not have access to this conversation' });
       }
 
-      const { sessionId, suggestionId, edited } = data;
+      // The text travels with the event. Suggestions used to be written to a
+      // collection nothing ever read back, purely so this handler could look
+      // one up by id.
+      const validated = validateMessage(
+        typeof edited === 'string' && edited.trim() ? edited : suggestion
+      );
+      if (validated.error) {
+        return socket.emit('error', { sessionId, message: validated.error });
+      }
 
       try {
-        // Import the Suggestion model
-        const Suggestion = require('./models/suggestion');
-
-        // Find the suggestion
-        const suggestion = await Suggestion.findById(suggestionId);
-
-        if (!suggestion) {
-          socket.emit('error', { message: 'Suggestion not found' });
-          return;
-        }
-
-        // Get the content to use (either edited or original)
-        const messageContent = edited || suggestion.content;
-
-        // Save to database
         const conversation = await Conversation.findOne({ sessionId });
-        if (conversation) {
-          // Create the message
-          const messageDoc = {
-            content: messageContent,
-            sender: 'operator',
-            operatorId: socket.user.id,
-            operatorName: socket.user.displayName || socket.user.username,
-            timestamp: new Date()
-          };
-
-          conversation.messages.push(messageDoc);
-          conversation.lastActivity = new Date();
-          await conversation.save();
-
-          // Get the database ID of the newly added message
-          let dbMessageId = 'temp-id';
-          if (conversation.messages &&
-              conversation.messages.length > 0 &&
-              conversation.messages[conversation.messages.length - 1]._id) {
-            dbMessageId = conversation.messages[conversation.messages.length - 1]._id.toString();
-          }
-
-          // Update the suggestion to mark it as used
-          suggestion.used = true;
-          suggestion.usedAt = new Date();
-          suggestion.editedContent = edited;
-          suggestion.resultingMessageId = dbMessageId;
-          await suggestion.save();
-
-          // Send to user
-          io.to(sessionId).emit('operator-message', {
-            text: messageContent,
-            senderName: socket.user.displayName || socket.user.username,
-            timestamp: new Date()
-          });
-
-          // Notify all operators that the suggestion was used
-          allOperators(operatorCompanyId, 'suggestion-used', {
-            sessionId,
-            suggestionId,
-            operatorId: socket.user.id,
-            operatorName: socket.user.displayName || socket.user.username,
-            wasEdited: !!edited,
-            timestamp: new Date()
-          });
+        if (!conversation) {
+          return socket.emit('error', { sessionId, message: 'Conversation not found' });
         }
+
+        const result = await deliverOperatorMessage(conversation, validated.text);
+        if (!result.ok) {
+          return socket.emit('error', { sessionId, message: result.error });
+        }
+
+        // Notify all operators that the suggestion was used
+        allOperators(tenantOf(conversation), 'suggestion-used', {
+          sessionId,
+          messageId: result.messageId,
+          operatorId: socket.user.id,
+          operatorName: operatorDisplayName,
+          wasEdited: Boolean(edited),
+          timestamp: new Date()
+        });
       } catch (error) {
         logger.error('Error handling suggestion use:', { error });
-        socket.emit('error', { message: 'Failed to use suggestion' });
+        socket.emit('error', { sessionId, message: 'Failed to use suggestion' });
       }
     });
 
     // Operator requests the user to provide contact details
-    socket.on('request-user-details', (data) => {
-      if (!isOperator) {
+    socket.on('request-user-details', async (data = {}) => {
+      const { sessionId } = data;
+
+      // Same reasoning as `operator-typing`: this prompts a stranger's visitor
+      // for their name, email and phone number, so it has to be an operator of
+      // that conversation's tenant rather than an operator of anything.
+      if (!await canOperateOn(sessionId)) {
         return;
       }
-      const { sessionId } = data;
+
       io.to(sessionId).emit('request-user-details');
     });
 
     // Handle toggling suggestions for a chat
-    socket.on('toggle-suggestions', async (data) => {
+    socket.on('toggle-suggestions', async (data = {}) => {
       if (!isOperator) {
         return;
       }
 
-      // Tenant guard: never let an operator act on another company's chat.
-      if (!(await canOperateOn(data && data.sessionId))) {
-        return socket.emit('error', { message: 'You do not have access to this conversation' });
-      }
-
       const { sessionId, enabled } = data;
+
+      // Tenant guard: never let an operator act on another company's chat.
+      if (!(await canOperateOn(sessionId))) {
+        return socket.emit('error', { sessionId, message: 'You do not have access to this conversation' });
+      }
 
       try {
         // Update conversation in database
         const conversation = await Conversation.findOneAndUpdate(
           { sessionId },
-          { $set: { suggestionsEnabled: enabled } },
+          { $set: { suggestionsEnabled: Boolean(enabled) } },
           { new: true }
         );
 
         if (conversation) {
           // Notify all operators about the change
-          allOperators(operatorCompanyId, 'suggestions-status-changed', {
+          allOperators(tenantOf(conversation), 'suggestions-status-changed', {
             sessionId,
-            enabled,
+            enabled: Boolean(enabled),
             timestamp: new Date()
           });
 
           // Send confirmation to the requesting operator
           socket.emit('suggestions-toggled', {
             sessionId,
-            enabled,
+            enabled: Boolean(enabled),
             success: true,
             timestamp: new Date()
           });
@@ -1232,66 +1544,79 @@ function setupWebSockets(server) {
     });
 
     // Handle operator leaving a chat without ending it
-    socket.on('operator-leave', async (data) => {
+    socket.on('operator-leave', async (data = {}) => {
       if (!isOperator) {
         return;
       }
 
-      // Tenant guard: never let an operator act on another company's chat.
-      if (!(await canOperateOn(data && data.sessionId))) {
-        return socket.emit('error', { message: 'You do not have access to this conversation' });
-      }
-
       const { sessionId, passToBot } = data;
 
+      // Tenant guard: never let an operator act on another company's chat.
+      if (!(await canOperateOn(sessionId))) {
+        return socket.emit('error', { sessionId, message: 'You do not have access to this conversation' });
+      }
+
       try {
-        const conversation = await Conversation.findOneAndUpdate(
-          { sessionId },
-          {
-            $set: {
-              hasOperator: false,
-              operatorId: null,
-              operatorName: null,
-              botEnabled: passToBot !== false
-            }
-          },
-          { new: true }
-        );
-
-        if (conversation) {
-          const opName = socket.user.displayName || socket.user.username;
-          io.to(sessionId).emit('operator-message', {
-            text: passToBot
-              ? `${opName} has left the conversation. The chatbot will assist you.`
-              : `${opName} has left the conversation. Please wait for the next available operator.`,
-            senderName: opName,
-            timestamp: new Date()
-          });
-
-          allOperators(operatorCompanyId, 'operator-left', {
-            sessionId,
-            operatorId: socket.user.id,
-            operatorName: operatorDisplayName,
-            timestamp: new Date()
-          });
+        const conversation = await Conversation.findOne({ sessionId });
+        if (!conversation) {
+          return;
         }
+
+        const tenantId = tenantOf(conversation);
+        let text;
+
+        if (passToBot === false) {
+          // Not "leave it for the next person" - that used to mean nobody:
+          // bot off, operator gone, every further message unanswered. The
+          // conversation goes back into the queue and is offered to a
+          // colleague now.
+          const result = await assignmentService.release(conversation, { exclude: [socket.user.id] });
+
+          text = result.assigned
+            ? `${operatorDisplayName} has left the conversation. ${result.operator.displayName} will assist you.`
+            : `${operatorDisplayName} has left the conversation. The next available operator will be with you shortly; in the meantime the assistant can help.`;
+        } else {
+          conversation.hasOperator = false;
+          conversation.operatorId = null;
+          conversation.operatorName = null;
+          conversation.botEnabled = true;
+          conversation.awaitingOperatorSince = undefined;
+          await conversation.save();
+
+          text = `${operatorDisplayName} has left the conversation. The chatbot will assist you.`;
+        }
+
+        socket.leave(sessionId);
+
+        io.to(sessionId).emit('operator-message', {
+          text,
+          senderName: operatorDisplayName,
+          timestamp: new Date()
+        });
+
+        allOperators(tenantId, 'operator-left', {
+          sessionId,
+          operatorId: socket.user.id,
+          operatorName: operatorDisplayName,
+          timestamp: new Date()
+        });
       } catch (error) {
         logger.error('Error handling operator leave:', { error });
       }
     });
 
     // Handle end chat
-    socket.on('end-chat', async (data) => {
+    socket.on('end-chat', async (data = {}) => {
       if (!isOperator) {
         return;
       }
 
-      // Tenant guard: never let an operator act on another company's chat.
-      if (!(await canOperateOn(data && data.sessionId))) {
-        return socket.emit('error', { message: 'You do not have access to this conversation' });
-      }
-
       const { sessionId } = data;
+
+      // Tenant guard: never let an operator act on another company's chat.
+      if (!(await canOperateOn(sessionId))) {
+        return socket.emit('error', { sessionId, message: 'You do not have access to this conversation' });
+      }
 
       try {
         // Update conversation status in database
@@ -1307,12 +1632,15 @@ function setupWebSockets(server) {
               // A visitor returning days later should not be answered as
               // though they were still half way through answering a question.
               workflowState: { awaiting: null, variables: {}, updatedAt: new Date() }
-            }
+            },
+            $unset: { awaitingOperatorSince: 1 }
           },
           { new: true }
         );
 
         if (conversation) {
+          const tenantId = tenantOf(conversation);
+
           // Ask for a rating on the way out. This is the only moment the
           // customer is both still present and finished — asking earlier
           // interrupts, and asking later means emailing them.
@@ -1340,13 +1668,13 @@ function setupWebSockets(server) {
           });
 
           // Notify all operators that this chat has ended
-          allOperators(operatorCompanyId, 'chat-ended', {
+          allOperators(tenantId, 'chat-ended', {
             sessionId,
             timestamp: new Date()
           });
 
           // Notify all operators that the operator has left this chat
-          allOperators(operatorCompanyId, 'operator-left', {
+          allOperators(tenantId, 'operator-left', {
             sessionId,
             operatorId: socket.user.id,
             operatorName: operatorDisplayName,
@@ -1356,7 +1684,9 @@ function setupWebSockets(server) {
       } catch (error) {
         logger.error('Error ending chat:', { error });
       }
-    });    /**
+    });
+
+    /**
      * A visitor asking for a person.
      *
      * Explicit rather than inferred. Guessing "this one wants a human" from the
@@ -1364,12 +1694,14 @@ function setupWebSockets(server) {
      * were only being polite, and misses the ones who are quietly giving up.
      */
     socket.on('request-operator', async () => {
-      if (isOperator || !clientSessionId) {
+      if (isOperator || !boundSessionId) {
         return;
       }
 
+      const sessionId = boundSessionId;
+
       try {
-        const conversation = await Conversation.findOne({ sessionId: clientSessionId });
+        const conversation = await Conversation.findOne({ sessionId });
 
         if (!conversation) {
           return;
@@ -1389,7 +1721,7 @@ function setupWebSockets(server) {
         await conversation.save();
 
         allOperators(conversation.company, 'operator-requested', {
-          sessionId: clientSessionId,
+          sessionId,
           timestamp: new Date()
         });
 
@@ -1427,12 +1759,14 @@ function setupWebSockets(server) {
      * exactly the sort of thing that would happen.
      */
     socket.on('submit-rating', async (data = {}) => {
-      if (isOperator || !clientSessionId) {
+      if (isOperator || !boundSessionId) {
         return;
       }
 
+      const sessionId = boundSessionId;
+
       try {
-        const result = await csatService.record(clientSessionId, data.score, data.comment);
+        const result = await csatService.record(sessionId, data.score, data.comment);
 
         socket.emit('rating-recorded', {
           success: result.ok,
@@ -1445,7 +1779,7 @@ function setupWebSockets(server) {
           // Shown against the conversation in the dashboard, so an operator
           // sees the score land rather than discovering it in a report.
           allOperators(result.company, 'conversation-rated', {
-            sessionId: clientSessionId,
+            sessionId,
             score: result.rating.score,
             comment: result.rating.comment,
             timestamp: new Date()
@@ -1464,18 +1798,18 @@ function setupWebSockets(server) {
      * and so the response rate reflects who was asked rather than who answered.
      */
     socket.on('decline-rating', async () => {
-      if (isOperator || !clientSessionId) {
+      if (isOperator || !boundSessionId) {
         return;
       }
-      await csatService.markRequested(clientSessionId).catch(() => {});
+      await csatService.markRequested(boundSessionId).catch(() => {});
     });
 
     // Handle heartbeat to keep connection alive
-    socket.on('heartbeat', (data) => {
+    socket.on('heartbeat', (data = {}) => {
       // Respond with an acknowledgment
       socket.emit('heartbeat-ack', {
         timestamp: new Date().toISOString(),
-        received: data.timestamp
+        received: data && data.timestamp
       });
 
       // If this is an operator, make sure they're still in the operators room
@@ -1492,24 +1826,44 @@ function setupWebSockets(server) {
     socket.on('disconnect', async () => {
       logger.info('Client disconnected');
 
-      // Clean up encryption keys when client disconnects
-      if (clientSessionId) {
-        encryptionService.removeClientPublicKey(clientSessionId);
-      }
-
       // If it was a user (not an operator), notify operators
-      if (!isOperator && clientSessionId) {
+      if (!isOperator && boundSessionId) {
         toOperators(clientCompanyId, 'chat-activity', {
           type: 'closed',
-          sessionId: clientSessionId,
+          sessionId: boundSessionId,
           timestamp: new Date()
         });
       }
 
-      // If it was an operator, keep the chat assignment intact so
-      // refreshing the page doesn't remove them from the conversation.
-      if (isOperator) {
-        logger.info('Operator disconnected, assignments preserved');
+      // An operator's conversations are kept for a grace period, so a page
+      // refresh does not hand their chats to somebody else. Only when the
+      // period passes with no socket of theirs connected do the chats move.
+      if (isOperator && socket.user.id) {
+        const userId = String(socket.user.id);
+        const stillConnected = io.sockets.adapter.rooms.get(userRoom(userId));
+
+        if (stillConnected && stillConnected.size > 0) {
+          return;
+        }
+
+        if (graceTimers.has(userId)) {
+          clearTimeout(graceTimers.get(userId));
+        }
+
+        const grace = envInt('OPERATOR_GRACE_MS', 60 * 1000);
+        const timer = setTimeout(() => {
+          releaseOperatorChats(socket.user.id, socket.user.username);
+        }, grace);
+        // Never keep the process alive for this.
+        if (typeof timer.unref === 'function') {
+          timer.unref();
+        }
+        graceTimers.set(userId, timer);
+
+        logger.info('Operator disconnected; holding their conversations', {
+          operator: socket.user.username,
+          graceMs: grace
+        });
       }
     });
   });
@@ -1518,3 +1872,5 @@ function setupWebSockets(server) {
 }
 
 module.exports = setupWebSockets;
+// Exposed for tests, so a release can be triggered without waiting.
+module.exports.graceTimers = graceTimers;

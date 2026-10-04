@@ -4,9 +4,10 @@
 
 const Workflow = require('../models/workflow');
 const WorkflowVersion = require('../models/workflow-version');
-const KnowledgeSource = require('../models/knowledge-source');
 const WorkflowCompilerService = require('./workflow-compiler');
+const capabilities = require('../config/capabilities');
 const secrets = require('./secrets');
+const { companyScope } = require('../utils/query');
 const { logger } = require('./logging');
 
 /**
@@ -59,6 +60,24 @@ function protectNodeSecrets(incomingNodes, existingNodes = []) {
       }
     };
   });
+}
+
+/**
+ * The fields a client may change through the editor.
+ *
+ * Everything else on the document is the platform's: `company` decides whose
+ * visitors a workflow answers, `status` and `publishedAt` decide whether it is
+ * live, `version` is the audit trail, `createdBy` is attribution. A PUT used to
+ * `Object.assign` the whole request body onto the document, so any of those
+ * could be set by whoever could edit a draft - including moving a workflow to
+ * another tenant.
+ */
+const EDITABLE_FIELDS = ['name', 'description', 'nodes', 'edges', 'moderationConfig', 'changeDescription'];
+
+function pickEditable(updateData = {}) {
+  return Object.fromEntries(
+    Object.entries(updateData).filter(([key]) => EDITABLE_FIELDS.includes(key))
+  );
 }
 
 /**
@@ -172,18 +191,14 @@ class WorkflowService {
     try {
       const filter = {};
 
-      // Apply company filtering based on user role
-      if (userRole === 'superadmin') {
-        // Super admin can see all workflows
-        if (status) {
-          filter.status = status;
-        }
-      } else {
-        // Regular users see only their company's workflows
-        filter.company = userCompanyId;
-        if (status) {
-          filter.status = status;
-        }
+      // Superadmins see every tenant's workflows; everybody else sees their
+      // own company's, and a user with no company sees none. Assigning
+      // `filter.company = undefined` looked like a filter but was not one:
+      // mongoose drops undefined values, leaving the query unscoped.
+      Object.assign(filter, companyScope(userCompanyId, userRole));
+
+      if (status) {
+        filter.status = status;
       }
 
       const workflows = await Workflow.find(filter)
@@ -205,10 +220,7 @@ class WorkflowService {
     try {
       const query = { _id: workflowId };
 
-      // Apply company filter for regular users
-      if (userRole !== 'superadmin' && userCompanyId) {
-        query.company = userCompanyId;
-      }
+      Object.assign(query, companyScope(userCompanyId, userRole));
 
       const workflow = await Workflow.findOne(query)
         .populate('createdBy', 'username displayName email')
@@ -228,9 +240,12 @@ class WorkflowService {
   /**
    * Update an existing workflow
    */
-  async updateWorkflow(workflowId, updateData, user) {
+  async updateWorkflow(workflowId, rawUpdate, user) {
     try {
       const userCompanyId = user.role === 'superadmin' ? null : user.company?.id;
+
+      // Only the editable fields survive; see EDITABLE_FIELDS.
+      const updateData = pickEditable(rawUpdate);
 
       // Get existing workflow
       const workflow = await this.getWorkflow(workflowId, userCompanyId, user.role);
@@ -260,11 +275,12 @@ class WorkflowService {
       updateData.updatedAt = new Date();
 
       // Update workflow
-      Object.assign(workflow, updateData);
+      const { changeDescription, ...fields } = updateData;
+      Object.assign(workflow, fields);
       await workflow.save();
 
       // Save new version
-      await this.saveVersion(workflow, user, updateData.changeDescription);
+      await this.saveVersion(workflow, user, changeDescription);
 
       logger.info(`Workflow updated: ${workflowId} to version ${workflow.version}`);
       return workflow;
@@ -381,7 +397,12 @@ class WorkflowService {
       await Workflow.findByIdAndDelete(workflow._id);
 
       logger.info(`Workflow deleted: ${workflowId}`);
-      return { success: true, message: 'Workflow deleted successfully' };
+      return {
+        success: true,
+        message: 'Workflow deleted successfully',
+        name: workflow.name,
+        company: workflow.company ? String(workflow.company._id || workflow.company) : null
+      };
     } catch (error) {
       logger.error('Error deleting workflow:', error);
       throw error;
@@ -586,6 +607,44 @@ class WorkflowService {
       }
       break;
 
+    case 'capability': {
+      // Checked against the contract the connector is held to, so a node that
+      // names a capability nobody implements, or feeds it a field it does not
+      // take, is refused in the editor rather than at the visitor.
+      const capability = data.capability ? capabilities.byId(String(data.capability)) : null;
+      if (!capability) {
+        throw new Error(
+          `Capability node ${node.id} must choose one of: ${capabilities.ids().join(', ')}`
+        );
+      }
+
+      const input = data.input || {};
+      if (typeof input !== 'object' || Array.isArray(input)) {
+        throw new Error(`Capability node ${node.id} has inputs that are not a set of fields`);
+      }
+
+      Object.keys(input).forEach(field => {
+        if (!Object.prototype.hasOwnProperty.call(capability.input, field)) {
+          throw new Error(
+            `Capability node ${node.id}: "${capability.id}" has no input called "${field}"`
+          );
+        }
+      });
+
+      Object.entries(capability.input).forEach(([field, spec]) => {
+        const required = !String(spec).endsWith('?');
+        const value = input[field];
+        if (required && (value === undefined || value === null || String(value).trim() === '')) {
+          throw new Error(`Capability node ${node.id}: "${capability.id}" needs "${field}"`);
+        }
+      });
+
+      if (data.limit !== undefined && data.limit !== '' && !/^\d+$/.test(String(data.limit))) {
+        throw new Error(`Capability node ${node.id} has a limit that is not a whole number`);
+      }
+      break;
+    }
+
     case 'start':
     case 'moderation':
     case 'operator-handoff':
@@ -742,3 +801,5 @@ const instance = new WorkflowService();
 module.exports = instance;
 module.exports.redactWorkflow = redactWorkflow;
 module.exports.protectNodeSecrets = protectNodeSecrets;
+module.exports.pickEditable = pickEditable;
+module.exports.EDITABLE_FIELDS = EDITABLE_FIELDS;

@@ -183,7 +183,7 @@ document.head.appendChild(style);
 
 document.addEventListener('DOMContentLoaded', function() {
   // Check if user is logged in
-  const token = localStorage.getItem('chatbot-auth-token');
+  const token = authToken();
   if (!token) {
     // Redirect to login page
     window.location.href = '/admin/login.html';
@@ -205,13 +205,13 @@ document.addEventListener('DOMContentLoaded', function() {
       return response.json();
     })
     .then(data => {
-      localStorage.setItem('chatbot-user', JSON.stringify(data.user));
+      setStoredUser(data.user);
       // Initialize dashboard
       initializeDashboard(token, data.user);
     })
     .catch(error => {
       logger.error('Auth error:', error);
-      localStorage.removeItem('chatbot-auth-token');
+      setAuthToken(null);
       window.location.href = '/admin/login.html';
     });
 });
@@ -258,12 +258,10 @@ function initializeDashboard(token, user) {
 
   const logoutBtn = document.getElementById('logout-btn');
   if (logoutBtn) {
-    logoutBtn.addEventListener('click', () => {
-      localStorage.removeItem('chatbot-auth-token');
-      localStorage.removeItem('chatbot-user');
-      window.location.href = '/admin/login.html';
-    });
+    logoutBtn.addEventListener('click', () => logout());
   }
+
+  setupAccountSettings();
 
   // Helper function to save joined chats to localStorage
   window.saveJoinedChats = function() {
@@ -376,6 +374,94 @@ function initializeDashboard(token, user) {
 }
 
 /**
+ * Sign out, on the server as well as here.
+ *
+ * Clearing localStorage alone left the token valid until it expired: anyone
+ * who had copied it kept an eight-hour session. The server call invalidates
+ * it; the local clean-up happens whether or not that call succeeds, so a
+ * dead server cannot keep somebody signed in.
+ */
+async function logout() {
+  const token = authToken();
+
+  try {
+    if (token) {
+      await fetch('/api/auth/logout', {
+        method: 'POST',
+        headers: authHeaders()
+      });
+    }
+  } catch (error) {
+    logger.warn('Logout request failed; clearing the session locally', error);
+  } finally {
+    setAuthToken(null);
+    setStoredUser(null);
+    window.location.href = '/admin/login.html';
+  }
+}
+
+/**
+ * The "Your password" form under Settings.
+ *
+ * A successful change returns a fresh token, because changing the password
+ * invalidates every token issued before it - including the one this tab is
+ * using. Storing the new one keeps this session alive while every other one
+ * ends.
+ */
+function setupAccountSettings() {
+  const form = document.getElementById('change-password-form');
+  if (!form) {
+    return;
+  }
+
+  form.addEventListener('submit', async event => {
+    event.preventDefault();
+
+    const currentPassword = document.getElementById('current-password').value;
+    const newPassword = document.getElementById('new-password').value;
+    const confirm = document.getElementById('new-password-confirm').value;
+    const button = document.getElementById('change-password-btn');
+
+    if (newPassword.length < 8) {
+      showToast('Use at least 8 characters for the new password', 'warning');
+      return;
+    }
+    if (newPassword !== confirm) {
+      showToast('The two new passwords do not match', 'warning');
+      return;
+    }
+    if (newPassword === currentPassword) {
+      showToast('The new password is the same as the current one', 'warning');
+      return;
+    }
+
+    setLoading(button, true);
+    try {
+      const result = await api('/api/auth/change-password', {
+        method: 'POST',
+        body: JSON.stringify({ currentPassword, newPassword })
+      });
+
+      if (result && result.token) {
+        setAuthToken(result.token);
+        if (window.adminSocket) {
+          // The socket authenticated with the old token; give it the new one
+          // so its next reconnect is not refused.
+          window.adminSocket.auth = { token: result.token };
+        }
+      }
+
+      form.reset();
+      showToast('Password changed. Other sessions have been signed out.', 'success');
+    } catch (error) {
+      showToast(errorMessage(error, 'Could not change the password'), 'danger');
+    } finally {
+      setLoading(button, false);
+    }
+  });
+}
+
+/**
  * Re-measure any charts inside a section that has just become visible.
  *
  * Chart.js sizes a canvas when the chart is constructed. Sections other than
@@ -446,7 +532,7 @@ function setupExport() {
     setLoading(button, true);
     try {
       const response = await fetch('/api/admin/export?type=conversations', {
-        headers: { 'x-auth-token': localStorage.getItem('chatbot-auth-token') }
+        headers: { 'x-auth-token': authToken() }
       });
 
       if (!response.ok) {
@@ -612,7 +698,7 @@ function setupNavigation() {
 
       // If tasks section is clicked, load operators and show task list
       if (sectionId === 'tasks') {
-        loadOperators(localStorage.getItem('chatbot-auth-token'));
+        loadOperators(authToken());
         // Make sure we show the task list view instead of task detail view
         if (typeof showTaskList === 'function') {
           showTaskList();
@@ -641,7 +727,7 @@ function setupNavigation() {
 
     // If tasks section is loaded directly, load operators and show task list
     if (params.section === 'tasks') {
-      loadOperators(localStorage.getItem('chatbot-auth-token'));
+      loadOperators(authToken());
 
       // If there's no taskId parameter, make sure we show the task list view
       if (!params.taskId && typeof showTaskList === 'function') {

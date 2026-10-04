@@ -182,7 +182,15 @@ const CompanySchema = new mongoose.Schema({
     primaryColor: { type: String, trim: true, default: '#2196f3' },
     position: { type: String, enum: ['left', 'right'], default: 'right' },
     welcomeMessage: { type: String, trim: true, default: 'Hi! How can we help you today?' },
-    logoUrl: { type: String, trim: true }
+    logoUrl: { type: String, trim: true },
+    // Pre-chat form: which contact details a visitor must give before
+    // chatting. Phone is optional by default; asking for it up front costs
+    // more conversations than it is worth for most tenants.
+    requireName: { type: Boolean, default: true },
+    requireEmail: { type: Boolean, default: true },
+    requirePhone: { type: Boolean, default: false },
+    // Linked from the pre-chat form; defaults to this server's own policy page.
+    privacyPolicyUrl: { type: String, trim: true }
   },
   isActive: {
     type: Boolean,

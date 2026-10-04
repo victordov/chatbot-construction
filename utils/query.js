@@ -40,6 +40,26 @@ function companyFilter(user) {
 }
 
 /**
+ * `companyFilter` for callers that hold the company id and role as separate
+ * values rather than a `req.user`.
+ *
+ * The service layer used to write this inline as
+ * `if (role !== 'superadmin' && companyId) { query.company = companyId; }`,
+ * which fails *open*: a non-superadmin whose company id is missing gets no
+ * filter at all and reads every tenant's documents. Same job, same rule, one
+ * implementation - and the rule is that an unknown tenant sees nothing.
+ */
+function companyScope(companyId, role) {
+  if (role === 'superadmin') {
+    return {};
+  }
+  if (!companyId) {
+    return { company: null, _id: { $exists: false } };
+  }
+  return { company: companyId };
+}
+
+/**
  * Same as `companyFilter` but returns ObjectId values, for aggregation
  * pipelines where mongoose cannot cast strings automatically.
  */
@@ -95,6 +115,7 @@ module.exports = {
   escapeRegex,
   containsRegex,
   companyFilter,
+  companyScope,
   companyMatch,
   canAccessCompany,
   toObjectId,

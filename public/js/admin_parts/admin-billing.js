@@ -10,26 +10,6 @@
   let usageHistoryChart = null;
   let catalogue = [];
 
-  function token() {
-    return localStorage.getItem('chatbot-auth-token');
-  }
-
-  async function api(path, options = {}) {
-    const response = await fetch(`/api/billing${path}`, {
-      ...options,
-      headers: {
-        'Content-Type': 'application/json',
-        'x-auth-token': token(),
-        ...options.headers
-      }
-    });
-
-    const body = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      throw new Error(body.error || `Request failed (${response.status})`);
-    }
-    return body;
-  }
 
   const formatNumber = value => Number(value || 0).toLocaleString();
 
@@ -177,7 +157,7 @@
 
   async function renderHistory() {
     try {
-      const { history } = await api('/me/history?months=12');
+      const { history } = await api('/api/billing/me/history?months=12');
       const canvas = document.getElementById('usage-history-chart');
 
       if (!history.length) {
@@ -230,7 +210,7 @@
     card.style.display = '';
 
     try {
-      const { period, tenants, totals } = await api('/usage');
+      const { period, tenants, totals } = await api('/api/billing/usage');
       document.getElementById('tenant-usage-period').textContent = period;
 
       const table = document.getElementById('tenant-usage-table');
@@ -294,7 +274,7 @@
 
     setLoading(button, true);
     try {
-      await api(`/companies/${encodeURIComponent(companyId)}/subscription`, {
+      await api(`/api/billing/companies/${encodeURIComponent(companyId)}/subscription`, {
         method: 'PATCH',
         body: JSON.stringify({
           planId: document.getElementById('change-plan-select').value,
@@ -323,14 +303,14 @@
     const hasOwnCompany = Boolean(user.company);
 
     try {
-      catalogue = (await api('/plans')).plans;
+      catalogue = (await api('/api/billing/plans')).plans;
     } catch (error) {
       logger.error('Failed to load the plan catalogue:', error);
     }
 
     if (hasOwnCompany) {
       try {
-        const summary = await api('/me');
+        const summary = await api('/api/billing/me');
         renderPlan(summary);
         renderMeters(summary);
         renderCatalogue(summary.plan.id);

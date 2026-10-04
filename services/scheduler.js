@@ -90,6 +90,15 @@ class SchedulerService {
       return;
     }
 
+    // With several instances exactly one should run these, or N replicas
+    // retry every webhook and back every tenant up N times a night. server.js
+    // checks the same flag before calling this; the check is repeated here so
+    // the service enforces it whoever calls initialize().
+    if (process.env.SCHEDULER_ENABLED === 'false') {
+      logger.info('Scheduler service not started (SCHEDULER_ENABLED=false)');
+      return;
+    }
+
     // Webhook retries. Pending deliveries are rows with a time on them rather
     // than timers in memory, so a deploy does not lose them — and a deploy is
     // exactly when endpoints are most likely to have been failing.

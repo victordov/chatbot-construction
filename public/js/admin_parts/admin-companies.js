@@ -2,8 +2,8 @@
 
 // Load all companies
 function loadAllCompanies() {
-  const token = localStorage.getItem('chatbot-auth-token');
-  const currentUser = JSON.parse(localStorage.getItem('chatbot-user'));
+  const token = authToken();
+  const currentUser = getStoredUser() || {};
 
   // Only superadmins can see all companies
   if (currentUser.role !== 'superadmin') {
@@ -23,7 +23,7 @@ function loadAllCompanies() {
       'x-auth-token': token
     }
   })
-    .then(response => response.json())
+    .then(parseJsonResponse)
     .then(data => {
       const tableBody = document.getElementById('companies-table-body');
       if (!tableBody) {
@@ -85,13 +85,13 @@ function loadAllCompanies() {
     })
     .catch(error => {
       console.error('Error loading companies:', error);
-      showToast('Failed to load companies', 'danger');
+      showToast(errorMessage(error, 'Failed to load companies'), 'danger');
     });
 }
 
 // Load a specific company
 function loadCompany(companyId) {
-  const token = localStorage.getItem('chatbot-auth-token');
+  const token = authToken();
 
   fetch(`/api/companies/${escapeHtml(companyId)}`, {
     method: 'GET',
@@ -100,7 +100,7 @@ function loadCompany(companyId) {
       'x-auth-token': token
     }
   })
-    .then(response => response.json())
+    .then(parseJsonResponse)
     .then(data => {
       const tableBody = document.getElementById('companies-table-body');
       if (!tableBody) {
@@ -152,7 +152,7 @@ function loadCompany(companyId) {
     })
     .catch(error => {
       console.error('Error loading company:', error);
-      showToast('Failed to load company', 'danger');
+      showToast(errorMessage(error, 'Failed to load company'), 'danger');
     });
 }
 
@@ -169,7 +169,7 @@ function viewCompany(event) {
   document.getElementById('company-detail-id').value = companyId;
 
   // Load company details
-  const token = localStorage.getItem('chatbot-auth-token');
+  const token = authToken();
 
   fetch(`/api/companies/${escapeHtml(companyId)}`, {
     method: 'GET',
@@ -178,7 +178,7 @@ function viewCompany(event) {
       'x-auth-token': token
     }
   })
-    .then(response => response.json())
+    .then(parseJsonResponse)
     .then(data => {
       const company = data.company;
 
@@ -192,14 +192,14 @@ function viewCompany(event) {
     })
     .catch(error => {
       console.error('Error loading company details:', error);
-      showToast('Failed to load company details', 'danger');
+      showToast(errorMessage(error, 'Failed to load company details'), 'danger');
     });
 }
 
 // Load company users
 function loadCompanyUsers(companyId) {
-  const token = localStorage.getItem('chatbot-auth-token');
-  const currentUser = JSON.parse(localStorage.getItem('chatbot-user'));
+  const token = authToken();
+  const currentUser = getStoredUser() || {};
 
   // Check if user is superadmin to show/hide the create user button
   const createCompanyUserBtn = document.getElementById('create-company-user-btn');
@@ -214,7 +214,7 @@ function loadCompanyUsers(companyId) {
       'x-auth-token': token
     }
   })
-    .then(response => response.json())
+    .then(parseJsonResponse)
     .then(data => {
       const tableBody = document.getElementById('company-users-table-body');
       if (!tableBody) {
@@ -296,7 +296,7 @@ function loadCompanyUsers(companyId) {
     })
     .catch(error => {
       console.error('Error loading company users:', error);
-      showToast('Failed to load company users', 'danger');
+      showToast(errorMessage(error, 'Failed to load company users'), 'danger');
     });
 }
 
@@ -311,7 +311,7 @@ function createCompany() {
   const name = document.getElementById('company-name').value;
   const description = document.getElementById('company-description').value;
   const website = document.getElementById('company-website').value;
-  const token = localStorage.getItem('chatbot-auth-token');
+  const token = authToken();
 
   if (!name) {
     showToast('Company name is required', 'warning');
@@ -326,7 +326,7 @@ function createCompany() {
     },
     body: JSON.stringify({ name, description, website })
   })
-    .then(response => response.json())
+    .then(parseJsonResponse)
     .then(data => {
       if (data.company) {
         showToast('Company created successfully', 'success');
@@ -343,7 +343,7 @@ function createCompany() {
     })
     .catch(error => {
       console.error('Error creating company:', error);
-      showToast('Failed to create company', 'danger');
+      showToast(errorMessage(error, 'Failed to create company'), 'danger');
     });
 }
 
@@ -353,7 +353,7 @@ function toggleCompanyStatus(event) {
   const companyId = button.dataset.id;
   const currentStatus = button.dataset.status === 'true';
   const newStatus = !currentStatus;
-  const token = localStorage.getItem('chatbot-auth-token');
+  const token = authToken();
 
   fetch(`/api/companies/${escapeHtml(companyId)}`, {
     method: 'PUT',
@@ -363,7 +363,7 @@ function toggleCompanyStatus(event) {
     },
     body: JSON.stringify({ isActive: newStatus })
   })
-    .then(response => response.json())
+    .then(parseJsonResponse)
     .then(data => {
       if (data.company) {
         showToast(`Company ${newStatus ? 'activated' : 'deactivated'} successfully`, 'success');
@@ -374,14 +374,14 @@ function toggleCompanyStatus(event) {
     })
     .catch(error => {
       console.error('Error updating company status:', error);
-      showToast('Failed to update company status', 'danger');
+      showToast(errorMessage(error, 'Failed to update company status'), 'danger');
     });
 }
 
 // Open edit company modal
 function openEditCompanyModal(event) {
   const companyId = event.currentTarget.dataset.id;
-  const token = localStorage.getItem('chatbot-auth-token');
+  const token = authToken();
 
   fetch(`/api/companies/${escapeHtml(companyId)}`, {
     method: 'GET',
@@ -390,7 +390,7 @@ function openEditCompanyModal(event) {
       'x-auth-token': token
     }
   })
-    .then(response => response.json())
+    .then(parseJsonResponse)
     .then(data => {
       const company = data.company;
 
@@ -411,7 +411,7 @@ function openEditCompanyModal(event) {
     })
     .catch(error => {
       console.error('Error fetching company details:', error);
-      showToast('Failed to fetch company details', 'danger');
+      showToast(errorMessage(error, 'Failed to fetch company details'), 'danger');
     });
 }
 
@@ -421,7 +421,7 @@ function editCompany() {
   const name = document.getElementById('edit-company-name').value;
   const description = document.getElementById('edit-company-description').value;
   const website = document.getElementById('edit-company-website').value;
-  const token = localStorage.getItem('chatbot-auth-token');
+  const token = authToken();
 
   if (!name) {
     showToast('Company name is required', 'warning');
@@ -436,7 +436,7 @@ function editCompany() {
     },
     body: JSON.stringify({ name, description, website })
   })
-    .then(response => response.json())
+    .then(parseJsonResponse)
     .then(data => {
       if (data.company) {
         showToast('Company details updated successfully', 'success');
@@ -457,7 +457,7 @@ function editCompany() {
     })
     .catch(error => {
       console.error('Error updating company details:', error);
-      showToast('Failed to update company details', 'danger');
+      showToast(errorMessage(error, 'Failed to update company details'), 'danger');
     });
 }
 
@@ -465,7 +465,7 @@ function editCompany() {
 function openEditCompanyUserModal(event) {
   const userId = event.currentTarget.dataset.id;
   const companyId = event.currentTarget.dataset.companyId;
-  const token = localStorage.getItem('chatbot-auth-token');
+  const token = authToken();
 
   // Set the modal title to "Edit User"
   document.getElementById('companyUserModalLabel').textContent = 'Edit User';
@@ -484,7 +484,7 @@ function openEditCompanyUserModal(event) {
       'x-auth-token': token
     }
   })
-    .then(response => response.json())
+    .then(parseJsonResponse)
     .then(data => {
       const user = data.user;
 
@@ -507,7 +507,7 @@ function openEditCompanyUserModal(event) {
     })
     .catch(error => {
       console.error('Error fetching user details:', error);
-      showToast('Failed to fetch user details', 'danger');
+      showToast(errorMessage(error, 'Failed to fetch user details'), 'danger');
     });
 }
 
@@ -518,7 +518,7 @@ function toggleCompanyUserStatus(event) {
   const companyId = button.dataset.companyId;
   const currentStatus = button.dataset.status === 'true';
   const newStatus = !currentStatus;
-  const token = localStorage.getItem('chatbot-auth-token');
+  const token = authToken();
 
   fetch(`/api/companies/${escapeHtml(companyId)}/users/${userId}/status`, {
     method: 'PATCH',
@@ -528,7 +528,7 @@ function toggleCompanyUserStatus(event) {
     },
     body: JSON.stringify({ isActive: newStatus })
   })
-    .then(response => response.json())
+    .then(parseJsonResponse)
     .then(data => {
       if (data.success) {
         showToast(`User ${newStatus ? 'activated' : 'deactivated'} successfully`, 'success');
@@ -539,7 +539,7 @@ function toggleCompanyUserStatus(event) {
     })
     .catch(error => {
       console.error('Error updating user status:', error);
-      showToast('Failed to update user status', 'danger');
+      showToast(errorMessage(error, 'Failed to update user status'), 'danger');
     });
 }
 
@@ -569,7 +569,7 @@ function resetCompanyUserPassword() {
   const generateRandom = document.getElementById('generate-random-password').checked;
   const password = document.getElementById('reset-company-user-password').value;
   const confirmPassword = document.getElementById('reset-company-user-confirm-password').value;
-  const token = localStorage.getItem('chatbot-auth-token');
+  const token = authToken();
 
   // Validate input if not generating random password
   if (!generateRandom) {
@@ -595,7 +595,7 @@ function resetCompanyUserPassword() {
       generateRandom
     })
   })
-    .then(response => response.json())
+    .then(parseJsonResponse)
     .then(data => {
       if (data.success) {
         // Close the modal
@@ -613,7 +613,7 @@ function resetCompanyUserPassword() {
     })
     .catch(error => {
       console.error('Error resetting password:', error);
-      showToast('Failed to reset password', 'danger');
+      showToast(errorMessage(error, 'Failed to reset password'), 'danger');
     });
 }
 
@@ -649,7 +649,7 @@ function saveCompanyUser() {
   const name = document.getElementById('company-user-name').value;
   const email = document.getElementById('company-user-email').value;
   const role = document.getElementById('company-user-role').value;
-  const token = localStorage.getItem('chatbot-auth-token');
+  const token = authToken();
 
   // Validate input
   if (!username || !email) {
@@ -703,7 +703,7 @@ function saveCompanyUser() {
     },
     body: JSON.stringify(userData)
   })
-    .then(response => response.json())
+    .then(parseJsonResponse)
     .then(data => {
       if (data.success) {
         showToast(`User ${isCreating ? 'created' : 'updated'} successfully`, 'success');
@@ -719,7 +719,7 @@ function saveCompanyUser() {
     })
     .catch(error => {
       console.error(`Error ${isCreating ? 'creating' : 'updating'} user:`, error);
-      showToast(`Failed to ${isCreating ? 'create' : 'update'} user`, 'danger');
+      showToast(errorMessage(error, `Failed to ${isCreating ? 'create' : 'update'} user`), 'danger');
     });
 }
 

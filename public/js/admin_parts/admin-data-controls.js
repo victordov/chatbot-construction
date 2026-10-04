@@ -8,27 +8,7 @@
  */
 
 (function() {
-  function token() {
-    return localStorage.getItem('chatbot-auth-token');
-  }
 
-  async function api(path, options = {}) {
-    const response = await fetch(path, {
-      ...options,
-      headers: {
-        'Content-Type': 'application/json',
-        'x-auth-token': token(),
-        ...options.headers
-      }
-    });
-
-    const body = await response.json().catch(() => ({}));
-
-    if (!response.ok) {
-      throw new Error(body.error || `Request failed (${response.status})`);
-    }
-    return body;
-  }
 
   const number = value => Number(value || 0).toLocaleString();
 

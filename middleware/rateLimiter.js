@@ -224,6 +224,43 @@ const authLimiter = rateLimit({
   message: { error: 'Too many login attempts. Please try again later.' }
 });
 
+/**
+ * The ceiling over the login limiter above.
+ *
+ * Keying on the username means that limiter never notices one address trying
+ * ten passwords each against a thousand accounts - which is what a spray looks
+ * like. This one ignores the username: an address that has failed to sign in
+ * fifty times in an hour, whoever it claimed to be, is done for the hour.
+ */
+const loginAddressLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: envInt('RATE_LIMIT_AUTH_IP_MAX', 50),
+  store: new MongoRateLimitStore({ prefix: 'auth-ip', windowMs: 60 * 60 * 1000 }),
+  keyGenerator: req => `ip:${addressKey(req)}`,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skipSuccessfulRequests: true,
+  message: { error: 'Too many login attempts from this address. Please try again later.' }
+});
+
+/**
+ * Password reset requests, per address.
+ *
+ * The forgot-password endpoint answers 200 whether or not the address exists,
+ * so `skipSuccessfulRequests` would never count it. Every request counts, and
+ * the allowance is small: a person forgets a password a few times a year, and
+ * a script asking for a thousand reset emails is the only other caller.
+ */
+const passwordResetLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: envInt('RATE_LIMIT_PASSWORD_RESET_MAX', 5),
+  store: new MongoRateLimitStore({ prefix: 'pwreset', windowMs: 60 * 60 * 1000 }),
+  keyGenerator: req => `ip:${addressKey(req)}`,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many password reset requests. Please try again later.' }
+});
+
 /** Chat. Per visitor address within a tenant, since visitors are anonymous. */
 const chatLimiter = buildLimiter({
   prefix: 'chat',
@@ -260,6 +297,8 @@ const publicApiLimiter = buildLimiter({
 module.exports = {
   apiLimiter,
   authLimiter,
+  loginAddressLimiter,
+  passwordResetLimiter,
   chatLimiter,
   publicApiLimiter,
   // Exported for tests and for anything that needs to reason about the key.

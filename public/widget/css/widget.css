@@ -1,5 +1,11 @@
-/* Chatbot Widget CSS */
-:root {
+/* Chatbot Widget CSS
+ *
+ * Loaded inside the widget's shadow root, so nothing here can reach the host
+ * page and nothing on the host page can reach in. Variables are declared on
+ * `:host` rather than `:root`: the widget's colour is the widget's business,
+ * not the page's. */
+
+:host {
   --primary-color: #2196f3;
   --secondary-color: #e3f2fd;
   --text-color: #333;
@@ -7,15 +13,25 @@
   --border-radius: 8px;
   --shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
   --transition: all 0.3s ease;
-}
 
-/* Ensure the widget container doesn't interfere with the host site */
-.chatbot-widget-container {
+  /* The host is positioned inline by the widget script (so the page's own
+     stylesheet cannot move it by accident); these are the fallbacks. */
   position: fixed;
   bottom: 20px;
   right: 20px;
-  z-index: 999999;
+  z-index: 2147483000;
+  display: block;
   font-family: 'Roboto', Arial, sans-serif;
+  font-size: 14px;
+  color: var(--text-color);
+  box-sizing: border-box;
+}
+
+/* The container only lays out the launcher and the window; the host carries
+   the fixed position. */
+.chatbot-widget-container {
+  position: relative;
+  font-family: inherit;
   box-sizing: border-box;
 }
 
@@ -27,11 +43,25 @@
   padding: 0;
 }
 
+/* Visible only to assistive technology. */
+.visually-hidden {
+  position: absolute !important;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 /* Chat icon button */
 .chat-icon-button {
   width: 60px;
   height: 60px;
   border-radius: 50%;
+  border: none;
   background-color: var(--primary-color);
   box-shadow: var(--shadow);
   display: flex;
@@ -39,11 +69,24 @@
   align-items: center;
   cursor: pointer;
   transition: var(--transition);
+  /* Right-aligned inside the container so the window opens above it. */
+  margin-left: auto;
+}
+
+.position-left .chat-icon-button {
+  margin-left: 0;
+  margin-right: auto;
 }
 
 .chat-icon-button:hover {
   transform: scale(1.05);
   box-shadow: 0 4px 15px rgba(0, 0, 0, 0.15);
+}
+
+.chat-icon-button:focus-visible {
+  outline: 3px solid #fff;
+  outline-offset: 2px;
+  box-shadow: 0 0 0 5px var(--primary-color);
 }
 
 .chat-icon-button svg {
@@ -59,6 +102,7 @@
   right: 0;
   width: 350px;
   height: 500px;
+  max-height: calc(100vh - 100px);
   background-color: #fff;
   border-radius: var(--border-radius);
   box-shadow: var(--shadow);
@@ -69,12 +113,19 @@
   opacity: 0;
   transform: translateY(20px) scale(0.9);
   pointer-events: none;
+  visibility: hidden;
+}
+
+.position-left .chat-window {
+  right: auto;
+  left: 0;
 }
 
 .chat-window.open {
   opacity: 1;
   transform: translateY(0) scale(1);
   pointer-events: all;
+  visibility: visible;
 }
 
 /* Chat header */
@@ -97,7 +148,30 @@
   border: none;
   color: var(--light-text);
   cursor: pointer;
-  font-size: 18px;
+  font-size: 22px;
+  line-height: 1;
+  /* A tap target, not a glyph. */
+  min-width: 32px;
+  min-height: 32px;
+}
+
+.chat-header button:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 2px;
+}
+
+/* Connection state. Hidden while everything is fine. */
+.connection-status {
+  display: none;
+  padding: 4px 12px;
+  background: #fff3cd;
+  color: #664d03;
+  font-size: 12px;
+  text-align: center;
+}
+
+.connection-status.active {
+  display: block;
 }
 
 /* Chat messages container */
@@ -106,6 +180,7 @@
   padding: 15px;
   overflow-y: auto;
   background-color: #f8f9fa;
+  -webkit-overflow-scrolling: touch;
 }
 
 /* Chat messages */
@@ -137,6 +212,31 @@
 .chat-messages-list {
   display: flex;
   flex-direction: column;
+}
+
+.message-sender {
+  font-weight: bold;
+  margin-bottom: 4px;
+  font-size: 0.9em;
+}
+
+.message.user .message-sender {
+  text-align: right;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.message.bot .message-sender {
+  text-align: left;
+  color: #4caf50;
+}
+
+.message-content {
+  word-wrap: break-word;
+  overflow-wrap: anywhere;
+}
+
+.message-content a {
+  color: inherit;
 }
 
 /* Message timestamp */
@@ -180,7 +280,6 @@
 
 /* Typing indicator */
 .typing-indicator {
-  display: flex;
   align-items: center;
   margin-bottom: 15px;
   display: none;
@@ -223,20 +322,30 @@
   align-items: center;
 }
 
-.chat-input-area input {
+.chat-input-area input[type="text"] {
   flex: 1;
+  min-width: 0;
   padding: 10px;
   border: 1px solid rgba(0, 0, 0, 0.1);
   border-radius: var(--border-radius);
   outline: none;
   font-size: 14px;
+  font-family: inherit;
+  color: var(--text-color);
+  background: #fff;
 }
 
-.chat-input-area input:focus {
+.chat-input-area input[type="text"]:focus {
   border-color: var(--primary-color);
+  box-shadow: 0 0 0 2px var(--secondary-color);
 }
 
-.chat-input-area button {
+.chat-input-area input[type="text"]:disabled {
+  background: #f1f3f5;
+  color: #868e96;
+}
+
+.chat-input-area .send-button {
   background-color: var(--primary-color);
   color: var(--light-text);
   border: none;
@@ -244,11 +353,23 @@
   padding: 10px 15px;
   margin-left: 10px;
   cursor: pointer;
+  font-family: inherit;
+  font-size: 14px;
   transition: var(--transition);
 }
 
-.chat-input-area button:hover {
-  background-color: #1976d2;
+.chat-input-area .send-button:hover:not(:disabled) {
+  filter: brightness(0.9);
+}
+
+.chat-input-area .send-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.chat-input-area button:focus-visible {
+  outline: 2px solid var(--primary-color);
+  outline-offset: 2px;
 }
 
 /* File upload button and indicator */
@@ -256,14 +377,36 @@
   background: none;
   border: none;
   color: #777;
+  fill: #777;
   cursor: pointer;
   font-size: 18px;
   margin-right: 5px;
+  min-width: 32px;
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   transition: var(--transition);
 }
 
-.file-upload-button:hover {
+.file-upload-button:hover:not(:disabled) {
   color: var(--primary-color);
+  fill: var(--primary-color);
+}
+
+.file-upload-button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.file-upload-button.uploading {
+  animation: pulse 1s infinite ease-in-out;
+}
+
+@keyframes pulse {
+  0% { opacity: 0.4; }
+  50% { opacity: 1; }
+  100% { opacity: 0.4; }
 }
 
 .file-indicator {
@@ -271,7 +414,7 @@
   border-radius: 4px;
   padding: 4px 8px;
   font-size: 12px;
-  margin-top: 5px;
+  margin: 5px 15px 0;
   display: none;
 }
 
@@ -279,25 +422,163 @@
   display: block;
 }
 
-/* Responsive styles */
+.file-indicator.error {
+  background-color: #f8d7da;
+  color: #842029;
+}
+
+/* Pre-chat form */
+.user-details-form {
+  padding: 15px;
+  background-color: white;
+  border-radius: 5px;
+  margin: 10px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  overflow-y: auto;
+}
+
+.user-details-form h3 {
+  margin-top: 0;
+  margin-bottom: 15px;
+  font-size: 16px;
+  color: var(--primary-color);
+}
+
+.user-details-field {
+  margin-bottom: 12px;
+}
+
+.user-details-field label {
+  display: block;
+  margin-bottom: 5px;
+  font-size: 13px;
+}
+
+.user-details-field .optional {
+  color: #868e96;
+  font-weight: normal;
+}
+
+.user-details-field input {
+  width: 100%;
+  padding: 8px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 14px;
+  font-family: inherit;
+  color: var(--text-color);
+  background: #fff;
+}
+
+.user-details-field input:focus {
+  outline: none;
+  border-color: var(--primary-color);
+  box-shadow: 0 0 0 2px var(--secondary-color);
+}
+
+.user-details-privacy {
+  font-size: 12px;
+  color: #6c757d;
+  margin-bottom: 10px;
+}
+
+.user-details-privacy a {
+  color: var(--primary-color);
+}
+
+.user-details-error {
+  color: #b02a37;
+  font-size: 12px;
+  margin-bottom: 8px;
+  min-height: 1em;
+}
+
+.user-details-form button[type="submit"] {
+  background-color: var(--primary-color);
+  color: white;
+  border: none;
+  padding: 10px 15px;
+  border-radius: 4px;
+  cursor: pointer;
+  width: 100%;
+  font-family: inherit;
+  font-size: 14px;
+}
+
+.user-details-form button[type="submit"]:focus-visible {
+  outline: 2px solid var(--primary-color);
+  outline-offset: 2px;
+}
+
+/* Responsive styles: full screen on a phone, with the notch and the home
+   indicator kept clear of the header and the composer. */
 @media (max-width: 480px) {
-  .chat-window {
+  .chat-window,
+  .position-left .chat-window {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
     width: 100%;
     height: 100%;
-    bottom: 0;
-    right: 0;
+    max-height: none;
     border-radius: 0;
-    position: fixed;
+    padding-top: env(safe-area-inset-top, 0);
+    padding-left: env(safe-area-inset-left, 0);
+    padding-right: env(safe-area-inset-right, 0);
   }
-  
+
+  .chat-input-area {
+    padding-bottom: calc(15px + env(safe-area-inset-bottom, 0));
+  }
+
+  /* 16px is the size below which iOS zooms the page when a field is
+     focused, and a zoomed page is one the visitor has to zoom back out of. */
+  .chat-input-area input[type="text"],
+  .user-details-field input,
+  .chat-rating-comment textarea {
+    font-size: 16px;
+  }
+
   .chat-icon-button {
     width: 50px;
     height: 50px;
   }
-  
+
   .chat-icon-button svg {
     width: 25px;
     height: 25px;
+  }
+}
+
+/* Somebody who has asked their OS for less motion gets a window that appears
+   rather than one that slides, and dots that do not bounce. */
+@media (prefers-reduced-motion: reduce) {
+  :host {
+    --transition: none;
+  }
+
+  .chat-window {
+    transition: none;
+    transform: none;
+  }
+
+  .chat-window.open {
+    transform: none;
+  }
+
+  .chat-icon-button:hover {
+    transform: none;
+  }
+
+  .typing-indicator span,
+  .file-upload-button.uploading {
+    animation: none;
+  }
+
+  .chat-rating-score:hover:not(:disabled) {
+    transform: none;
   }
 }
 
@@ -347,20 +628,21 @@
   border-radius: 8px;
   background: #fff;
   font-size: 15px;
+  font-family: inherit;
   color: #495057;
   cursor: pointer;
   transition: background 0.15s, border-color 0.15s, transform 0.1s;
 }
 
 .chat-rating-score:hover:not(:disabled) {
-  border-color: #0d6efd;
-  background: #e7f1ff;
+  border-color: var(--primary-color);
+  background: var(--secondary-color);
   transform: translateY(-1px);
 }
 
 .chat-rating-score.selected {
-  border-color: #0d6efd;
-  background: #0d6efd;
+  border-color: var(--primary-color);
+  background: var(--primary-color);
   color: #fff;
 }
 
@@ -387,6 +669,7 @@
   border: none;
   background: none;
   font-size: 12px;
+  font-family: inherit;
   color: #868e96;
   text-decoration: underline;
   cursor: pointer;
@@ -419,9 +702,10 @@
   padding: 5px 14px;
   border: none;
   border-radius: 6px;
-  background: #0d6efd;
+  background: var(--primary-color);
   color: #fff;
   font-size: 13px;
+  font-family: inherit;
   cursor: pointer;
 }
 
@@ -447,6 +731,7 @@
   background: transparent;
   color: #fff;
   font-size: 11px;
+  font-family: inherit;
   white-space: nowrap;
   cursor: pointer;
   transition: background 0.15s;
@@ -474,10 +759,10 @@
 
 .quick-reply {
   padding: 7px 12px;
-  border: 1px solid var(--chatbot-primary, #0d6efd);
+  border: 1px solid var(--primary-color);
   border-radius: 16px;
   background: #fff;
-  color: var(--chatbot-primary, #0d6efd);
+  color: var(--primary-color);
   font: inherit;
   font-size: 13px;
   cursor: pointer;
@@ -485,7 +770,7 @@
 }
 
 .quick-reply:hover {
-  background: var(--chatbot-primary, #0d6efd);
+  background: var(--primary-color);
   color: #fff;
 }
 
@@ -546,7 +831,7 @@
 .chat-card-link {
   margin-top: auto;
   font-size: 12px;
-  color: var(--chatbot-primary, #0d6efd);
+  color: var(--primary-color);
   text-decoration: none;
 }
 
@@ -563,17 +848,17 @@
   flex-direction: column;
   align-items: flex-start;
   padding: 7px 12px;
-  border: 1px solid var(--chatbot-primary, #0d6efd);
+  border: 1px solid var(--primary-color);
   border-radius: 10px;
   background: #fff;
-  color: var(--chatbot-primary, #0d6efd);
+  color: var(--primary-color);
   font: inherit;
   font-size: 13px;
   cursor: pointer;
 }
 
 .chat-cards-slots .chat-card:hover {
-  background: var(--chatbot-primary, #0d6efd);
+  background: var(--primary-color);
   color: #fff;
 }
 

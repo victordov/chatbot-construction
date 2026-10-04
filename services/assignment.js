@@ -183,27 +183,70 @@ async function pickOperator(companyId, options = {}) {
 /**
  * Hand a conversation to an operator and tell everyone who needs to know.
  *
- * @returns {Promise<{assigned: boolean, operator?: object, reason?: string}>}
+ * The claim is a single conditional update rather than a read followed by a
+ * save. Two operators clicking "take" on the same conversation within the same
+ * few milliseconds both used to read `operatorId: null`, both wrote their own
+ * id, and the second write won silently: the first operator was told they had
+ * it and then watched their replies go nowhere. Now the database decides who
+ * was first, and the loser is told so.
+ *
+ * @returns {Promise<{assigned: boolean, operator?: object, reason?: string,
+ *                    claimedBy?: {id: string, name: string}}>}
  */
 async function assign(conversation, operator, method = 'auto') {
   if (!conversation || !operator) {
     return { assigned: false, reason: 'nothing to assign' };
   }
 
-  if (conversation.operatorId) {
+  const assignedAt = new Date();
+
+  const claimed = await Conversation.findOneAndUpdate(
+    {
+      _id: conversation._id,
+      sessionId: conversation.sessionId,
+      // `null` matches both an explicit null and a missing field, so a
+      // conversation released by `operator-leave` (null) and one that has
+      // never been assigned (absent) are both claimable.
+      company: conversation.company || null,
+      $or: [{ operatorId: null }, { operatorId: { $exists: false } }]
+    },
+    {
+      $set: {
+        operatorId: operator.id,
+        operatorName: operator.displayName,
+        hasOperator: true,
+        assignment: { method, at: assignedAt }
+      },
+      // No longer waiting: a person has it.
+      $unset: { awaitingOperatorSince: 1 }
+    },
+    { new: true }
+  ).select('operatorId operatorName').lean();
+
+  if (!claimed) {
     // Somebody got there first. Two operators claiming one conversation is
-    // worse than an unassigned one, so the first claim stands.
-    return { assigned: false, reason: 'already assigned' };
+    // worse than an unassigned one, so the first claim stands - and the
+    // caller gets a name to show, not a bare failure.
+    const holder = await Conversation.findById(conversation._id)
+      .select('operatorId operatorName')
+      .lean();
+
+    return {
+      assigned: false,
+      reason: 'already claimed',
+      claimedBy: holder && holder.operatorId
+        ? { id: String(holder.operatorId), name: holder.operatorName || 'Another operator' }
+        : undefined
+    };
   }
 
+  // Keep the caller's document in step with what was written, because most
+  // callers go on to read or save it.
   conversation.operatorId = operator.id;
   conversation.operatorName = operator.displayName;
   conversation.hasOperator = true;
-  conversation.assignment = { method, at: new Date() };
-  // No longer waiting: a person has it.
+  conversation.assignment = { method, at: assignedAt };
   conversation.awaitingOperatorSince = undefined;
-
-  await conversation.save();
 
   socketManager.emitToOperators(conversation.company, 'chat-assigned', {
     sessionId: conversation.sessionId,
@@ -215,7 +258,7 @@ async function assign(conversation, operator, method = 'auto') {
 
   // Directly to the person who now owns it, so it surfaces even if they are
   // not looking at the queue.
-  socketManager.emitToSession(`user:${operator.id}`, 'chat-assigned-to-you', {
+  socketManager.emitToUser(operator.id, 'chat-assigned-to-you', {
     sessionId: conversation.sessionId,
     timestamp: new Date()
   });
@@ -243,7 +286,7 @@ async function assign(conversation, operator, method = 'auto') {
  * The conversation simply stays in the queue, which is where it would have been
  * anyway without this feature.
  */
-async function autoAssign(conversation) {
+async function autoAssign(conversation, options = {}) {
   try {
     if (!conversation || !conversation.company || conversation.operatorId) {
       return { assigned: false, reason: 'not eligible' };
@@ -255,7 +298,7 @@ async function autoAssign(conversation) {
       return { assigned: false, reason: 'auto-assignment is off' };
     }
 
-    const operator = await pickOperator(conversation.company);
+    const operator = await pickOperator(conversation.company, { exclude: options.exclude });
 
     if (!operator) {
       return { assigned: false, reason: 'nobody available' };
@@ -266,6 +309,48 @@ async function autoAssign(conversation) {
     logger.error('Auto-assignment failed', { error: error.message });
     return { assigned: false, reason: error.message };
   }
+}
+
+/**
+ * Take a conversation away from the operator holding it and find it a home.
+ *
+ * Used when an operator leaves without handing to the bot, and when one
+ * disconnects and does not come back. Both used to leave the conversation with
+ * `botEnabled: false` and nobody assigned: the visitor's next message was
+ * stored and answered by no one, with nothing in the queue to say so.
+ *
+ * The order matters. The operator is cleared and the waiting marker set
+ * first, so that whatever happens next the conversation is visibly in the
+ * queue; then auto-assignment is tried; and the bot is switched back on only
+ * if nobody took it, because being in a queue is not a reason to stop helping.
+ *
+ * @param {object} conversation a mongoose document
+ * @param {{exclude?: Array}} options operators not to hand it to - typically
+ *        the one who just left, who may still be connected
+ * @returns {Promise<{assigned: boolean, operator?: object, reason?: string}>}
+ */
+async function release(conversation, options = {}) {
+  if (!conversation) {
+    return { assigned: false, reason: 'nothing to release' };
+  }
+
+  conversation.operatorId = null;
+  conversation.operatorName = null;
+  conversation.hasOperator = false;
+  conversation.awaitingOperatorSince = new Date();
+  conversation.botEnabled = true;
+  await conversation.save();
+
+  const result = await autoAssign(conversation, { exclude: options.exclude });
+
+  if (result.assigned) {
+    // A person has it again, so the bot steps aside as it does on any other
+    // handover.
+    conversation.botEnabled = false;
+    await conversation.save();
+  }
+
+  return result;
 }
 
 /**
@@ -309,6 +394,7 @@ module.exports = {
   pickOperator,
   assign,
   autoAssign,
+  release,
   connectedOperators,
   currentLoad,
   knownTags,

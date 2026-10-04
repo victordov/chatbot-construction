@@ -4,14 +4,37 @@
  */
 
 const { GoogleSpreadsheet } = require('google-spreadsheet');
-const axios = require('axios');
-const fs = require('fs').promises;
 const path = require('path');
 const { logger } = require('./logging');
 const { getVectorStore } = require('./vector-store');
+const safeHttp = require('./safe-http');
 
 // PDFs are downloaded into memory before parsing, so cap the size.
 const MAX_PDF_BYTES = parseInt(process.env.MAX_PDF_BYTES, 10) || 25 * 1024 * 1024;
+
+// A web page is text; anything this large is not a knowledge source.
+const MAX_PAGE_BYTES = parseInt(process.env.MAX_PAGE_BYTES, 10) || 2 * 1024 * 1024;
+
+/**
+ * Whether a URL names a PDF, by its path.
+ *
+ * Ignores the query string and fragment: `report.pdf?v=3` is a PDF, and the
+ * old `endsWith('.pdf')` said it was not while the route said it was, so the
+ * source was labelled one thing and loaded as another.
+ */
+function isPdfUrl(url) {
+  try {
+    return /\.pdf$/i.test(new URL(String(url)).pathname);
+  } catch {
+    return /\.pdf(\?|#|$)/i.test(String(url));
+  }
+}
+
+/** Whether a response says it is a PDF, whatever the URL looked like. */
+function isPdfResponse(headers = {}) {
+  const type = String(headers['content-type'] || '').toLowerCase();
+  return type.startsWith('application/pdf') || type.startsWith('application/x-pdf');
+}
 
 class KnowledgeConnectorService {
   constructor() {
@@ -103,16 +126,24 @@ class KnowledgeConnectorService {
         throw new Error('URL is required');
       }
 
+      // Fetched once, as bytes, and only then decided: a PDF is a PDF when
+      // either the path says so or the server does. The one fetch also means
+      // the size cap is the larger of the two, which is fine - a page that is
+      // 25MB is refused as a knowledge source further down anyway.
+      const response = await this.fetchDocument(url);
+      const pdf = isPdfUrl(url) || isPdfResponse(response.headers);
+
       let content = '';
       let filename = '';
 
-      if (url.endsWith('.pdf')) {
-        // Handle PDF documents
-        content = await this.extractPdfContent(url);
-        filename = path.basename(url);
+      if (pdf) {
+        content = await this.parsePdf(response.body, url);
+        filename = path.basename(new URL(url).pathname) || 'document.pdf';
       } else {
-        // Handle web URLs
-        content = await this.extractWebContent(url);
+        if (response.body.length > MAX_PAGE_BYTES) {
+          throw new Error(`Failed to fetch web content: page is larger than ${Math.round(MAX_PAGE_BYTES / 1024 / 1024)}MB`);
+        }
+        content = this.htmlToText(response.body.toString('utf8'));
         filename = new URL(url).hostname;
       }
 
@@ -123,7 +154,7 @@ class KnowledgeConnectorService {
         id: `${tenantId}_url_${Buffer.from(url).toString('base64')}_${index}`,
         content: chunk,
         metadata: {
-          source: url.endsWith('.pdf') ? 'pdf' : 'web_url',
+          source: pdf ? 'pdf' : 'web_url',
           url,
           filename,
           chunkIndex: index,
@@ -139,39 +170,62 @@ class KnowledgeConnectorService {
   }
 
   /**
-   * Extract the text of a PDF.
+   * Download a document through the address-checked transport.
    *
-   * This previously downloaded the file and then returned the literal string
-   * "PDF content from <url> - would be extracted using pdf-parse or similar
-   * library", which was then chunked, embedded and served to visitors as
-   * knowledge.
+   * Not plain axios. The URL is one a tenant typed, so this is our server
+   * fetching on behalf of somebody whose interests are not ours - the same
+   * hazard as a workflow action or a webhook, and it gets the same protection:
+   * private, loopback and cloud-metadata addresses are refused, on every
+   * redirect hop.
+   */
+  async fetchDocument(url) {
+    try {
+      return await safeHttp.fetchUrl(url, {
+        asBuffer: true,
+        maxBytes: MAX_PDF_BYTES,
+        timeoutMs: 60000
+      });
+    } catch (error) {
+      throw new Error(`Failed to download: ${error.message}`);
+    }
+  }
+
+  /**
+   * Extract the text of a PDF at a URL.
    */
   async extractPdfContent(url) {
-    let buffer;
+    const response = await this.fetchDocument(url);
+    return this.parsePdf(response.body, url);
+  }
 
-    try {
-      const response = await axios.get(url, {
-        responseType: 'arraybuffer',
-        timeout: 60000,
-        maxContentLength: MAX_PDF_BYTES,
-        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; ChatbotKnowledgeBot/1.0)' }
-      });
-      buffer = Buffer.from(response.data);
-    } catch (error) {
-      throw new Error(`Failed to download PDF: ${error.message}`);
-    }
-
+  /**
+   * The text of a PDF.
+   *
+   * This previously returned the literal string "PDF content from <url> -
+   * would be extracted using pdf-parse or similar library", which was then
+   * chunked, embedded and served to visitors as knowledge. The next version
+   * called `pdfParse(buffer)`, which is the 1.x API; the installed 2.x exports
+   * a `PDFParse` class, so every PDF import failed with "pdfParse is not a
+   * function".
+   */
+  async parsePdf(buffer, url = '') {
     if (buffer.length > MAX_PDF_BYTES) {
       throw new Error(`PDF is larger than the ${Math.round(MAX_PDF_BYTES / 1024 / 1024)}MB limit`);
     }
 
+    let parser = null;
+
     try {
-      // Required lazily: pdf-parse reads a sample file at require time in some
-      // versions, and it is only needed on this path.
-      const pdfParse = require('pdf-parse');
-      const parsed = await pdfParse(buffer);
+      // Required lazily: it is only needed on this path, and loading pdf.js
+      // costs enough that every other request should not pay for it.
+      const { PDFParse } = require('pdf-parse');
+      parser = new PDFParse({ data: buffer });
+      const parsed = await parser.getText();
 
       const text = String(parsed.text || '')
+        // pdf-parse 2.x writes a "-- 3 of 12 --" separator between pages,
+        // which is navigation, not knowledge.
+        .replace(/^\s*-- \d+ of \d+ --\s*$/gm, '')
         // PDF extraction leaves ragged whitespace and hyphenated line breaks.
         .replace(/-\n\s*/g, '')
         .replace(/\s*\n\s*/g, '\n')
@@ -182,10 +236,15 @@ class KnowledgeConnectorService {
         throw new Error('No extractable text found. The PDF may be a scan; OCR is not supported.');
       }
 
-      logger.info('Extracted PDF text', { url, pages: parsed.numpages, characters: text.length });
+      logger.info('Extracted PDF text', { url, pages: parsed.total, characters: text.length });
       return text;
     } catch (error) {
       throw new Error(`Failed to read PDF: ${error.message}`);
+    } finally {
+      if (parser) {
+        // pdf.js holds worker resources until told otherwise.
+        await parser.destroy().catch(() => {});
+      }
     }
   }
 
@@ -194,27 +253,27 @@ class KnowledgeConnectorService {
    */
   async extractWebContent(url) {
     try {
-      const response = await axios.get(url, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (compatible; ChatbotKnowledgeBot/1.0)'
-        },
-        timeout: 30000
+      const response = await safeHttp.fetchUrl(url, {
+        maxBytes: MAX_PAGE_BYTES,
+        timeoutMs: 30000
       });
 
-      const html = response.data;
-
-      // Basic HTML to text conversion (in production, use a proper HTML parser)
-      const textContent = html
-        .replace(/<script[^>]*>.*?<\/script>/gis, '')
-        .replace(/<style[^>]*>.*?<\/style>/gis, '')
-        .replace(/<[^>]*>/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim();
-
-      return textContent;
+      return this.htmlToText(response.body);
     } catch (error) {
       throw new Error(`Failed to fetch web content: ${error.message}`);
     }
+  }
+
+  /**
+   * Basic HTML to text conversion (in production, use a proper HTML parser).
+   */
+  htmlToText(html) {
+    return String(html)
+      .replace(/<script[^>]*>.*?<\/script>/gis, '')
+      .replace(/<style[^>]*>.*?<\/style>/gis, '')
+      .replace(/<[^>]*>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
   }
 
   /**
@@ -279,9 +338,15 @@ class KnowledgeConnectorService {
   }
 
   /**
-   * Process knowledge source and store in vector DB
+   * Process knowledge source and store in vector DB.
+   *
+   * @param {object} [options]
+   * @param {function} [options.beforeStore] called with the chunked documents
+   *        after loading and before any embedding is paid for. Throwing here
+   *        aborts the import with the thrown error: the route uses it to check
+   *        the tenant's plan against the real chunk count.
    */
-  async processKnowledgeSource(sourceConfig, tenantId) {
+  async processKnowledgeSource(sourceConfig, tenantId, options = {}) {
     try {
       let documents = [];
 
@@ -305,6 +370,10 @@ class KnowledgeConnectorService {
       const collectionName = sourceConfig.collectionName || 'knowledge_base';
       const sourceId = sourceConfig.sourceId ||
         `${sourceConfig.sourceType}:${sourceConfig.config?.sheetId || sourceConfig.config?.url || 'default'}`;
+
+      if (typeof options.beforeStore === 'function') {
+        await options.beforeStore(documents, { sourceId });
+      }
 
       const vectorResults = await this.storeInVectorDB(documents, collectionName, {
         companyId: tenantId,
@@ -482,3 +551,5 @@ class KnowledgeConnectorService {
 }
 
 module.exports = KnowledgeConnectorService;
+module.exports.isPdfUrl = isPdfUrl;
+module.exports.isPdfResponse = isPdfResponse;

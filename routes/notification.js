@@ -4,7 +4,7 @@
 
 const express = require('express');
 const router = express.Router();
-const { auth, operator } = require('../middleware/auth');
+const { auth, operator, admin } = require('../middleware/auth');
 const NotificationService = require('../services/notification');
 const socketManager = require('../socketManager');
 const { logger } = require('../services/logging');
@@ -41,13 +41,8 @@ router.put('/:id/read', auth, operator, async (req, res) => {
   try {
     const notification = await notificationService.markAsRead(req.params.id, req.user.id);
 
-    // Emit WebSocket event for notification update
-    try {
-      const io = socketManager.getIo();
-      io.emit('notification-updated', { notification });
-    } catch (socketError) {
-      logger.error('Error emitting notification-updated event', { error: socketError });
-    }
+    // To the one person it belongs to, not to every socket on the platform.
+    socketManager.emitToUser(req.user.id, 'notification-updated', { notification });
 
     res.json({ notification });
   } catch (error) {
@@ -65,13 +60,7 @@ router.put('/read-all', auth, operator, async (req, res) => {
   try {
     const result = await notificationService.markAllAsRead(req.user.id);
 
-    // Emit WebSocket event for notifications update
-    try {
-      const io = socketManager.getIo();
-      io.emit('notifications-all-read', { userId: req.user.id });
-    } catch (socketError) {
-      logger.error('Error emitting notifications-all-read event', { error: socketError });
-    }
+    socketManager.emitToUser(req.user.id, 'notifications-all-read', { userId: req.user.id });
 
     res.json({ success: true, message: 'All notifications marked as read', count: result.modifiedCount });
   } catch (error) {
@@ -85,13 +74,10 @@ router.delete('/:id', auth, operator, async (req, res) => {
   try {
     await notificationService.deleteNotification(req.params.id, req.user.id);
 
-    // Emit WebSocket event for notification deletion
-    try {
-      const io = socketManager.getIo();
-      io.emit('notification-deleted', { notificationId: req.params.id, userId: req.user.id });
-    } catch (socketError) {
-      logger.error('Error emitting notification-deleted event', { error: socketError });
-    }
+    socketManager.emitToUser(req.user.id, 'notification-deleted', {
+      notificationId: req.params.id,
+      userId: req.user.id
+    });
 
     res.json({ success: true, message: 'Notification deleted successfully' });
   } catch (error) {
@@ -104,24 +90,21 @@ router.delete('/:id', auth, operator, async (req, res) => {
   }
 });
 
-// Manually check for task deadlines and create notifications (for testing)
-router.post('/check-deadlines', auth, operator, async (req, res) => {
+// Manually check for task deadlines and create notifications. The scheduler
+// does this on its own timer; this is the "run it now" handle.
+//
+// The role check used to read `req.user.isAdmin`, which `middleware/auth.js`
+// never sets - so the route answered 403 to everyone, including the superadmin
+// it was meant for. The `admin` middleware is the guard the rest of the
+// codebase uses for this.
+router.post('/check-deadlines', auth, admin, async (req, res) => {
   try {
-    // Check if user is an admin
-    if (!req.user.isAdmin) {
-      return res.status(403).json({ error: 'Not authorized to perform this action' });
-    }
-
     const notifications = await notificationService.checkTaskDeadlines();
 
-    // Emit WebSocket events for new notifications
-    try {
-      const io = socketManager.getIo();
-      for (const notification of notifications) {
-        io.emit('notification-created', { notification });
-      }
-    } catch (socketError) {
-      logger.error('Error emitting notification-created events', { error: socketError });
+    // Each deadline notification belongs to whoever owns the task, and these
+    // span every tenant - which is exactly why broadcasting them was so wrong.
+    for (const notification of notifications) {
+      socketManager.emitToUser(notification.userId, 'notification-created', { notification });
     }
 
     res.json({ success: true, message: 'Task deadlines checked', notificationsCreated: notifications.length });

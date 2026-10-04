@@ -77,7 +77,9 @@ function setupEventHandlers(socket) {
     // Notify that operator has joined
     const sessionId = this.getAttribute('data-session-id');
     const operatorName = window.currentUser ? (window.currentUser.displayName || window.currentUser.username) : 'Admin';
-    socket.emit('operator-takeover', { sessionId, operatorName });
+    // The server names the operator from the socket's own identity; sending
+    // a name here would be ignored.
+    socket.emit('operator-takeover', { sessionId });
 
     // Immediately reflect in the active chat list
     updateChatOperatorStatus(sessionId, true, operatorName);
@@ -191,7 +193,7 @@ function setupEventHandlers(socket) {
   const runHistorySearch = () => {
     // Always restart at page 1: staying on page 7 of the previous result set
     // usually lands on an empty page.
-    loadChatHistory(localStorage.getItem('chatbot-auth-token'), chatHistorySearch.value.trim(), 1);
+    loadChatHistory(authToken(), chatHistorySearch.value.trim(), 1);
   };
 
   chatHistorySearchBtn.addEventListener('click', runHistorySearch);
@@ -255,7 +257,97 @@ function setupEventHandlers(socket) {
   });
 
   socket.on('operator-left', function(data) {
-    updateChatOperatorStatus(data.sessionId, false, data.operatorName);
+    // A dropped connection can hand the chat straight to somebody else; show
+    // the new owner rather than a chat that looks unattended.
+    if (data.reassignedTo) {
+      const name = typeof data.reassignedTo === 'object'
+        ? (data.reassignedTo.name || data.reassignedTo.displayName || 'another operator')
+        : String(data.reassignedTo);
+      updateChatOperatorStatus(data.sessionId, true, name);
+    } else {
+      updateChatOperatorStatus(data.sessionId, false, data.operatorName);
+    }
+
+    if (data.reason === 'disconnected' && typeof showToast === 'function') {
+      const who = data.operatorName || 'An operator';
+      showToast(data.reassignedTo
+        ? `${who} lost their connection; the chat was passed on.`
+        : `${who} lost their connection; their chat is waiting for somebody.`, 'warning');
+    }
+  });
+
+  /**
+   * Somebody else took this chat from us.
+   *
+   * Nothing we type would reach the visitor any more, so the chat leaves our
+   * list and, if it was open, the view resets rather than looking joined.
+   */
+  socket.on('chat-taken-from-you', function(data) {
+    const sessionId = data && data.sessionId;
+    if (!sessionId) {
+      return;
+    }
+
+    window.joinedChats.delete(sessionId);
+    window.saveJoinedChats();
+
+    const takenBy = data.takenBy && typeof data.takenBy === 'object'
+      ? (data.takenBy.name || data.takenBy.displayName || 'another operator')
+      : (data.takenBy || 'another operator');
+
+    if (joinChatBtn.getAttribute('data-session-id') === sessionId) {
+      updateSuggestionButtons(false);
+      resetChatView();
+    }
+
+    removeChatFromList(sessionId);
+    updateActiveChatCount(-1);
+
+    if (typeof showToast === 'function') {
+      showToast(`${takenBy} took over a chat you were in.`, 'warning');
+    }
+    if (typeof applyChatFilter === 'function') {
+      applyChatFilter();
+    }
+  });
+
+  /**
+   * The server refused something. Most often: the chat we tried to join is
+   * already held by another operator, in which case an admin may take it
+   * anyway.
+   */
+  socket.on('error', function(data) {
+    const payload = typeof data === 'string' ? { message: data } : (data || {});
+    const message = payload.message || 'The server refused that request.';
+
+    if (payload.heldBy && payload.sessionId) {
+      const holder = payload.heldBy.name || 'another operator';
+      const role = window.currentUser && window.currentUser.role;
+      const mayForce = role === 'company_admin' || role === 'superadmin';
+
+      // Whatever the join button did optimistically is undone: we are not in.
+      if (joinChatBtn.getAttribute('data-session-id') === payload.sessionId) {
+        window.joinedChats.delete(payload.sessionId);
+        window.saveJoinedChats();
+        updateSuggestionButtons(false);
+        resetChatView();
+        updateChatOperatorStatus(payload.sessionId, true, holder);
+      }
+
+      if (mayForce && confirm(`${holder} is already in this chat. Take over anyway?`)) {
+        socket.emit('operator-takeover', { sessionId: payload.sessionId, force: true });
+        return;
+      }
+
+      if (typeof showToast === 'function') {
+        showToast(`${holder} is already handling this chat.`, 'warning');
+      }
+      return;
+    }
+
+    if (typeof showToast === 'function') {
+      showToast(message, 'danger');
+    }
   });
 
   // Update user name when details change
@@ -337,10 +429,10 @@ function setupEventHandlers(socket) {
     // Fetch the reactivated chat details
     fetch(`/api/admin/chat/${data.sessionId}`, {
       headers: {
-        'x-auth-token': localStorage.getItem('chatbot-auth-token')
+        'x-auth-token': authToken()
       }
     })
-      .then(response => response.json())
+      .then(parseJsonResponse)
       .then(chat => {
         if (chat) {
           // Add to active chat list
@@ -359,6 +451,7 @@ function setupEventHandlers(socket) {
       })
       .catch(error => {
         logger.error('Error fetching reactivated chat:', error);
+        showToast(errorMessage(error, 'Could not load the reactivated chat'), 'danger');
       });
   });
 
@@ -399,10 +492,10 @@ function setupEventHandlers(socket) {
       } else {
         fetch(`/api/admin/chat/${sessionId}`, {
           headers: {
-            'x-auth-token': localStorage.getItem('chatbot-auth-token')
+            'x-auth-token': authToken()
           }
         })
-          .then(response => response.json())
+          .then(parseJsonResponse)
           .then(chat => {
             if (chat) {
               // Add to active chat list
@@ -414,6 +507,7 @@ function setupEventHandlers(socket) {
           })
           .catch(error => {
             logger.error('Error fetching opened chat:', error);
+            showToast(errorMessage(error, 'Could not load the opened chat'), 'danger');
           });
       }
     } else if (type === 'closed') {

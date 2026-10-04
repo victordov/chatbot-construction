@@ -55,7 +55,7 @@ async function resolve(companyId) {
       Company.findById(companyId).select('assistant name').lean()
     ]);
 
-    const workflowPersona = workflow?.compiledChain?.prompts?.persona?.compiled?.systemPrompt;
+    const workflowPersona = personaOf(workflow);
 
     if (workflowPersona && String(workflowPersona).trim()) {
       resolved = {
@@ -83,6 +83,31 @@ async function resolve(companyId) {
 
   cache.set(key, { value: resolved, expires: Date.now() + CACHE_TTL_MS });
   return resolved;
+}
+
+/**
+ * The persona a published workflow declares.
+ *
+ * Read from the Persona node itself, which is what the tenant wrote. The
+ * stored `compiledChain` is also tried, at both shapes it has had: the chain
+ * config directly, and wrapped in `compilationResult` as the workflow service
+ * persists it. The first version read only the former, so no published
+ * workflow's persona was ever found and every tenant got the default.
+ */
+function personaOf(workflow) {
+  if (!workflow) {
+    return null;
+  }
+
+  const node = (workflow.nodes || []).find(candidate =>
+    candidate && candidate.data && candidate.data.type === 'persona');
+  if (node && node.data.prompt && String(node.data.prompt).trim()) {
+    return String(node.data.prompt).trim();
+  }
+
+  const chain = workflow.compiledChain || {};
+  const prompts = chain.prompts || chain.compilationResult?.compiledChain?.prompts;
+  return prompts?.persona?.compiled?.systemPrompt || null;
 }
 
 module.exports = { resolve, invalidate, DEFAULT_PERSONA };

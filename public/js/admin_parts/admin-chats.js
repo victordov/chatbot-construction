@@ -319,7 +319,7 @@ function loadDashboardData(token) {
       'x-auth-token': token
     }
   })
-    .then(response => response.json())
+    .then(parseJsonResponse)
     .then(data => {
       // Kept so the Analytics charts can be populated when they are built on
       // first view of that section.
@@ -344,6 +344,7 @@ function loadDashboardData(token) {
     })
     .catch(error => {
       logger.error('Error loading dashboard data:', error);
+      showToast(errorMessage(error, 'Could not load dashboard data'), 'danger');
     });
 }
 
@@ -355,7 +356,7 @@ function loadActiveChats(socket, token) {
       'x-auth-token': token
     }
   })
-    .then(response => response.json())
+    .then(parseJsonResponse)
     .then(data => {
       const chatList = document.getElementById('active-chat-list');
 
@@ -370,10 +371,7 @@ function loadActiveChats(socket, token) {
           // If this chat was previously joined, automatically rejoin it
           if (window.joinedChats.has(chat.sessionId)) {
             logger.info('Automatically rejoining chat:', chat.sessionId);
-            socket.emit('operator-takeover', {
-              sessionId: chat.sessionId,
-              operatorName: window.currentUser ? (window.currentUser.displayName || window.currentUser.username) : 'Admin'
-            });
+            socket.emit('operator-takeover', { sessionId: chat.sessionId });
           }
         });
 
@@ -383,6 +381,7 @@ function loadActiveChats(socket, token) {
     })
     .catch(error => {
       logger.error('Error loading active chats:', error);
+      showToast(errorMessage(error, 'Could not load active chats'), 'danger');
     });
 }
 
@@ -476,8 +475,11 @@ function loadChatHistory(token, search = chatHistoryState.search, page = 1) {
       logger.error('Error loading chat history:', error);
       historyTable.innerHTML = `
         <tr><td colspan="6" class="text-center text-danger py-4">
-          Could not load chat history. <button class="btn btn-sm btn-link" onclick="loadChatHistory(localStorage.getItem('chatbot-auth-token'))">Retry</button>
+          Could not load chat history. <button type="button" class="btn btn-sm btn-link" id="chat-history-retry">Retry</button>
         </td></tr>`;
+      historyTable.querySelector('#chat-history-retry')?.addEventListener('click', () => {
+        loadChatHistory(authToken());
+      });
     });
 }
 
@@ -527,7 +529,7 @@ function renderChatHistoryPagination(pagination) {
       return;
     }
     loadChatHistory(
-      localStorage.getItem('chatbot-auth-token'),
+      authToken(),
       chatHistoryState.search,
       parseInt(button.dataset.page, 10)
     );
@@ -687,14 +689,14 @@ function addChatToList(chat) {
 
 // Load chat messages
 function loadChatMessages(sessionId) {
-  const token = localStorage.getItem('chatbot-auth-token');
+  const token = authToken();
   // In a real app, this would fetch data from the server
   fetch(`/api/admin/chat/${sessionId}`, {
     headers: {
       'x-auth-token': token
     }
   })
-    .then(response => response.json())
+    .then(parseJsonResponse)
     .then(data => {
       const chatMessages = document.getElementById('chat-messages');
       chatMessages.innerHTML = '';
@@ -743,6 +745,7 @@ function loadChatMessages(sessionId) {
     })
     .catch(error => {
       logger.error('Error loading chat messages:', error);
+      showToast(errorMessage(error, 'Could not load the conversation'), 'danger');
     });
 }
 
@@ -768,7 +771,7 @@ function displayRating(rating) {
   panel.id = 'conversation-rating';
   panel.className = `alert alert-${tone} py-2 px-3 mb-2 d-flex gap-2 align-items-start`;
   panel.innerHTML = `
-    <span class="badge bg-${tone}">${rating.score}/5</span>
+    <span class="badge bg-${tone}">${escapeHtml(rating.score)}/5</span>
     <div class="small">
       <div>Rated by the customer${rating.operatorName ? ` · ${escapeHtml(rating.operatorName)}` : ''}</div>
       ${rating.comment ? `<div class="mt-1">${escapeHtml(rating.comment)}</div>` : ''}
@@ -1015,11 +1018,9 @@ function notifyNewChat(chat) {
 function saveSettings() {
   const notificationSetting = document.getElementById('notification-setting').value;
   const soundNotifications = document.getElementById('sound-notifications').checked;
-  const autoRefresh = document.getElementById('auto-refresh').value;
   // Save settings to localStorage
   localStorage.setItem('notification-setting', notificationSetting);
   localStorage.setItem('sound-notifications', soundNotifications);
-  localStorage.setItem('auto-refresh', autoRefresh);
 
   // Request notification permission if needed
   if (notificationSetting !== 'none' && 'Notification' in window && Notification.permission !== 'granted') {
@@ -1048,22 +1049,48 @@ function setupConnectionHandlers(socket) {
 
   socket.on('connect_error', (error) => {
     logger.error('Connection error:', error);
+
+    // The handshake was refused because the token is no longer good. The
+    // client would otherwise retry forever with the same dead token, showing
+    // "Reconnecting…" for the rest of the shift.
+    if (isAuthFailure(error)) {
+      socket.disconnect();
+      setAuthToken(null);
+      setStoredUser(null);
+      window.location.href = '/admin/login.html?expired=1';
+      return;
+    }
+
     // Update UI to show error status
     updateConnectionStatus(false, error.message);
   });
 
-  socket.on('reconnect', (attemptNumber) => {
+  // `reconnect` is emitted by the Manager, not the Socket: listening on the
+  // socket never fired, so the queue was never refreshed after a drop. The
+  // `connect` handler above already rejoins the operator room.
+  socket.io.on('reconnect', (attemptNumber) => {
     logger.info(`Socket reconnected after ${attemptNumber} attempts`);
-    // Join operator room when reconnected
-    socket.emit('join-operator-room');
 
-    // Update UI to show connected status
-    updateConnectionStatus(true);
-
-    // Reload active chats to ensure we have the latest data
-    const token = localStorage.getItem('chatbot-auth-token');
-    loadActiveChats(socket, token);
+    // Reload active chats to ensure we have the latest data: anything that
+    // started or ended while we were away was never pushed to us.
+    loadActiveChats(socket, authToken());
   });
+}
+
+/**
+ * Whether a connection error means the token was rejected rather than the
+ * network being down. socket.io puts the server's middleware error message
+ * on `error.message`, and the server's auth middleware says so in words.
+ */
+function isAuthFailure(error) {
+  const message = String((error && error.message) || '').toLowerCase();
+  const data = error && error.data;
+  return message.includes('authentication') ||
+    message.includes('unauthorized') ||
+    message.includes('invalid token') ||
+    message.includes('token expired') ||
+    message.includes('jwt') ||
+    (data && (data.code === 401 || data.status === 401));
 }
 
 // Start heartbeat to keep socket connection alive
@@ -1171,7 +1198,7 @@ function updateChatUserName(sessionId, userName) {
 
 // View chat history
 function viewChatHistory(sessionId) {
-  const token = localStorage.getItem('chatbot-auth-token');
+  const token = authToken();
 
   // Fetch the chat details
   fetch(`/api/admin/chat/${sessionId}`, {
@@ -1179,22 +1206,24 @@ function viewChatHistory(sessionId) {
       'x-auth-token': token
     }
   })
-    .then(response => response.json())
+    .then(parseJsonResponse)
     .then(chat => {
       if (!chat) {
         showToast('Chat not found', 'danger');
         return;
       }
 
-      // Switch to the active chats section
-      document.querySelectorAll('.nav-link').forEach(link => {
+      // Switch to the active chats section. Scoped to the sidebar: a bare
+      // `.nav-link` also matched the Settings tabs, and stripping `active`
+      // from those left the tab strip with nothing selected.
+      document.querySelectorAll('#sidebar .nav-link[data-section]').forEach(link => {
         link.classList.remove('active');
       });
       document.querySelectorAll('.content-section').forEach(section => {
         section.classList.remove('active');
       });
 
-      const activeChatsLink = document.querySelector('.nav-link[data-section="active-chats"]');
+      const activeChatsLink = document.querySelector('#sidebar .nav-link[data-section="active-chats"]');
       if (activeChatsLink) {
         activeChatsLink.classList.add('active');
       }
@@ -1278,13 +1307,13 @@ function viewChatHistory(sessionId) {
     })
     .catch(error => {
       logger.error('Error viewing chat history:', error);
-      showToast('An error occurred while loading the chat', 'danger');
+      showToast(errorMessage(error, 'An error occurred while loading the chat'), 'danger');
     });
 }
 
 // Delete chat history
 function deleteChatHistory(sessionId) {
-  const token = localStorage.getItem('chatbot-auth-token');
+  const token = authToken();
   if (confirm('Are you sure you want to delete this chat history? This action cannot be undone.')) {
     fetch(`/api/admin/chat/${sessionId}`, {
       method: 'DELETE',
@@ -1292,7 +1321,7 @@ function deleteChatHistory(sessionId) {
         'x-auth-token': token
       }
     })
-      .then(response => response.json())
+      .then(parseJsonResponse)
       .then(data => {
         if (data.success) {
           // Remove from table
@@ -1310,7 +1339,7 @@ function deleteChatHistory(sessionId) {
       })
       .catch(error => {
         logger.error('Error deleting chat history:', error);
-        showToast('An error occurred while deleting chat history', 'danger');
+        showToast(errorMessage(error, 'An error occurred while deleting chat history'), 'danger');
       });
   }
 }
@@ -1400,9 +1429,18 @@ suggestionStyles.textContent = `
 document.head.appendChild(suggestionStyles);
 
 // Function to display suggestions to operators
+let suggestionCounter = 0;
+
+/** Longest reply the server accepts from a suggestion. */
+const MAX_SUGGESTION_LENGTH = 4000;
+
 function displaySuggestion(data) {
-  // eslint-disable-next-line no-unused-vars
-  const { sessionId, userMessageId, userMessage, suggestion, suggestionId } = data;
+  const { sessionId, userMessage, suggestion } = data;
+
+  // The server no longer keeps suggestions, so there is no id to refer back
+  // to: the text is sent when it is used. A local id ties the buttons to the
+  // right card.
+  const suggestionId = `local-${Date.now()}-${++suggestionCounter}`;
 
   // Check if this is the currently selected chat
   const joinChatBtn = document.getElementById('join-chat-btn');
@@ -1506,7 +1544,7 @@ function useSuggestion(suggestionId) {
   const sessionId = document.getElementById('join-chat-btn').getAttribute('data-session-id');
 
   // Mark suggestion as used
-  const suggestionItem = document.querySelector(`.suggestion-item[data-suggestion-id="${suggestionId}"]`);
+  const suggestionItem = document.querySelector(`.suggestion-item[data-suggestion-id="${CSS.escape(suggestionId)}"]`);
   if (suggestionItem) {
     const suggestionText = suggestionItem.querySelector('.suggestion-content').textContent;
 
@@ -1517,10 +1555,11 @@ function useSuggestion(suggestionId) {
       timestamp: new Date()
     });
 
-    // Emit the event to use the suggestion
+    // Emit the event to use the suggestion: the text itself, as the server
+    // does not hold a copy.
     socket.emit('use-suggestion', {
       sessionId: sessionId,
-      suggestionId
+      suggestion: suggestionText.slice(0, MAX_SUGGESTION_LENGTH)
     });
 
     suggestionItem.classList.add('used');
@@ -1577,12 +1616,13 @@ function editSuggestion(suggestionItem, suggestion, suggestionId) {
       timestamp: new Date()
     });
 
-    // Use the edited suggestion
+    // Use the edited suggestion. Both the original and the edit go up, so
+    // the server can tell how much the operator changed.
     const socket = window.adminSocket;
     socket.emit('use-suggestion', {
       sessionId: sessionId,
-      suggestionId,
-      edited: editedText
+      suggestion: suggestion.slice(0, MAX_SUGGESTION_LENGTH),
+      edited: editedText.slice(0, MAX_SUGGESTION_LENGTH)
     });
 
     // Update UI
@@ -1620,7 +1660,9 @@ function setupSuggestionEventHandlers(socket) {
     const { suggestionId, operatorName } = data;
 
     // Mark suggestion as used if it exists
-    const suggestionItem = document.querySelector(`.suggestion-item[data-suggestion-id="${suggestionId}"]`);
+    const suggestionItem = suggestionId
+      ? document.querySelector(`.suggestion-item[data-suggestion-id="${CSS.escape(String(suggestionId))}"]`)
+      : null;
     if (suggestionItem) {
       suggestionItem.classList.add('used');
 

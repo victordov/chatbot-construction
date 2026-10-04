@@ -299,6 +299,45 @@ describe('Operator tools', () => {
       expect(availability.operatorsOnline(acme._id)).toBe(0);
     });
 
+    test('counts people, not tabs, and only those taking chats', async () => {
+      // "3 operators online" when one person has three tabs open is the same
+      // broken promise as saying there are any when there are none.
+      const socketManager = require('../socketManager');
+      const room = new Set(['s1', 's2', 's3', 's4']);
+      const spy = jest.spyOn(socketManager, 'getIo').mockReturnValue({
+        sockets: {
+          adapter: { rooms: new Map([[socketManager.operatorRoom(acme._id), room]]) },
+          sockets: new Map([
+            ['s1', { user: { id: String(alice._id) } }],
+            ['s2', { user: { id: String(alice._id) } }],
+            ['s3', { user: { id: String(bob._id) } }],
+            // A socket with no user - a visitor that somehow got in - does
+            // not count.
+            ['s4', { user: { role: 'user' } }]
+          ])
+        }
+      });
+
+      // Earlier tests leave a closed schedule behind; this one is about people.
+      await Company.findByIdAndUpdate(acme._id, { businessHours: { enabled: false } });
+      availability.invalidate();
+
+      try {
+        expect(availability.operatorsOnline(acme._id)).toBe(2);
+
+        await User.findByIdAndUpdate(bob._id, { acceptingChats: false });
+        const status = await availability.status(acme._id);
+        expect(status.operatorsOnline).toBe(1);
+        expect(status.canReachOperator).toBe(true);
+
+        await User.findByIdAndUpdate(alice._id, { acceptingChats: false });
+        expect((await availability.status(acme._id)).canReachOperator).toBe(false);
+      } finally {
+        spy.mockRestore();
+        await User.updateMany({ _id: { $in: [alice._id, bob._id] } }, { acceptingChats: true });
+      }
+    });
+
     test('never promises a person when nobody could pick up', async () => {
       const status = await availability.status(acme._id);
       expect(status.canReachOperator).toBe(false);

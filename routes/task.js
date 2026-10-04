@@ -11,12 +11,39 @@ const CommentService = require('../services/comment');
 const Conversation = require('../models/conversation');
 const User = require('../models/user');
 const socketManager = require('../socketManager');
-const { canAccessCompany } = require('../utils/query');
+const { canAccessCompany, companyFilter } = require('../utils/query');
 const { logger } = require('../services/logging');
 
 // Initialize services
 const taskService = new TaskService();
 const commentService = new CommentService();
+
+/**
+ * Check that an assignee named in a request body is a real user of the
+ * caller's own company. `assignee` comes straight from the client, so without
+ * this a task - with the customer's name, email and phone on it - can be
+ * handed to somebody at another tenant.
+ *
+ * @returns {Promise<boolean>} false when the response has been sent
+ */
+async function assigneeAllowed(req, res, assignee) {
+  if (!assignee) {
+    return true;
+  }
+
+  if (typeof assignee !== 'string' || !mongoose.Types.ObjectId.isValid(assignee)) {
+    res.status(400).json({ error: 'Invalid assignee' });
+    return false;
+  }
+
+  const user = await User.findOne({ _id: assignee, ...companyFilter(req.user) }).select('_id').lean();
+  if (!user) {
+    res.status(404).json({ error: 'User not found' });
+    return false;
+  }
+
+  return true;
+}
 
 // Get all tasks with optional filtering
 router.get('/', auth, operator, async (req, res) => {
@@ -105,6 +132,10 @@ router.post('/', auth, operator, async (req, res) => {
       });
     }
 
+    if (!(await assigneeAllowed(req, res, assignee))) {
+      return;
+    }
+
     // Create task data object
     const taskData = {
       title,
@@ -118,20 +149,27 @@ router.post('/', auth, operator, async (req, res) => {
       company: req.user.company?.id
     };
 
-    // Handle conversationId - it could be a sessionId (string) or an ObjectId
+    // Handle conversationId - it could be a sessionId (string) or an ObjectId.
+    // Either way it is looked up within the caller's own tenant: a task is
+    // linked back from the conversation it names, so an id from another
+    // company would pin this company's task onto their transcript.
     if (conversationId) {
-      // If it's a valid ObjectId, use it directly
-      if (mongoose.Types.ObjectId.isValid(conversationId)) {
-        taskData.conversationId = conversationId;
-      } else {
-        // If it's not a valid ObjectId, assume it's a sessionId and look up the conversation
-        const conversation = await Conversation.findOne({ sessionId: conversationId });
-        if (conversation) {
-          taskData.conversationId = conversation._id;
-        } else {
-          logger.warn(`Conversation with sessionId ${conversationId} not found`);
-        }
+      if (typeof conversationId !== 'string') {
+        return res.status(400).json({ error: 'Invalid conversation' });
       }
+
+      const byId = mongoose.Types.ObjectId.isValid(conversationId)
+        ? { _id: conversationId }
+        : { sessionId: conversationId };
+      const conversation = await Conversation.findOne({ ...byId, ...companyFilter(req.user) })
+        .select('_id')
+        .lean();
+
+      if (!conversation) {
+        return res.status(404).json({ error: 'Conversation not found' });
+      }
+
+      taskData.conversationId = conversation._id;
     }
 
     // Create the task
@@ -188,6 +226,19 @@ router.put('/:id', auth, operator, async (req, res) => {
       updateData.contactInfo = contactInfo;
     }
     if (parentTaskId) {
+      // The parent must be one of this tenant's own tasks; the service's
+      // lookup applies the caller's company scope and throws otherwise.
+      if (typeof parentTaskId !== 'string' || !mongoose.Types.ObjectId.isValid(parentTaskId)) {
+        return res.status(400).json({ error: 'Invalid parent task' });
+      }
+      try {
+        await taskService.getTaskById(parentTaskId, req.user.company?.id, req.user.role);
+      } catch (error) {
+        if (error.message === 'Task not found') {
+          return res.status(404).json({ error: 'Parent task not found' });
+        }
+        throw error;
+      }
       updateData.parentTaskId = parentTaskId;
     }
 
@@ -419,6 +470,10 @@ router.post('/:id/follow-ups', auth, operator, async (req, res) => {
       return res.status(400).json({
         error: 'Please provide title, description, and due date'
       });
+    }
+
+    if (!(await assigneeAllowed(req, res, assignee))) {
+      return;
     }
 
     // Create task data object

@@ -162,6 +162,7 @@ describe('Multi-tenant isolation', () => {
 
     test('an admin can reset a password within their own company', async () => {
       const target = await User.findOne({ username: 'acme-operator' });
+      const oldSession = acmeOperatorToken;
 
       const response = await request(app)
         .post(`/api/admin/operators/${target._id}/reset-password`)
@@ -169,6 +170,18 @@ describe('Multi-tenant isolation', () => {
         .send({ password: 'RotatedPassword123!', confirmPassword: 'RotatedPassword123!' });
 
       expect(response.status).toBe(200);
+
+      // A reset ends the sessions the old password opened - which is the
+      // point of an admin resetting it - so the operator signs in again.
+      const stale = await request(app)
+        .get('/api/admin/chat-history')
+        .set('x-auth-token', oldSession);
+      expect(stale.status).toBe(401);
+
+      acmeOperatorToken = (await request(app)
+        .post('/api/auth/login')
+        .send({ username: 'acme-operator', password: 'RotatedPassword123!' })).body.token;
+      expect(acmeOperatorToken).toBeTruthy();
     });
   });
 
@@ -182,9 +195,9 @@ describe('Multi-tenant isolation', () => {
       expect(response.status).toBe(403);
     });
 
-    test('a plain operator cannot deploy a widget version', async () => {
+    test('a plain operator cannot create a backup', async () => {
       const response = await request(app)
-        .post('/api/operations/widget/deploy')
+        .post('/api/operations/backups/create')
         .set('x-auth-token', acmeOperatorToken)
         .send({ version: '1.0.0' });
 

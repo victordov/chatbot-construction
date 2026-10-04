@@ -140,15 +140,187 @@ function debounce(fn, wait = 300) {
  * @param {'success'|'error'|'warning'|'info'} [type]
  */
 function showNotification(title, message = '', type = 'info') {
-  const variant = { error: 'danger', success: 'success', warning: 'warning', info: 'info' }[type] || 'info';
   const text = message ? `${title}: ${message}` : title;
+  showToast(text, type);
+}
 
-  if (typeof showToast === 'function') {
-    showToast(text, variant);
+/**
+ * Bootstrap's colour names, from whatever a caller passed. `error` is what
+ * half the call sites say and `text-bg-error` is not a class Bootstrap has,
+ * so those toasts rendered as unstyled white boxes.
+ */
+const TOAST_VARIANTS = new Set(['primary', 'secondary', 'success', 'danger', 'warning', 'info', 'light', 'dark']);
+
+function toastVariant(type) {
+  const aliases = { error: 'danger', warn: 'warning', notice: 'info' };
+  const variant = aliases[type] || type;
+  return TOAST_VARIANTS.has(variant) ? variant : 'info';
+}
+
+/**
+ * A toast in the corner. The one implementation for every module.
+ *
+ * @param {string} message
+ * @param {string} [type] a Bootstrap colour name, or `error`
+ */
+function showToast(message, type = 'info') {
+  const container = document.querySelector('.toast-container');
+  if (!container) {
+    logger.info(message);
     return;
   }
 
-  // showToast lives in admin-operators.js; if load order ever changes, fall
-  // back to the console rather than throwing.
-  logger.info(text);
+  const variant = toastVariant(type);
+  const wrapper = document.createElement('div');
+  wrapper.className = `toast align-items-center text-bg-${variant} border-0`;
+  wrapper.setAttribute('role', variant === 'danger' || variant === 'warning' ? 'alert' : 'status');
+  wrapper.setAttribute('aria-live', variant === 'danger' || variant === 'warning' ? 'assertive' : 'polite');
+  wrapper.setAttribute('aria-atomic', 'true');
+  wrapper.innerHTML = `
+    <div class="d-flex">
+      <div class="toast-body">${escapeHtml(message)}</div>
+      <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
+    </div>`;
+  container.appendChild(wrapper);
+
+  if (typeof bootstrap === 'undefined' || !bootstrap.Toast) {
+    return;
+  }
+  const toast = new bootstrap.Toast(wrapper, { delay: 5000 });
+  toast.show();
+  wrapper.addEventListener('hidden.bs.toast', () => wrapper.remove());
+}
+
+// Toggle loading state for buttons
+function setLoading(button, isLoading) {
+  if (!button) {
+    return;
+  }
+  if (isLoading) {
+    button.dataset.originalContent = button.innerHTML;
+    button.disabled = true;
+    button.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>';
+  } else {
+    if (button.dataset.originalContent) {
+      button.innerHTML = button.dataset.originalContent;
+      delete button.dataset.originalContent;
+    }
+    button.disabled = false;
+  }
+}
+
+// ---------------------------------------------------------------- auth + API
+
+const AUTH_TOKEN_KEY = 'chatbot-auth-token';
+const STORED_USER_KEY = 'chatbot-user';
+
+/**
+ * The signed-in operator's token. One accessor rather than eighty-four
+ * `localStorage.getItem('chatbot-auth-token')` calls, so the key lives in
+ * exactly one place and a blocked localStorage cannot throw mid-render.
+ */
+function authToken() {
+  try {
+    return localStorage.getItem(AUTH_TOKEN_KEY);
+  } catch (error) {
+    return null;
+  }
+}
+
+function setAuthToken(token) {
+  try {
+    if (token) {
+      localStorage.setItem(AUTH_TOKEN_KEY, token);
+    } else {
+      localStorage.removeItem(AUTH_TOKEN_KEY);
+    }
+  } catch (error) {
+    // Nothing to do: the next page load will ask them to sign in again.
+  }
+}
+
+/**
+ * The cached user record from login, or null.
+ *
+ * Wrapped because `JSON.parse(localStorage.getItem(...))` throws on a corrupt
+ * or missing value, and a throw at the top of a module means the whole
+ * module never loads.
+ */
+function getStoredUser() {
+  try {
+    const raw = localStorage.getItem(STORED_USER_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch (error) {
+    return null;
+  }
+}
+
+function setStoredUser(user) {
+  try {
+    if (user) {
+      localStorage.setItem(STORED_USER_KEY, JSON.stringify(user));
+    } else {
+      localStorage.removeItem(STORED_USER_KEY);
+    }
+  } catch (error) {
+    // Ignore.
+  }
+}
+
+/** Headers for a JSON request to our own API. */
+function authHeaders(extra = {}) {
+  return {
+    'Content-Type': 'application/json',
+    'x-auth-token': authToken(),
+    ...extra
+  };
+}
+
+/**
+ * Parse a JSON response, refusing to pretend a failure was a success.
+ *
+ * `.then(response => response.json())` handed an error body to code that
+ * then read `data.operators.forEach` and crashed with a message that had
+ * nothing to do with the real problem. Throwing here sends every failure to
+ * the caller's `.catch`, with the server's own message when it gave one.
+ */
+async function parseJsonResponse(response) {
+  const body = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    const serverMessage = body && (body.error || body.message);
+    const error = new Error(serverMessage || `Request failed (${response.status})`);
+    error.status = response.status;
+    error.body = body;
+    // Only set when the server actually said something, so a network failure
+    // still gets the caller's own wording.
+    error.apiMessage = serverMessage || null;
+    throw error;
+  }
+
+  return body;
+}
+
+/**
+ * What to tell the operator: the server's message if there is one, else the
+ * caller's fallback.
+ */
+function errorMessage(error, fallback) {
+  return (error && error.apiMessage) || fallback;
+}
+
+/**
+ * A JSON call to our own API, authenticated.
+ *
+ * @param {string} path full path, e.g. `/api/companies/me/widget`
+ * @param {RequestInit} [options]
+ * @returns {Promise<any>} the parsed body; rejects with the server's error
+ */
+async function api(path, options = {}) {
+  const response = await fetch(path, {
+    ...options,
+    headers: authHeaders(options.headers)
+  });
+
+  return parseJsonResponse(response);
 }

@@ -22,6 +22,7 @@
 
 const Conversation = require('../models/conversation');
 const Company = require('../models/company');
+const uploads = require('./uploads');
 const { logger } = require('./logging');
 
 /** Days -> the moment before which a conversation is in scope. */
@@ -97,10 +98,15 @@ class DataRetentionService {
     const result = { companyId: companyId ? String(companyId) : null, deleted: 0, anonymized: 0 };
 
     if (policy.deleteAfterDays > 0) {
-      const deletion = await Conversation.deleteMany({
-        ...scope,
-        lastActivity: { $lt: cutoff(policy.deleteAfterDays) }
-      });
+      const expired = { ...scope, lastActivity: { $lt: cutoff(policy.deleteAfterDays) } };
+
+      // The files first, while the messages still say which ones exist. A
+      // conversation deleted with its attachments left on disk is not deleted:
+      // what the visitor sent is still there, now with nothing pointing at it
+      // to find it by.
+      await this.deleteFiles(expired);
+
+      const deletion = await Conversation.deleteMany(expired);
       result.deleted = deletion.deletedCount || 0;
     }
 
@@ -113,6 +119,26 @@ class DataRetentionService {
     }
 
     return result;
+  }
+
+  /**
+   * Remove the uploads of every conversation matching `query`.
+   *
+   * Only conversations that have a file are read, and through a cursor, so a
+   * tenant with years of attachments does not have them all in memory at once.
+   */
+  async deleteFiles(query) {
+    let removed = 0;
+    const cursor = Conversation.find({ ...query, 'messages.fileId': { $exists: true } })
+      .select('company messages.fileId')
+      .lean()
+      .cursor();
+
+    for await (const conversation of cursor) {
+      removed += await uploads.deleteFilesForConversation(conversation);
+    }
+
+    return removed;
   }
 
   /**
@@ -135,6 +161,9 @@ class DataRetentionService {
       }
 
       for (const conversation of batch) {
+        // Anonymising clears the file ids, so the files have to go first or
+        // they become unreachable orphans that still hold the visitor's data.
+        await uploads.deleteFilesForConversation(conversation);
         await conversation.anonymize();
         processed += 1;
       }

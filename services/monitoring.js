@@ -19,49 +19,15 @@ const httpRequestDurationMicroseconds = new promClient.Histogram({
   buckets: [1, 5, 15, 50, 100, 200, 500, 1000, 2000, 5000]
 });
 
-const chatResponseTime = new promClient.Histogram({
-  name: 'chat_response_time_ms',
-  help: 'Response time of chat messages in ms',
-  labelNames: ['status'],
-  buckets: [10, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
-});
-
-const concurrentWebsocketConnections = new promClient.Gauge({
-  name: 'websocket_connections_current',
-  help: 'Number of currently active WebSocket connections'
-});
-
 const totalChatMessages = new promClient.Counter({
   name: 'chat_messages_total',
   help: 'Total number of chat messages processed',
   labelNames: ['status', 'type']
 });
 
-const activeSessionsGauge = new promClient.Gauge({
-  name: 'active_sessions_current',
-  help: 'Number of currently active chat sessions'
-});
-
-const fileUploadsCounter = new promClient.Counter({
-  name: 'file_uploads_total',
-  help: 'Total number of file uploads',
-  labelNames: ['status', 'file_type']
-});
-
-const rateLimit = new promClient.Counter({
-  name: 'rate_limit_hits_total',
-  help: 'Total number of rate limit hits',
-  labelNames: ['endpoint']
-});
-
 // Register metrics
 register.registerMetric(httpRequestDurationMicroseconds);
-register.registerMetric(chatResponseTime);
-register.registerMetric(concurrentWebsocketConnections);
 register.registerMetric(totalChatMessages);
-register.registerMetric(activeSessionsGauge);
-register.registerMetric(fileUploadsCounter);
-register.registerMetric(rateLimit);
 
 // Middleware for Express
 const metricsMiddleware = promBundle({
@@ -95,42 +61,12 @@ function trackChatMessage(status, type) {
   totalChatMessages.inc({ status, type });
 }
 
-function startChatResponseTimer() {
-  return chatResponseTime.startTimer();
-}
-
-function incrementWebSocketConnections() {
-  concurrentWebsocketConnections.inc();
-}
-
-function decrementWebSocketConnections() {
-  concurrentWebsocketConnections.dec();
-}
-
-function setActiveSessions(count) {
-  activeSessionsGauge.set(count);
-}
-
-function trackFileUpload(status, fileType) {
-  fileUploadsCounter.inc({ status, fileType });
-}
-
-function trackRateLimitHit(endpoint) {
-  rateLimit.inc({ endpoint });
-}
-
 // Export metrics registry and helper functions
 module.exports = {
   register,
   metricsMiddleware,
   metrics: {
-    trackChatMessage,
-    startChatResponseTimer,
-    incrementWebSocketConnections,
-    decrementWebSocketConnections,
-    setActiveSessions,
-    trackFileUpload,
-    trackRateLimitHit
+    trackChatMessage
   },
   ALERT_THRESHOLDS
 };

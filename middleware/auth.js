@@ -15,8 +15,20 @@ const auth = async (req, res, next) => {
     const decoded = jwt.verify(token, process.env.JWT_SECRET || 'chatbot-jwt-secret');
 
     // Check if user still exists and is active
-    const user = await User.findById(decoded.id).populate('company');
+    const user = await User.findById(decoded.id)
+      .select('username displayName email role company isActive tokenVersion')
+      .populate('company');
     if (!user || !user.isActive) {
+      return res.status(401).json({ error: 'Token is not valid' });
+    }
+
+    // A token is only as current as the password it was issued under. Every
+    // password change, reset and explicit logout bumps `tokenVersion`, so a
+    // token minted before that carries a stale `tv` and is refused here - an
+    // eight-hour JWT would otherwise outlive the credentials it proved.
+    // Tokens issued before this field existed carry no `tv`, which is 0.
+    const issuedVersion = Number(decoded.tv) || 0;
+    if (issuedVersion !== (user.tokenVersion || 0)) {
       return res.status(401).json({ error: 'Token is not valid' });
     }
 
@@ -103,11 +115,24 @@ const sameCompany = (req, res, next) => {
   next();
 };
 
+/**
+ * The value when it is a string, otherwise null.
+ *
+ * Mongoose casts most things, but a query value of `{ "$gt": "" }` is not
+ * cast - it is an operator, and `User.findOne({ username: { $gt: '' } })`
+ * matches the first account in the collection. Every place a request field
+ * becomes a query value goes through this, and answers 400 on null.
+ */
+function requireString(value) {
+  return typeof value === 'string' ? value : null;
+}
+
 module.exports = {
   auth,
   superadmin,
   companyAdmin,
   admin,
   operator,
-  sameCompany
+  sameCompany,
+  requireString
 };

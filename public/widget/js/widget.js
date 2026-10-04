@@ -1,6 +1,12 @@
 /**
  * Chatbot Widget JavaScript
- * Embeddable JavaScript widget for the chatbot application
+ * Embeddable JavaScript widget for the chatbot application.
+ *
+ * Everything the widget draws lives inside a Shadow DOM root attached to a
+ * single host element, so the host page's stylesheet cannot restyle the chat
+ * window and the widget's stylesheet cannot leak into the host page. The only
+ * things that touch the document are the host element itself and, when the
+ * page has not already loaded it, the socket.io client script.
  */
 
 (function() {
@@ -24,40 +30,90 @@
     chatbotName: 'Assistant',
     primaryColor: '#2196f3',
     initialMessage: 'Hello! How can I assist you today?',
-    position: 'right' // 'right' or 'left'
+    position: 'right', // 'right' or 'left'
+    // Which details the pre-chat form insists on. Name and email are the
+    // minimum an operator needs to follow up; a phone number is more than
+    // most visitors want to hand over just to ask a question.
+    requireName: true,
+    requireEmail: true,
+    requirePhone: false,
+    // Linked from the pre-chat form. Defaults to the server's own policy page.
+    privacyPolicyUrl: null
   };
+
+  // Every localStorage key the widget writes, in one place.
+  const STORAGE_KEYS = {
+    sessionId: 'chatbotSessionId',
+    sessionToken: 'chatbotSessionToken',
+    userName: 'chatbotUserName',
+    userEmail: 'chatbotUserEmail',
+    userPhone: 'chatbotUserPhone',
+    // When the visitor's details were saved, so they can be forgotten again.
+    userSavedAt: 'chatbotUserSavedAt'
+  };
+
+  // Personal details are kept for a month and then dropped: long enough that
+  // a returning visitor is not asked twice in a week, short enough that a
+  // shared computer does not carry somebody's email address for a year.
+  const PII_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+  // Mirrors the server's upload limit. Checked here so a 40 MB video gets an
+  // immediate answer rather than a slow upload followed by an error.
+  const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+
   // Socket.io instance
   let socket;
 
-  // Session management
-  const sessionId = localStorage.getItem('chatbotSessionId') || generateSessionId();
+  // Session management. The token is issued by the server on the first
+  // resume and proves this browser owns the session id, so a visitor cannot
+  // read somebody else's transcript by guessing an id.
+  let sessionId = readStorage(STORAGE_KEYS.sessionId) || generateSessionId();
+  let sessionToken = readStorage(STORAGE_KEYS.sessionToken) || null;
 
   // Broadcast channel for cross-window/tab communication
   let broadcastChannel;
 
-  // Encryption utility
-  let encryptionUtil;
+  // Shadow DOM host and root. Every element lookup goes through `root`.
+  let host;
+  let root;
 
   // User details form
   let userDetailsForm;
 
   // DOM elements
+  let container;
   let chatWindow;
   let chatMessages;
   let chatInput;
   let chatIconButton;
+  let sendButton;
+  let fileUploadButton;
   let typingIndicator;
   let fileUploadInput;
   let fileIndicator;
-  let chatMessagesContainer; // Added to reference the messages container
+  let chatMessagesContainer;
+  let connectionStatus;
+
   // Heartbeat interval for keeping the socket connection alive
   let heartbeatInterval;
+
+  // Ids of every message already on screen. A duplicate delivery - a
+  // reconnect that replays, a second tab, a retried emit - renders nothing.
+  const renderedMessageIds = new Set();
+
+  // Set once the server has said what this session already contains, so the
+  // greeting is only shown to somebody starting fresh.
+  let historyReceived = false;
+  let greetingShown = false;
+  let closedNoticeShown = false;
+  let everConnected = false;
+  let uploading = false;
 
   // Logger utility to avoid direct console usage
   const logger = {
     log: function() {
-      // eslint-disable-next-line no-console
       if (window.debugMode) {
+        // eslint-disable-next-line no-console
         console.log(...arguments);
       }
     },
@@ -71,6 +127,72 @@
     }
   };
 
+  // ------------------------------------------------------------ storage
+
+  /** localStorage can throw (private mode, blocked storage); never let it. */
+  function readStorage(key) {
+    try {
+      return localStorage.getItem(key);
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function writeStorage(key, value) {
+    try {
+      localStorage.setItem(key, value);
+    } catch (error) {
+      // Nothing to do: the session simply will not survive a reload.
+    }
+  }
+
+  function removeStorage(key) {
+    try {
+      localStorage.removeItem(key);
+    } catch (error) {
+      // Ignore.
+    }
+  }
+
+  /**
+   * Drop the visitor's saved details once they are older than the TTL.
+   * Called before every read, so expiry needs no timer.
+   */
+  function expireStoredUserDetails() {
+    const savedAt = Number(readStorage(STORAGE_KEYS.userSavedAt));
+    const hasDetails = readStorage(STORAGE_KEYS.userName) !== null ||
+      readStorage(STORAGE_KEYS.userEmail) !== null ||
+      readStorage(STORAGE_KEYS.userPhone) !== null;
+
+    if (!hasDetails) {
+      return;
+    }
+
+    // Details saved before the timestamp existed have no date: treat them as
+    // expired rather than keeping them forever.
+    if (!savedAt || Date.now() - savedAt > PII_TTL_MS) {
+      clearStoredUserDetails();
+    }
+  }
+
+  function clearStoredUserDetails() {
+    removeStorage(STORAGE_KEYS.userName);
+    removeStorage(STORAGE_KEYS.userEmail);
+    removeStorage(STORAGE_KEYS.userPhone);
+    removeStorage(STORAGE_KEYS.userSavedAt);
+  }
+
+  function storedUserDetails() {
+    expireStoredUserDetails();
+    return {
+      name: readStorage(STORAGE_KEYS.userName) || '',
+      email: readStorage(STORAGE_KEYS.userEmail) || '',
+      phone: readStorage(STORAGE_KEYS.userPhone) || ''
+    };
+  }
+
+  // --------------------------------------------------------------- init
+
   // Initialize the widget
   function init(customConfig = {}) {
     // Merge custom configuration with defaults
@@ -81,14 +203,18 @@
       return;
     }
 
+    // Only one widget per page. A second init (a script tag included twice)
+    // would otherwise open a second socket for the same session.
+    if (document.getElementById('chatbot-widget-host')) {
+      logger.warn('Chatbot widget: already initialised on this page');
+      return;
+    }
+
     // Save session ID to localStorage
-    localStorage.setItem('chatbotSessionId', sessionId);
+    writeStorage(STORAGE_KEYS.sessionId, sessionId);
 
     // Initialize broadcast channel for cross-window/tab communication
     initBroadcastChannel();
-
-    // Load encryption utility
-    loadEncryptionUtil();
 
     // Create widget elements
     createWidgetElements();
@@ -102,24 +228,17 @@
     // Apply custom color
     applyCustomStyles();
 
-    // Display initial message
-    if (config.initialMessage) {
-      addBotMessage(config.initialMessage);
-    }
-
-    // Say so up front when nobody can answer. Letting a visitor type into a
-    // widget that implies a human is coming, at 3am, is the wrong promise.
-    if (config.availability && config.availability.open === false) {
-      const closedMessage = config.availability.offlineMessage ||
-        'We are closed at the moment.';
-      const returnHint = config.availability.opensAt
-        ? ` We reopen ${config.availability.opensAt}.`
-        : '';
-      addBotMessage(closedMessage + returnHint);
-    }
-
     // Start heartbeat to keep connection alive
     startHeartbeat();
+
+    // Restart the heartbeat when the page comes back into view. Registered
+    // once here rather than inside startHeartbeat, which used to add a fresh
+    // listener on every call.
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible' && !heartbeatInterval) {
+        startHeartbeat();
+      }
+    });
   }
 
   // Start heartbeat to keep socket connection alive
@@ -136,33 +255,6 @@
         logger.log('Heartbeat sent');
       }
     }, 30000);
-
-    // Handle page visibility changes
-    document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible') {
-        // When page becomes visible, restart heartbeat if needed
-        if (!heartbeatInterval) {
-          startHeartbeat();
-        }
-      }
-    });
-  }
-
-  // Load the encryption utility script
-  function loadEncryptionUtil() {
-    const script = document.createElement('script');
-    script.src = config.serverUrl +
-      (config.assets['widget/js/encryption.js'] || '/widget/js/encryption.js');
-    script.onload = () => {
-      encryptionUtil = new EncryptionUtil(config.serverUrl);
-      encryptionUtil.init()
-        .then(success => {
-          if (!success) {
-            console.error('Failed to initialize encryption utility');
-          }
-        });
-    };
-    document.body.appendChild(script);
   }
 
   // Initialize broadcast channel for cross-window/tab communication
@@ -174,27 +266,28 @@
 
         // Listen for messages from other tabs/windows
         broadcastChannel.onmessage = (event) => {
-          const { type, data } = event.data;
+          const { type, data } = event.data || {};
 
           switch (type) {
           case 'new-message':
-            // Add message to the UI without sending to server again
+            // Add message to the UI without sending to server again. Each tab
+            // has its own socket and hears the server directly, so this is
+            // only a fallback; the id check keeps it from doubling up.
+            if (data.id && renderedMessageIds.has(data.id)) {
+              break;
+            }
             if (data.sender === 'user') {
-              addUserMessage(data.message, false);
+              addUserMessage(data.message, false, data.id);
             } else if (data.sender === 'bot') {
               // Use the sender name if provided, otherwise default to "AI Assistant"
               const senderName = data.senderName || 'AI Assistant';
-              addBotMessage(data.message, false, senderName);
+              addBotMessage(data.message, false, senderName, data.id);
             }
             break;
 
           case 'chat-opened':
             // Sync chat window state across tabs
-            if (data.isOpen && !chatWindow.classList.contains('open')) {
-              chatWindow.classList.add('open');
-            } else if (!data.isOpen && chatWindow.classList.contains('open')) {
-              chatWindow.classList.remove('open');
-            }
+            setChatWindowOpen(Boolean(data.isOpen), false);
             break;
 
           case 'typing-indicator':
@@ -233,8 +326,35 @@
         });
       }
     } catch (error) {
-      console.warn('BroadcastChannel not supported or error initializing:', error);
+      logger.warn('BroadcastChannel not supported or error initializing:', error);
     }
+  }
+
+  // ---------------------------------------------------------- rendering
+
+  /** Which pre-chat fields to show, and whether each one is mandatory. */
+  function preChatFields() {
+    return [
+      { key: 'name', id: 'chatbot-user-name', label: 'Name', type: 'text',
+        autocomplete: 'name', required: config.requireName !== false },
+      { key: 'email', id: 'chatbot-user-email', label: 'Email', type: 'email',
+        autocomplete: 'email', required: config.requireEmail !== false },
+      { key: 'phone', id: 'chatbot-user-phone', label: 'Phone', type: 'tel',
+        autocomplete: 'tel', required: config.requirePhone === true }
+    ];
+  }
+
+  /** The form is only worth showing when at least one field is required. */
+  function preChatFormNeeded() {
+    return preChatFields().some(field => field.required);
+  }
+
+  function privacyPolicyHref() {
+    const configured = config.privacyPolicyUrl && safeUrl(config.privacyPolicyUrl);
+    if (configured && configured !== '#') {
+      return configured;
+    }
+    return `${config.serverUrl.replace(/\/+$/, '')}/privacy-policy.html`;
   }
 
   // Create the user details form
@@ -243,40 +363,80 @@
     userDetailsForm.className = 'user-details-form';
     userDetailsForm.style.display = 'none'; // Hidden by default
 
-    const formHTML = `
-      <h3 style="margin-top: 0; color: var(--primary-color, #2196f3);">Please provide your details</h3>
-      <form id="chatbot-user-details-form">
-        <div style="margin-bottom: 15px;">
-          <label for="chatbot-user-name" style="display: block; margin-bottom: 5px;">Name:</label>
-          <input type="text" id="chatbot-user-name" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;" required>
-        </div>
-        <div style="margin-bottom: 15px;">
-          <label for="chatbot-user-email" style="display: block; margin-bottom: 5px;">Email:</label>
-          <input type="email" id="chatbot-user-email" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;" required>
-        </div>
-        <div style="margin-bottom: 15px;">
-          <label for="chatbot-user-phone" style="display: block; margin-bottom: 5px;">Phone:</label>
-          <input type="tel" id="chatbot-user-phone" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;" required>
-        </div>
-        <button type="submit" style="background-color: var(--primary-color, #2196f3); color: white; border: none; padding: 10px 15px; border-radius: 4px; cursor: pointer; width: 100%;">Start Chat</button>
+    const fields = preChatFields().map(field => `
+      <div class="user-details-field">
+        <label for="${field.id}">${escapeHtml(field.label)}${field.required ? '' : ' <span class="optional">(optional)</span>'}</label>
+        <input type="${field.type}" id="${field.id}" name="${field.key}"
+               autocomplete="${field.autocomplete}"
+               ${field.required ? 'required aria-required="true"' : ''}>
+      </div>`).join('');
+
+    userDetailsForm.innerHTML = `
+      <h3 id="chatbot-user-details-title">Please provide your details</h3>
+      <form id="chatbot-user-details-form" aria-labelledby="chatbot-user-details-title" novalidate>
+        ${fields}
+        <p class="user-details-privacy">
+          By starting a chat you agree to our
+          <a href="${escapeHtml(privacyPolicyHref())}" target="_blank" rel="noopener noreferrer">privacy policy</a>.
+        </p>
+        <div class="user-details-error" role="alert" aria-live="assertive"></div>
+        <button type="submit">Start Chat</button>
       </form>
     `;
 
-    userDetailsForm.innerHTML = formHTML;
     return userDetailsForm;
   }
 
   // Create the widget DOM elements
   function createWidgetElements() {
-    // Create container
-    const container = document.createElement('div');
-    container.className = 'chatbot-widget-container';
+    // The host is the only element the page sees. Positioning lives on it
+    // (inline, so the host page's stylesheet cannot move it by accident) and
+    // everything else is inside its shadow root.
+    host = document.createElement('div');
+    host.id = 'chatbot-widget-host';
+    host.setAttribute('data-chatbot-widget', '');
+    host.style.cssText = [
+      'position: fixed',
+      'bottom: 20px',
+      config.position === 'left' ? 'left: 20px' : 'right: 20px',
+      // Above anything a normal page uses, without being the maximum, so a
+      // cookie banner that deliberately goes higher still can.
+      'z-index: 2147483000',
+      'width: auto',
+      'height: auto',
+      'margin: 0',
+      'padding: 0',
+      'border: 0',
+      'background: transparent',
+      'line-height: normal'
+    ].join('; ');
 
-    // Create chat icon button with SVG
-    chatIconButton = document.createElement('div');
+    root = host.attachShadow({ mode: 'open' });
+
+    // The stylesheet goes inside the shadow root, where it applies to the
+    // widget and to nothing else.
+    const cssLink = document.createElement('link');
+    cssLink.rel = 'stylesheet';
+    cssLink.href = config.serverUrl +
+      (config.assets['widget/css/widget.css'] || '/widget/css/widget.css');
+    root.appendChild(cssLink);
+
+    // Create container
+    container = document.createElement('div');
+    container.className = 'chatbot-widget-container';
+    if (config.position === 'left') {
+      container.classList.add('position-left');
+    }
+
+    // Launcher. A real button, so it is focusable and announced properly.
+    chatIconButton = document.createElement('button');
+    chatIconButton.type = 'button';
     chatIconButton.className = 'chat-icon-button';
+    chatIconButton.setAttribute('aria-label', `Open chat with ${config.chatbotName}`);
+    chatIconButton.setAttribute('aria-expanded', 'false');
+    chatIconButton.setAttribute('aria-haspopup', 'dialog');
     chatIconButton.innerHTML = `
-      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
         <path d="M20 2H4c-1.1 0-1.99.9-1.99 2L2 22l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zM6 9h12v2H6V9zm8 5H6v-2h8v2zm4-6H6V6h12v2z"/>
       </svg>
     `;
@@ -284,30 +444,45 @@
     // Create chat window
     chatWindow = document.createElement('div');
     chatWindow.className = 'chat-window';
+    chatWindow.setAttribute('role', 'dialog');
+    chatWindow.setAttribute('aria-label', `Chat with ${config.chatbotName}`);
+    chatWindow.setAttribute('aria-hidden', 'true');
 
     // Create chat header
     const chatHeader = document.createElement('div');
     chatHeader.className = 'chat-header';
     chatHeader.innerHTML = `
-      <h3>${config.chatbotName}</h3>
+      <h3>${escapeHtml(config.chatbotName)}</h3>
       <div class="chat-header-actions">
         <button class="human-button" type="button"
                 title="Talk to a person">Talk to a person</button>
-        <button class="close-button">&times;</button>
+        <button class="close-button" type="button" aria-label="Close chat">&times;</button>
       </div>
     `;
+
+    // Connection state. Empty while everything is fine; says "Reconnecting…"
+    // or "Offline" when it is not, so a visitor knows why Send is greyed out.
+    connectionStatus = document.createElement('div');
+    connectionStatus.className = 'connection-status';
+    connectionStatus.setAttribute('role', 'status');
+    connectionStatus.setAttribute('aria-live', 'polite');
 
     // Create chat messages container
     chatMessagesContainer = document.createElement('div');
     chatMessagesContainer.className = 'chat-messages';
 
-    // Create chat messages list
+    // Create chat messages list. `polite` so a screen reader announces new
+    // replies without interrupting what the visitor is doing.
     chatMessages = document.createElement('div');
     chatMessages.className = 'chat-messages-list';
+    chatMessages.setAttribute('role', 'log');
+    chatMessages.setAttribute('aria-live', 'polite');
+    chatMessages.setAttribute('aria-relevant', 'additions');
 
     // Create typing indicator
     typingIndicator = document.createElement('div');
     typingIndicator.className = 'typing-indicator';
+    typingIndicator.setAttribute('aria-label', 'Typing');
     typingIndicator.innerHTML = `
       <span></span>
       <span></span>
@@ -319,30 +494,50 @@
     chatInputArea.className = 'chat-input-area';
 
     // Create file upload button and hidden input
-    const fileUploadButton = document.createElement('button');
+    fileUploadButton = document.createElement('button');
+    fileUploadButton.type = 'button';
     fileUploadButton.className = 'file-upload-button';
+    fileUploadButton.setAttribute('aria-label', 'Attach a file');
+    fileUploadButton.title = 'Attach a file';
     fileUploadButton.innerHTML = `
-      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24">
+      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
         <path d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5a2.5 2.5 0 0 1 5 0v10.5c0 .55-.45 1-1 1s-1-.45-1-1V6H10v9.5a2.5 2.5 0 0 0 5 0V5c0-2.21-1.79-4-4-4S7 2.79 7 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z"/>
       </svg>
     `;
 
     fileUploadInput = document.createElement('input');
     fileUploadInput.type = 'file';
+    fileUploadInput.id = 'chatbot-file-input';
+    fileUploadInput.setAttribute('aria-label', 'Choose a file to send');
     fileUploadInput.style.display = 'none';
-    fileUploadInput.accept = '.pdf'; // Only accept PDF files for now
+    // Everything the server's MIME allowlist accepts (`routes/upload.js`).
+    // This said `.pdf` while the server had accepted images, text, Word and
+    // Excel for some time, so a customer trying to send a screenshot of the
+    // problem - the single most useful thing they can send - could not.
+    fileUploadInput.accept =
+      '.png,.jpg,.jpeg,.gif,.webp,.pdf,.txt,.csv,.doc,.docx,.xls,.xlsx';
 
     // Create file indicator
     fileIndicator = document.createElement('div');
     fileIndicator.className = 'file-indicator';
+    fileIndicator.setAttribute('role', 'status');
+    fileIndicator.setAttribute('aria-live', 'polite');
 
-    // Create chat input
+    // Create chat input, with a label a screen reader can find.
+    const inputLabel = document.createElement('label');
+    inputLabel.className = 'visually-hidden';
+    inputLabel.setAttribute('for', 'chatbot-message-input');
+    inputLabel.textContent = 'Your message';
+
     chatInput = document.createElement('input');
     chatInput.type = 'text';
+    chatInput.id = 'chatbot-message-input';
     chatInput.placeholder = 'Type your message...';
+    chatInput.autocomplete = 'off';
+    chatInput.setAttribute('enterkeyhint', 'send');
 
     // Create send button
-    const sendButton = document.createElement('button');
+    sendButton = document.createElement('button');
     sendButton.className = 'send-button';
     sendButton.type = 'button';
     sendButton.textContent = 'Send';
@@ -350,6 +545,7 @@
     // Assemble the widget
     chatInputArea.appendChild(fileUploadButton);
     chatInputArea.appendChild(fileUploadInput);
+    chatInputArea.appendChild(inputLabel);
     chatInputArea.appendChild(chatInput);
     chatInputArea.appendChild(sendButton);
 
@@ -360,6 +556,7 @@
     const userDetailsFormElement = createUserDetailsForm();
 
     chatWindow.appendChild(chatHeader);
+    chatWindow.appendChild(connectionStatus);
     chatWindow.appendChild(userDetailsFormElement);
     chatWindow.appendChild(chatMessagesContainer);
     chatWindow.appendChild(fileIndicator);
@@ -368,65 +565,256 @@
     container.appendChild(chatIconButton);
     container.appendChild(chatWindow);
 
+    root.appendChild(container);
+
     // Append to document body
-    document.body.appendChild(container);
-
-    // Add the CSS file
-    const cssLink = document.createElement('link');
-    cssLink.rel = 'stylesheet';
-    cssLink.href = config.serverUrl +
-      (config.assets['widget/css/widget.css'] || '/widget/css/widget.css');
-    document.head.appendChild(cssLink);
-
-    // Add custom styles for sender names and user details form
-    const customStyles = document.createElement('style');
-    customStyles.textContent = `
-      .message-sender {
-        font-weight: bold;
-        margin-bottom: 4px;
-        font-size: 0.9em;
-      }
-
-      .message.user .message-sender {
-        text-align: right;
-        color: #2196f3;
-      }
-
-      .message.bot .message-sender {
-        text-align: left;
-        color: #4caf50;
-      }
-
-      .message-content {
-        word-wrap: break-word;
-      }
-
-      .user-details-form {
-        padding: 15px;
-        background-color: white;
-        border-radius: 5px;
-        margin: 10px;
-        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-      }
-
-      .user-details-form h3 {
-        margin-top: 0;
-        margin-bottom: 15px;
-        font-size: 16px;
-      }
-
-      .user-details-form input {
-        margin-bottom: 10px;
-      }
-    `;
-    document.head.appendChild(customStyles);
+    document.body.appendChild(host);
   }
-  // Initialize socket.io connection
-  function initSocketConnection() {
-    // Load Socket.io from the server
+
+  // Apply custom styles based on configuration
+  function applyCustomStyles() {
+    // Custom properties inherit across the shadow boundary, so setting them
+    // on the host is enough for every rule inside the root to see them - and
+    // it leaves the page's own `:root` alone.
+    if (config.primaryColor) {
+      host.style.setProperty('--primary-color', config.primaryColor);
+    }
+  }
+
+  // ------------------------------------------------------------- socket
+
+  /**
+   * Hand the socket.io client to `callback`, loading it from the server only
+   * when the page has not already got one. Overwriting a `window.io` the host
+   * page relies on would break their own realtime features.
+   */
+  function withSocketIo(callback) {
+    if (typeof window.io === 'function') {
+      callback(window.io);
+      return;
+    }
+
     const script = document.createElement('script');
     script.src = `${config.serverUrl}/socket.io/socket.io.js`;
+    script.async = true;
     script.onload = () => {
+      if (typeof window.io !== 'function') {
+        logger.error('Chatbot widget: socket.io client did not load');
+        setConnectionState('offline');
+        return;
+      }
+      callback(window.io);
+    };
+    script.onerror = () => {
+      logger.error('Chatbot widget: could not load the socket.io client');
+      setConnectionState('offline');
+    };
+    document.head.appendChild(script);
+  }
+
+  /** What the widget sends to (re)claim its session. */
+  function resumeSession() {
+    const details = storedUserDetails();
+    const payload = {
+      sessionId,
+      sessionToken,
+      widgetKey: config.widgetKey,
+      pageUrl: window.location.origin
+    };
+
+    if (details.name) {
+      payload.userName = details.name;
+    }
+    if (details.email) {
+      payload.userEmail = details.email;
+    }
+    if (details.phone) {
+      payload.userPhone = details.phone;
+    }
+
+    socket.emit('resume-session', payload);
+  }
+
+  /** Read the text of a message whichever field the server used. */
+  function messageText(message) {
+    if (typeof message.text === 'string') {
+      return message.text;
+    }
+    if (typeof message.content === 'string') {
+      return message.content;
+    }
+    return '';
+  }
+
+  /**
+   * Render a live message from the server, once.
+   *
+   * @returns {boolean} whether it was new
+   */
+  function renderIncoming(message, sender, kind) {
+    const id = message.id || message.messageId || null;
+    if (id && renderedMessageIds.has(id)) {
+      return false;
+    }
+
+    const text = messageText(message);
+
+    if (kind === 'user') {
+      addUserMessage(text, false, id);
+      if (message.fileUrl) {
+        addUserMessage(`I've uploaded a file: ${message.fileName}`, false);
+      }
+      return true;
+    }
+
+    addBotMessage(text, true, sender, id);
+
+    // Products or appointment times, rendered properly rather than
+    // described in a sentence. This is what knowing the shape buys.
+    if (message.cards && Array.isArray(message.cards.items) && message.cards.items.length) {
+      addCards(message.cards);
+    }
+
+    // Quick replies, when the workflow offered a set of choices.
+    if (Array.isArray(message.choices) && message.choices.length > 0) {
+      addQuickReplies(message.choices);
+    }
+
+    // Handle file responses if present
+    if (message.fileUrl) {
+      addFileResponse(message.fileUrl, message.fileName, sender);
+    }
+
+    return true;
+  }
+
+  function sendReadReceipt(message) {
+    socket.emit('message-read', {
+      sessionId,
+      messageId: message.id || 'latest',
+      timestamp: new Date().toISOString()
+    });
+  }
+
+  /**
+   * The transcript the server already holds for this session, drawn once.
+   * Nothing here is new, so no read receipts, no cross-tab broadcast, and no
+   * typing indicator changes.
+   */
+  function renderHistory(messages) {
+    (messages || []).forEach(message => {
+      const id = message.id || message._id || null;
+      if (id && renderedMessageIds.has(id)) {
+        return;
+      }
+
+      const text = messageText(message);
+      const timestamp = message.timestamp ? new Date(message.timestamp) : null;
+
+      const fromOperator = message.sender === 'operator' || message.isOperator === true;
+      const operatorName = message.operatorName || message.senderName || 'Operator';
+
+      if (message.sender === 'user') {
+        addUserMessage(text, false, id, timestamp);
+        if (message.fileUrl && message.fileName) {
+          addUserMessage(`I've uploaded a file: ${message.fileName}`, false, null, timestamp);
+        }
+      } else if (fromOperator) {
+        addBotMessage(text, false, operatorName, id, timestamp);
+      } else {
+        addBotMessage(text, false, 'AI Assistant', id, timestamp);
+      }
+
+      if (message.fileUrl && message.sender !== 'user') {
+        addFileResponse(message.fileUrl, message.fileName, fromOperator ? operatorName : 'AI Assistant');
+      }
+    });
+  }
+
+  /**
+   * The greeting, for a fresh session only. Somebody returning to a
+   * conversation does not need to be welcomed to it again.
+   */
+  function showGreetingIfFresh() {
+    if (greetingShown) {
+      return;
+    }
+    greetingShown = true;
+
+    if (renderedMessageIds.size === 0 && !chatMessages.querySelector('.message') && config.initialMessage) {
+      addBotMessage(config.initialMessage, false);
+    }
+
+    showClosedNotice();
+  }
+
+  /**
+   * Say so up front when nobody can answer. Letting a visitor type into a
+   * widget that implies a human is coming, at 3am, is the wrong promise.
+   */
+  function showClosedNotice() {
+    if (closedNoticeShown) {
+      return;
+    }
+    closedNoticeShown = true;
+
+    if (config.availability && config.availability.open === false) {
+      const closedMessage = config.availability.offlineMessage ||
+        'We are closed at the moment.';
+      const returnHint = config.availability.opensAt
+        ? ` We reopen ${config.availability.opensAt}.`
+        : '';
+      addBotMessage(closedMessage + returnHint, false);
+    }
+  }
+
+  // The server has said it cannot take a conversation right now. The
+  // transcript stays readable; only sending is switched off.
+  let chatUnavailable = false;
+
+  function setChatUnavailable(unavailable) {
+    if (chatUnavailable === unavailable) {
+      return;
+    }
+    chatUnavailable = unavailable;
+
+    if (unavailable) {
+      historyReceived = true;
+      greetingShown = true;
+      addSystemNotice('Chat is unavailable at the moment. Please try again later.');
+    }
+    setConnectionState(socket && socket.connected ? 'online' : 'reconnecting');
+  }
+
+  /**
+   * Reflect the connection in the UI.
+   *
+   * Nothing is queued while offline: a message typed into a dead socket and
+   * quietly replayed later reads as sent when it was not. Disabling Send
+   * says the truth.
+   */
+  function setConnectionState(state) {
+    const online = state === 'online';
+    const canSend = online && !chatUnavailable;
+
+    connectionStatus.textContent = state === 'online'
+      ? (chatUnavailable ? 'Chat unavailable' : '')
+      : (state === 'reconnecting' ? 'Reconnecting…' : 'Offline');
+    connectionStatus.classList.toggle('active', !canSend);
+
+    sendButton.disabled = !canSend;
+    fileUploadButton.disabled = !canSend || uploading;
+    chatInput.disabled = !canSend;
+    chatInput.placeholder = canSend
+      ? 'Type your message...'
+      : (online ? 'Chat is unavailable right now' : 'Waiting for connection...');
+  }
+
+  // Initialize socket.io connection
+  function initSocketConnection() {
+    setConnectionState('reconnecting');
+
+    withSocketIo(io => {
       // Connect to server with reconnection options
       socket = io(config.serverUrl, {
         // The key travels in the handshake so the server can resolve the
@@ -445,208 +833,137 @@
         timeout: 20000
       });
 
-      // Handle encryption key exchange
-      socket.on('encryption-init', async (data) => {
-        if (encryptionUtil && data.serverPublicKey) {
-          try {
-            // Set server's public key (now awaiting the async method)
-            await encryptionUtil.setServerPublicKey(data.serverPublicKey);
+      // -- session protocol --------------------------------------------
 
-            // Send client's public key to server
-            const publicKey = await encryptionUtil.getPublicKey();
-            socket.emit('client-public-key', {
-              sessionId,
-              publicKey
-            });
-          } catch (error) {
-            logger.error('Error during encryption setup:', error);
+      // Sent on every verified resume, echoing the token. A token of null
+      // means the server would not create a conversation - the tenant's
+      // quota is spent - and the bot's explanation follows as a message.
+      socket.on('session-ready', (data = {}) => {
+        if (data.sessionId && data.sessionId !== sessionId) {
+          sessionId = data.sessionId;
+          writeStorage(STORAGE_KEYS.sessionId, sessionId);
+        }
+        if (data.sessionToken) {
+          sessionToken = data.sessionToken;
+          writeStorage(STORAGE_KEYS.sessionToken, sessionToken);
+          setChatUnavailable(false);
+        } else if (Object.prototype.hasOwnProperty.call(data, 'sessionToken') && data.sessionToken === null) {
+          setChatUnavailable(true);
+        }
+
+        // If the server has no history to send, the greeting still needs to
+        // appear; give the history event a moment to arrive first.
+        setTimeout(() => {
+          if (!historyReceived) {
+            showGreetingIfFresh();
           }
-        }
+        }, 1500);
       });
 
-      // Handle encryption ready status
-      socket.on('encryption-ready', (data) => {
-        if (!data.success) {
-          logger.error('Encryption setup failed:', data.error);
-        } else {
-          logger.log('End-to-end encryption enabled');
-        }
+      // The id we hold is not ours to resume - a token mismatch, or a session
+      // that has been deleted. Start again with a clean one rather than
+      // arguing.
+      socket.on('session-rejected', () => {
+        removeStorage(STORAGE_KEYS.sessionId);
+        removeStorage(STORAGE_KEYS.sessionToken);
+        sessionToken = null;
+        sessionId = generateSessionId();
+        writeStorage(STORAGE_KEYS.sessionId, sessionId);
+        resumeSession();
       });
+
+      socket.on('session-history', (data = {}) => {
+        historyReceived = true;
+        renderHistory(data.messages);
+        showGreetingIfFresh();
+      });
+
+      // Something the server could not do with what we sent. A small line in
+      // the transcript, where the visitor is looking, rather than a console
+      // entry nobody sees.
+      socket.on('error', (data = {}) => {
+        const message = typeof data === 'string' ? data : data.message;
+        addSystemNotice(message || 'Something went wrong. Please try again.');
+        setTypingIndicator(false);
+      });
+
+      // -- messages -----------------------------------------------------
 
       // Listen for bot messages
-      socket.on('bot-message', (message) => {
+      socket.on('bot-message', (message = {}) => {
         setTypingIndicator(false);
-
-        // Decrypt message if it's encrypted
-        let messageText = message.text;
-        if (message.encrypted && encryptionUtil && encryptionUtil.isEncryptionReady()) {
-          const decrypted = encryptionUtil.decryptMessage(message.encryptedMessage, message.nonce);
-          if (decrypted) {
-            messageText = decrypted;
-          } else {
-            logger.error('Failed to decrypt message');
-            messageText = 'Error: Could not decrypt message';
-          }
-        }
 
         // For bot messages, the sender is always AI Assistant
         const sender = 'AI Assistant';
 
-        addBotMessage(messageText, true, sender);
-
-        // Products or appointment times, rendered properly rather than
-        // described in a sentence. This is what knowing the shape buys.
-        if (message.cards && Array.isArray(message.cards.items) && message.cards.items.length) {
-          addCards(message.cards);
+        if (!renderIncoming(message, sender, 'bot')) {
+          return;
         }
 
-        // Quick replies, when the workflow offered a set of choices.
-        if (Array.isArray(message.choices) && message.choices.length > 0) {
-          addQuickReplies(message.choices);
-        }
-
-        // Handle file responses if present
-        if (message.fileUrl) {
-          addFileResponse(message.fileUrl, message.fileName, sender);
-        }
-
-        // Send read receipt to server
-        socket.emit('message-read', {
-          sessionId,
-          messageId: message.id || 'latest',
-          timestamp: new Date().toISOString()
-        });
+        sendReadReceipt(message);
 
         // Broadcast to other tabs/windows
         if (broadcastChannel) {
           broadcastChannel.postMessage({
             type: 'new-message',
             data: {
+              id: message.id || null,
               sender: 'bot',
               senderName: sender,
-              message: messageText
+              message: messageText(message)
             }
           });
         }
       });
 
       // Listen for operator messages
-      socket.on('operator-message', (message) => {
+      socket.on('operator-message', (message = {}) => {
         setTypingIndicator(false);
-
-        // Decrypt message if it's encrypted
-        let messageText = message.text;
-        if (message.encrypted && encryptionUtil && encryptionUtil.isEncryptionReady()) {
-          const decrypted = encryptionUtil.decryptMessage(message.encryptedMessage, message.nonce);
-          if (decrypted) {
-            messageText = decrypted;
-          } else {
-            logger.error('Failed to decrypt message');
-            messageText = 'Error: Could not decrypt message';
-          }
-        }
 
         // Get operator name from message
         const sender = message.senderName || 'Operator';
 
-        addBotMessage(messageText, true, sender);
-
-        // Products or appointment times, rendered properly rather than
-        // described in a sentence. This is what knowing the shape buys.
-        if (message.cards && Array.isArray(message.cards.items) && message.cards.items.length) {
-          addCards(message.cards);
+        if (!renderIncoming(message, sender, 'operator')) {
+          return;
         }
 
-        // Quick replies, when the workflow offered a set of choices.
-        if (Array.isArray(message.choices) && message.choices.length > 0) {
-          addQuickReplies(message.choices);
-        }
-
-        // Handle file responses if present
-        if (message.fileUrl) {
-          addFileResponse(message.fileUrl, message.fileName, sender);
-        }
-
-        // Send read receipt to server
-        socket.emit('message-read', {
-          sessionId,
-          messageId: message.id || 'latest',
-          timestamp: new Date().toISOString()
-        });
+        sendReadReceipt(message);
 
         // Broadcast to other tabs/windows
         if (broadcastChannel) {
           broadcastChannel.postMessage({
             type: 'new-message',
             data: {
+              id: message.id || null,
               sender: 'bot',
               senderName: sender,
-              message: messageText
+              message: messageText(message)
             }
           });
         }
       });
 
-      // Listen for user messages (for chat history)
-      socket.on('user-message', (message) => {
-        // Decrypt message if it's encrypted
-        let messageText = message.text;
-        if (message.encrypted && encryptionUtil && encryptionUtil.isEncryptionReady()) {
-          const decrypted = encryptionUtil.decryptMessage(message.encryptedMessage, message.nonce);
-          if (decrypted) {
-            messageText = decrypted;
-          } else {
-            console.error('Failed to decrypt message');
-            messageText = 'Error: Could not decrypt message';
-          }
+      // Listen for user messages sent from another tab or device on the
+      // same session. Our own messages are drawn when they are sent, so the
+      // echo is dropped by id.
+      socket.on('user-message', (message = {}) => {
+        if (!renderIncoming(message, null, 'user')) {
+          return;
         }
 
-        // Add the message to the UI without sending to server again
-        addUserMessage(messageText, false);
-
-        // Handle file responses if present
-        if (message.fileUrl) {
-          // Add file message
-          addUserMessage(`I've uploaded a file: ${message.fileName}`, false);
-        }
-
-        // Send read receipt to server
-        socket.emit('message-read', {
-          sessionId,
-          messageId: message.id || 'latest',
-          timestamp: new Date().toISOString()
-        });
+        sendReadReceipt(message);
       });
 
-      // Listen for typing indicator
-      socket.on('bot-typing', () => {
-        setTypingIndicator(true);
-
-        // Broadcast typing indicator to other tabs/windows
-        if (broadcastChannel) {
-          broadcastChannel.postMessage({
-            type: 'typing-indicator',
-            data: {
-              isTyping: true
-            }
-          });
-        }
+      // Listen for typing indicator. The server says when it starts and when
+      // it stops; an event without a flag is the older "started" form.
+      socket.on('bot-typing', (data) => {
+        const typing = data && typeof data.typing === 'boolean' ? data.typing : true;
+        setTypingIndicator(typing);
       });
 
       // Listen for operator typing indicator
-      socket.on('operator-typing', (data) => {
-        const { isTyping } = data;
-        setTypingIndicator(isTyping);
-
-        // Broadcast typing indicator to other tabs/windows
-        if (broadcastChannel) {
-          broadcastChannel.postMessage({
-            type: 'typing-indicator',
-            data: {
-              isTyping
-            }
-          });
-        }
+      socket.on('operator-typing', (data = {}) => {
+        setTypingIndicator(Boolean(data.isTyping));
       });
 
       /**
@@ -695,7 +1012,7 @@
       });
 
       // Listen for read receipts
-      socket.on('message-read', (data) => {
+      socket.on('message-read', (data = {}) => {
         // Update read status in the UI
         updateMessageReadStatus(data.messageId);
       });
@@ -703,66 +1020,41 @@
       // Show user details form when requested by operator
       socket.on('request-user-details', () => {
         if (!chatWindow.classList.contains('open')) {
-          toggleChatWindow();
+          setChatWindowOpen(true);
         }
-        userDetailsForm.style.display = 'block';
-        chatMessagesContainer.style.display = 'none';
-        fileIndicator.style.display = 'none';
-        const nameInput = document.getElementById('chatbot-user-name');
-        if (nameInput) {
-          nameInput.value = localStorage.getItem('chatbotUserName') || '';
-          nameInput.focus();
-        }
-        document.getElementById('chatbot-user-email').value = localStorage.getItem('chatbotUserEmail') || '';
-        document.getElementById('chatbot-user-phone').value = localStorage.getItem('chatbotUserPhone') || '';
+        showUserDetailsForm();
       });
 
-      // Handle connection events
+      // -- connection ---------------------------------------------------
+
+      // Load chat history when socket is connected. The same resume runs on
+      // every connect, including reconnects, so the dead `reconnect` handler
+      // that used to duplicate it is gone. Anything already on screen stays
+      // on screen: history is deduplicated by id.
       socket.on('connect', () => {
         logger.log('Socket connected');
+        everConnected = true;
+        setConnectionState('online');
+        resumeSession();
       });
 
       socket.on('disconnect', (reason) => {
         logger.log('Socket disconnected:', reason);
+        setTypingIndicator(false);
+        setConnectionState('reconnecting');
       });
 
+      // socket.io retries on its own with backoff; calling connect() by hand
+      // here used to stack a second reconnect loop on top of it.
       socket.on('connect_error', (error) => {
         logger.error('Connection error:', error);
-        // Try to reconnect after a short delay
-        setTimeout(() => {
-          socket.connect();
-        }, 1000);
+        setConnectionState(everConnected ? 'reconnecting' : 'offline');
       });
-
-      // Handle reconnection
-      socket.on('reconnect', async () => {
-        logger.log('Socket reconnected');
-        // Re-establish session
-        const publicKey = encryptionUtil ? await encryptionUtil.getPublicKey() : null;
-        socket.emit('resume-session', {
-          widgetKey: config.widgetKey,
-          pageUrl: window.location.origin,
-          sessionId,
-          publicKey
-        });
-      });
-
-      // Load chat history when socket is connected
-      socket.on('connect', async () => {
-        logger.log('Socket connected');
-        // Request chat history
-        const publicKey = encryptionUtil ? await encryptionUtil.getPublicKey() : null;
-        socket.emit('resume-session', {
-          widgetKey: config.widgetKey,
-          pageUrl: window.location.origin,
-          sessionId,
-          publicKey
-        });
-      });
-    };
-
-    document.body.appendChild(script);
+    });
   }
+
+  // ------------------------------------------------------------- events
+
   // Add event listeners to widget elements
   function addEventListeners() {
     // Toggle chat window on icon click
@@ -771,6 +1063,14 @@
     // Close chat window on close button click
     const closeButton = chatWindow.querySelector('.close-button');
     closeButton.addEventListener('click', closeChatWindow);
+
+    // Escape closes the window, as any dialog does.
+    chatWindow.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && chatWindow.classList.contains('open')) {
+        closeChatWindow();
+        chatIconButton.focus();
+      }
+    });
 
     // Add event listener to user details form
     const userDetailsFormElement = userDetailsForm.querySelector('form');
@@ -795,18 +1095,12 @@
     });
 
     // Send message on button click.
-    //
-    // Selected by class. This was `button:last-child`, which returns the first
-    // button in the document that happens to be the last child of its parent —
-    // and that is the close button in the header, not this one. So clicking
-    // Send did nothing at all, and clicking the × sent the message on the way
-    // out. Only the Enter key ever worked.
-    const sendButton = chatWindow.querySelector('.send-button');
     sendButton.addEventListener('click', sendMessage);
 
     // Send message on Enter key press
-    chatInput.addEventListener('keypress', (e) => {
-      if (e.key === 'Enter') {
+    chatInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
         sendMessage();
       }
     });
@@ -814,7 +1108,7 @@
     // Track user typing
     let typingTimeout;
     chatInput.addEventListener('input', () => {
-      if (socket) {
+      if (socket && socket.connected) {
         // Clear existing timeout
         clearTimeout(typingTimeout);
 
@@ -826,18 +1120,21 @@
 
         // Set timeout to stop typing indicator after 2 seconds of inactivity
         typingTimeout = setTimeout(() => {
-          socket.emit('user-typing', {
-            sessionId,
-            isTyping: false
-          });
+          if (socket && socket.connected) {
+            socket.emit('user-typing', {
+              sessionId,
+              isTyping: false
+            });
+          }
         }, 2000);
       }
     });
 
     // File upload button click
-    const fileUploadButton = chatWindow.querySelector('.file-upload-button');
     fileUploadButton.addEventListener('click', () => {
-      fileUploadInput.click();
+      if (!uploading) {
+        fileUploadInput.click();
+      }
     });
 
     // File upload change
@@ -847,7 +1144,7 @@
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible') {
         // When tab becomes visible, check socket connection and reconnect if needed
-        if (socket && !socket.connected) {
+        if (socket && !socket.connected && !socket.active) {
           logger.log('Reconnecting socket on visibility change');
           socket.connect();
         }
@@ -863,120 +1160,139 @@
     });
   }
 
-  // Apply custom styles based on configuration
-  function applyCustomStyles() {
-    const root = document.documentElement;
-
-    if (config.primaryColor) {
-      root.style.setProperty('--primary-color', config.primaryColor);
-    }
-
-    // Adjust position if needed
-    if (config.position === 'left') {
-      const container = document.querySelector('.chatbot-widget-container');
-      container.style.right = 'auto';
-      container.style.left = '20px';
-
-      const chatWindow = document.querySelector('.chat-window');
-      chatWindow.style.right = 'auto';
-      chatWindow.style.left = '0';
-    }
-  }
   // Check if user details exist in localStorage
   function userDetailsExist() {
-    return localStorage.getItem('chatbotUserName') !== null;
+    const details = storedUserDetails();
+    return preChatFields().every(field => !field.required || details[field.key]);
+  }
+
+  function showUserDetailsForm() {
+    const details = storedUserDetails();
+
+    userDetailsForm.style.display = 'block';
+    chatMessagesContainer.style.display = 'none';
+    fileIndicator.style.display = 'none';
+
+    preChatFields().forEach(field => {
+      const input = root.getElementById(field.id);
+      if (input) {
+        input.value = details[field.key] || '';
+      }
+    });
+
+    const firstInput = userDetailsForm.querySelector('input');
+    if (firstInput) {
+      firstInput.focus();
+    }
+  }
+
+  function showChatInterface() {
+    userDetailsForm.style.display = 'none';
+    chatMessagesContainer.style.display = 'block';
+    fileIndicator.style.display = 'block';
+    scrollToBottom();
   }
 
   // Handle user details form submission
   function handleUserDetailsSubmit(e) {
     e.preventDefault();
 
-    // Get form values
-    const userName = document.getElementById('chatbot-user-name').value;
-    const userEmail = document.getElementById('chatbot-user-email').value;
-    const userPhone = document.getElementById('chatbot-user-phone').value;
+    const form = e.target;
+    const errorBox = userDetailsForm.querySelector('.user-details-error');
+    const values = {};
 
-    // Save to localStorage
-    localStorage.setItem('chatbotUserName', userName);
-    localStorage.setItem('chatbotUserEmail', userEmail);
-    localStorage.setItem('chatbotUserPhone', userPhone);
+    // Validate by hand so the message shows inside the widget: native
+    // validation bubbles render outside the shadow root and are easy to miss.
+    for (const field of preChatFields()) {
+      const input = root.getElementById(field.id);
+      const value = input ? input.value.trim() : '';
+      values[field.key] = value;
+
+      if (field.required && !value) {
+        errorBox.textContent = `Please enter your ${field.label.toLowerCase()}.`;
+        input.focus();
+        return;
+      }
+      if (value && field.type === 'email' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) {
+        errorBox.textContent = 'Please enter a valid email address.';
+        input.focus();
+        return;
+      }
+    }
+    errorBox.textContent = '';
+
+    // Save to localStorage, dated so it can be forgotten again.
+    writeStorage(STORAGE_KEYS.userName, values.name);
+    writeStorage(STORAGE_KEYS.userEmail, values.email);
+    writeStorage(STORAGE_KEYS.userPhone, values.phone);
+    writeStorage(STORAGE_KEYS.userSavedAt, String(Date.now()));
 
     // Send user details to server
-    if (socket) {
+    if (socket && socket.connected) {
       socket.emit('user-details', {
         sessionId,
+        sessionToken,
         // Carry the tenant hints: this event usually creates the conversation
         // document, so it must be able to attribute it to a company.
         widgetKey: config.widgetKey,
         pageUrl: window.location.origin,
         externalId: config.externalId,
         userHash: config.userHash,
-        name: userName,
-        email: userEmail,
-        phone: userPhone
+        name: values.name,
+        email: values.email,
+        phone: values.phone
       });
     }
 
     // Hide form and show chat interface
-    userDetailsForm.style.display = 'none';
-    chatMessagesContainer.style.display = 'block';
-    fileIndicator.style.display = 'block';
+    showChatInterface();
+    form.reset();
 
     // Focus on chat input
     chatInput.focus();
   }
 
+  /**
+   * Open or close the window, keeping the launcher's state and the other tabs
+   * in step.
+   */
+  function setChatWindowOpen(open, broadcast = true) {
+    chatWindow.classList.toggle('open', open);
+    chatWindow.setAttribute('aria-hidden', open ? 'false' : 'true');
+    chatIconButton.setAttribute('aria-expanded', open ? 'true' : 'false');
+    chatIconButton.setAttribute('aria-label',
+      `${open ? 'Close' : 'Open'} chat with ${config.chatbotName}`);
+
+    if (broadcast && broadcastChannel) {
+      broadcastChannel.postMessage({
+        type: 'chat-opened',
+        data: { isOpen: open }
+      });
+    }
+  }
+
   // Toggle chat window visibility
   function toggleChatWindow() {
-    chatWindow.classList.toggle('open');
+    const opening = !chatWindow.classList.contains('open');
+    setChatWindowOpen(opening);
 
-    if (chatWindow.classList.contains('open')) {
+    if (opening) {
       // Check if user details exist
-      if (userDetailsExist()) {
+      if (!preChatFormNeeded() || userDetailsExist()) {
         // Show chat interface
-        userDetailsForm.style.display = 'none';
-        chatMessagesContainer.style.display = 'block';
-        fileIndicator.style.display = 'block';
+        showChatInterface();
         chatInput.focus();
       } else {
         // Show user details form
-        userDetailsForm.style.display = 'block';
-        chatMessagesContainer.style.display = 'none';
-        fileIndicator.style.display = 'none';
-
-        // Focus on first input field
-        const nameInput = document.getElementById('chatbot-user-name');
-        if (nameInput) {
-          nameInput.focus();
-        }
+        showUserDetailsForm();
       }
 
       // Emit event to the server that chat was opened
-      if (socket) {
+      if (socket && socket.connected) {
         socket.emit('chat-opened', {
           sessionId,
           widgetKey: config.widgetKey,
           pageUrl: window.location.origin
-        });
-      }
-
-      // Broadcast chat window state to other tabs/windows
-      if (broadcastChannel) {
-        broadcastChannel.postMessage({
-          type: 'chat-opened',
-          data: {
-            isOpen: true
-          }
-        });
-      }
-    } else {
-      // Broadcast chat window state to other tabs/windows
-      if (broadcastChannel) {
-        broadcastChannel.postMessage({
-          type: 'chat-opened',
-          data: {
-            isOpen: false
-          }
         });
       }
     }
@@ -984,167 +1300,198 @@
 
   // Close chat window
   function closeChatWindow() {
-    chatWindow.classList.remove('open');
-
-    // Broadcast chat window state to other tabs/windows
-    if (broadcastChannel) {
-      broadcastChannel.postMessage({
-        type: 'chat-opened',
-        data: {
-          isOpen: false
-        }
-      });
-    }
+    setChatWindowOpen(false);
   }
+
   // Send a message to the server
   function sendMessage() {
     const message = chatInput.value.trim();
 
-    if (message) {
-      // Add message to UI
-      addUserMessage(message, true);
-
-      // Clear input
-      chatInput.value = '';
-
-      // Don't automatically show typing indicator when user sends a message
-      // Let the server explicitly trigger it with 'bot-typing' or 'operator-typing' events
-
-      // Inform the server that the user is no longer typing
-      if (socket) {
-        socket.emit('user-typing', {
-          sessionId,
-          isTyping: false
-        });
-      }
-
-      // Send to server
-      if (socket) {
-        // Generate a local message ID for tracking read status
-        const messageId = generateMessageId();
-        const timestamp = new Date().toISOString();
-
-        // Prepare message data
-        const messageData = {
-          sessionId,
-          messageId,
-          timestamp
-        };
-
-        // Add user name if available
-        const userName = localStorage.getItem('chatbotUserName');
-        if (userName) {
-          messageData.userName = userName;
-        }
-
-        // Check if encryption is available and ready
-        if (encryptionUtil && encryptionUtil.isEncryptionReady()) {
-          // Encrypt the message
-          const encrypted = encryptionUtil.encryptMessage(message);
-
-          if (encrypted) {
-            // Send encrypted message
-            messageData.encrypted = true;
-            messageData.encryptedMessage = encrypted.encryptedMessage;
-            messageData.nonce = encrypted.nonce;
-          } else {
-            // Fallback to plaintext if encryption fails
-            messageData.message = message;
-            console.warn('Encryption failed, sending in plaintext');
-          }
-        } else {
-          // Send plaintext message
-          messageData.message = message;
-        }
-
-        // Send the message to the server
-        socket.emit('user-message', messageData);
-      }
+    if (!message) {
+      return;
     }
+
+    // Nothing is queued while disconnected: see setConnectionState.
+    if (!socket || !socket.connected) {
+      addSystemNotice('You are offline. Your message was not sent.');
+      return;
+    }
+    if (chatUnavailable) {
+      addSystemNotice('Chat is unavailable at the moment. Your message was not sent.');
+      return;
+    }
+
+    // Generate a local message ID for tracking read status
+    const messageId = generateMessageId();
+    const timestamp = new Date().toISOString();
+
+    // Add message to UI
+    addUserMessage(message, true, messageId);
+
+    // Clear input
+    chatInput.value = '';
+
+    // Inform the server that the user is no longer typing
+    socket.emit('user-typing', {
+      sessionId,
+      isTyping: false
+    });
+
+    // Prepare message data
+    const messageData = {
+      sessionId,
+      sessionToken,
+      messageId,
+      timestamp,
+      message
+    };
+
+    // Add user name if available
+    const details = storedUserDetails();
+    if (details.name) {
+      messageData.userName = details.name;
+    }
+
+    // Send the message to the server
+    socket.emit('user-message', messageData);
   }
+
+  function setUploading(state) {
+    uploading = state;
+    fileUploadButton.disabled = state || chatUnavailable || !(socket && socket.connected);
+    fileUploadButton.classList.toggle('uploading', state);
+    fileUploadButton.setAttribute('aria-busy', state ? 'true' : 'false');
+  }
+
   // Handle file upload
   function handleFileUpload(event) {
     const file = event.target.files[0];
 
-    if (file) {
-      // Show file indicator
-      fileIndicator.textContent = `File selected: ${file.name}`;
-      fileIndicator.classList.add('active');
+    if (!file) {
+      return;
+    }
 
-      // Broadcast file selection to other tabs/windows
+    if (file.size > MAX_UPLOAD_BYTES) {
+      fileUploadInput.value = '';
+      fileIndicator.textContent = 'That file is too large. The limit is 10 MB.';
+      fileIndicator.classList.add('active', 'error');
+      setTimeout(() => fileIndicator.classList.remove('active', 'error'), 5000);
+      return;
+    }
+
+    if (!socket || !socket.connected) {
+      fileUploadInput.value = '';
+      addSystemNotice('You are offline. The file was not sent.');
+      return;
+    }
+
+    // Show file indicator
+    fileIndicator.textContent = `Uploading ${file.name}…`;
+    fileIndicator.classList.remove('error');
+    fileIndicator.classList.add('active');
+    setUploading(true);
+
+    // Broadcast file selection to other tabs/windows
+    if (broadcastChannel) {
+      broadcastChannel.postMessage({
+        type: 'file-uploaded',
+        data: {
+          fileName: file.name
+        }
+      });
+    }
+
+    // Create FormData. The token proves this browser owns the session the
+    // file is being attached to.
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('sessionId', sessionId);
+    formData.append('sessionToken', sessionToken || '');
+
+    const clearIndicator = () => {
+      fileIndicator.classList.remove('active');
+
+      // Broadcast file indicator clearing to other tabs/windows
       if (broadcastChannel) {
         broadcastChannel.postMessage({
           type: 'file-uploaded',
           data: {
-            fileName: file.name
+            fileName: null
           }
         });
       }
+    };
 
-      // Create FormData
-      const formData = new FormData();
-      formData.append('file', file);
-      formData.append('sessionId', sessionId);
+    const fail = (reason) => {
+      logger.error('File upload failed:', reason);
+      fileIndicator.textContent = reason || 'Sorry, there was a problem uploading your file. Please try again.';
+      fileIndicator.classList.add('error');
+      setTimeout(() => {
+        fileIndicator.classList.remove('error');
+        clearIndicator();
+      }, 5000);
+    };
 
-      // Upload file
-      fetch(`${config.serverUrl}/api/upload`, {
-        method: 'POST',
-        body: formData
+    // Upload file
+    fetch(`${config.serverUrl}/api/upload`, {
+      method: 'POST',
+      body: formData,
+      credentials: 'include'
+    })
+      .then(response => response.json().catch(() => ({})).then(data => ({ ok: response.ok, status: response.status, data })))
+      .then(({ ok, status, data }) => {
+        if (!ok || !data.success) {
+          const reason = status === 413
+            ? 'That file is too large. The limit is 10 MB.'
+            : (data.error || 'Sorry, there was a problem uploading your file. Please try again.');
+          fail(reason);
+          return;
+        }
+
+        // Add message about file upload
+        addUserMessage(`I've uploaded a file: ${file.name}`, true);
+
+        fileIndicator.textContent = `Sent ${file.name}`;
+        setTimeout(clearIndicator, 3000);
+
+        // Notify server about uploaded file
+        if (socket && socket.connected) {
+          socket.emit('file-uploaded', {
+            sessionId,
+            sessionToken,
+            fileId: data.fileId,
+            fileName: file.name,
+            timestamp: new Date().toISOString()
+          });
+        }
       })
-        .then(response => response.json())
-        .then(data => {
-          if (data.success) {
-          // Add message about file upload
-            addUserMessage(`I've uploaded a file: ${file.name}`, true);
+      .catch(error => {
+        fail(error && error.message ? null : null);
+      })
+      .finally(() => {
+        fileUploadInput.value = '';
+        setUploading(false);
+      });
+  }
 
-            // Don't automatically show typing indicator when user uploads a file
-            // Let the server explicitly trigger it with 'bot-typing' or 'operator-typing' events
+  // ----------------------------------------------------------- messages
 
-            // Clear file input and indicator
-            fileUploadInput.value = '';
-            setTimeout(() => {
-              fileIndicator.classList.remove('active');
-
-              // Broadcast file indicator clearing to other tabs/windows
-              if (broadcastChannel) {
-                broadcastChannel.postMessage({
-                  type: 'file-uploaded',
-                  data: {
-                    fileName: null
-                  }
-                });
-              }
-            }, 3000);
-
-            // Notify server about uploaded file
-            if (socket) {
-              socket.emit('file-uploaded', {
-                sessionId,
-                fileId: data.fileId,
-                fileName: file.name,
-                timestamp: new Date().toISOString()
-              });
-            }
-          } else {
-            console.error('File upload failed:', data.error);
-            // Show error message
-            addBotMessage('Sorry, there was a problem uploading your file. Please try again.');
-          }
-        })
-        .catch(error => {
-          console.error('File upload error:', error);
-          addBotMessage('Sorry, there was a problem uploading your file. Please try again.');
-        });
+  /** Remember that a message is on screen. */
+  function trackRendered(id) {
+    if (id) {
+      renderedMessageIds.add(id);
     }
   }
 
   // Add a user message to the chat
-  function addUserMessage(message, broadcast = true) {
-    const messageId = generateMessageId();
-    const timestamp = new Date();
+  function addUserMessage(message, broadcast = true, id = null, when = null) {
+    const messageId = id || generateMessageId();
+    const timestamp = when || new Date();
+
+    trackRendered(messageId);
 
     // Get user name from localStorage, default to "You" if not available
-    const userName = localStorage.getItem('chatbotUserName') || 'You';
+    const userName = storedUserDetails().name || 'You';
 
     const messageElement = document.createElement('div');
     messageElement.className = 'message user';
@@ -1174,7 +1521,7 @@
     const readStatusElement = document.createElement('div');
     readStatusElement.className = 'message-status';
     readStatusElement.innerHTML = `
-      <svg class="status-icon sent" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24">
+      <svg class="status-icon sent" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
         <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17z"/>
       </svg>
     `;
@@ -1188,6 +1535,7 @@
       broadcastChannel.postMessage({
         type: 'new-message',
         data: {
+          id: messageId,
           sender: 'user',
           senderName: userName,
           message,
@@ -1201,9 +1549,14 @@
   }
 
   // Add a bot message to the chat
-  function addBotMessage(message, broadcast = true, sender = 'AI Assistant') {
+  function addBotMessage(message, broadcast = true, sender = 'AI Assistant', id = null, when = null) {
+    trackRendered(id);
+
     const messageElement = document.createElement('div');
     messageElement.className = 'message bot';
+    if (id) {
+      messageElement.dataset.messageId = id;
+    }
 
     // Create sender name element
     const senderElement = document.createElement('div');
@@ -1215,17 +1568,11 @@
     const contentElement = document.createElement('div');
     contentElement.className = 'message-content';
 
-    // Handle markdown-like formatting
-    const formattedMessage = message
-      .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-      .replace(/\*(.*?)\*/g, '<em>$1</em>')
-      .replace(/\n/g, '<br>');
-
-    contentElement.innerHTML = formattedMessage;
+    contentElement.innerHTML = formatMessage(message);
     messageElement.appendChild(contentElement);
 
     // Add timestamp element
-    const timestamp = new Date();
+    const timestamp = when || new Date();
     const timestampElement = document.createElement('div');
     timestampElement.className = 'message-timestamp';
     timestampElement.textContent = formatTime(timestamp);
@@ -1239,13 +1586,16 @@
       broadcastChannel.postMessage({
         type: 'new-message',
         data: {
+          id: id || null,
           sender: 'bot',
+          senderName: sender,
           message,
           timestamp: timestamp.toISOString()
         }
       });
     }
   }
+
   // Add file response message
   function addFileResponse(fileUrl, fileName, sender = 'AI Assistant') {
     const messageElement = document.createElement('div');
@@ -1260,15 +1610,24 @@
     // Create message content element
     const contentElement = document.createElement('div');
     contentElement.className = 'message-content';
-    contentElement.innerHTML = `
-      <p>Here's the file you requested:</p>
-      <a href="${fileUrl}" target="_blank" download="${fileName}">
-        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24">
-          <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/>
-        </svg>
-        ${fileName}
-      </a>
-    `;
+    const intro = document.createElement('p');
+    intro.textContent = 'Here\'s the file you requested:';
+    contentElement.appendChild(intro);
+
+    // Built as nodes rather than as a template string: the name comes from
+    // whoever uploaded the file and the URL is only ever ours, so neither
+    // belongs in innerHTML. `safeUrl` also stops a `javascript:` href, which
+    // escaping alone would happily preserve.
+    const link = document.createElement('a');
+    link.href = safeUrl(fileUrl);
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.download = String(fileName || 'file');
+    link.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" ' +
+      'viewBox="0 0 24 24" aria-hidden="true" focusable="false">' +
+      '<path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg> ';
+    link.appendChild(document.createTextNode(String(fileName || 'file')));
+    contentElement.appendChild(link);
     messageElement.appendChild(contentElement);
 
     // Add timestamp element
@@ -1280,23 +1639,8 @@
 
     chatMessages.appendChild(messageElement);
     scrollToBottom();
-
-    // Broadcast to other tabs/windows
-    if (broadcastChannel) {
-      broadcastChannel.postMessage({
-        type: 'new-message',
-        data: {
-          sender: 'bot',
-          message: `File shared: ${fileName}`,
-          timestamp: timestamp.toISOString(),
-          fileUrl,
-          fileName
-        }
-      });
-    }
   }
 
-  // Set typing indicator visibility
   /**
    * Products and appointment times, shown rather than described.
    *
@@ -1306,8 +1650,8 @@
    * connector contract fixes the shape.
    */
   function addCards(cards) {
-    const container = document.createElement('div');
-    container.className = `chat-cards chat-cards-${cards.type === 'Slot' ? 'slots' : 'products'}`;
+    const cardsContainer = document.createElement('div');
+    cardsContainer.className = `chat-cards chat-cards-${cards.type === 'Slot' ? 'slots' : 'products'}`;
 
     cards.items.slice(0, 8).forEach(item => {
       const card = document.createElement(cards.type === 'Slot' ? 'button' : 'div');
@@ -1326,15 +1670,18 @@
         // transcript shows the readable time so it still reads as a
         // conversation.
         card.addEventListener('click', () => {
-          container.remove();
+          cardsContainer.remove();
           chatInput.value = item.label || formatSlot(item.startsAt);
           sendMessage();
         });
       } else {
-        if (item.image) {
+        // The image and link come from the tenant's API rather than from us,
+        // so they go through the same URL check as everything else.
+        const imageUrl = item.image ? safeUrl(item.image) : '#';
+        if (imageUrl !== '#') {
           const image = document.createElement('img');
           image.className = 'chat-card-image';
-          image.src = item.image;
+          image.src = imageUrl;
           image.alt = '';
           // A broken image should leave a card that still works, not a
           // browser's broken-image icon in somebody's chat.
@@ -1354,23 +1701,22 @@
           card.appendChild(price);
         }
 
-        if (item.url) {
+        const linkUrl = item.url ? safeUrl(item.url) : '#';
+        if (linkUrl !== '#') {
           const link = document.createElement('a');
           link.className = 'chat-card-link';
-          link.href = item.url;
+          link.href = linkUrl;
           link.target = '_blank';
-          // The widget sits on the tenant's own site, but these URLs come from
-          // their API rather than from us, so the usual precautions apply.
           link.rel = 'noopener noreferrer';
           link.textContent = 'View';
           card.appendChild(link);
         }
       }
 
-      container.appendChild(card);
+      cardsContainer.appendChild(card);
     });
 
-    chatMessages.appendChild(container);
+    chatMessages.appendChild(cardsContainer);
     scrollToBottom();
   }
 
@@ -1407,6 +1753,8 @@
 
     const group = document.createElement('div');
     group.className = 'quick-replies';
+    group.setAttribute('role', 'group');
+    group.setAttribute('aria-label', 'Suggested replies');
 
     choices.slice(0, 8).forEach(choice => {
       const button = document.createElement('button');
@@ -1456,7 +1804,7 @@
           <button type="button" class="chat-rating-score" data-score="${score}"
                   aria-label="${score} out of 5">${score}</button>`).join('')}
       </div>
-      <div class="chat-rating-scale">
+      <div class="chat-rating-scale" aria-hidden="true">
         <span>Not helpful</span><span>Very helpful</span>
       </div>
       <button type="button" class="chat-rating-dismiss">No thanks</button>`;
@@ -1523,12 +1871,9 @@
     });
   }
 
+  // Set typing indicator visibility
   function setTypingIndicator(isTyping, broadcast = true) {
-    if (isTyping) {
-      typingIndicator.classList.add('active');
-    } else {
-      typingIndicator.classList.remove('active');
-    }
+    typingIndicator.classList.toggle('active', Boolean(isTyping));
     scrollToBottom();
 
     // Broadcast typing indicator state to other tabs/windows
@@ -1536,7 +1881,7 @@
       broadcastChannel.postMessage({
         type: 'typing-indicator',
         data: {
-          isTyping
+          isTyping: Boolean(isTyping)
         }
       });
     }
@@ -1544,14 +1889,23 @@
 
   // Update read status of a message
   function updateMessageReadStatus(messageId) {
-    const message = document.querySelector(`.message[data-message-id="${messageId}"]`);
+    if (!messageId) {
+      return;
+    }
+
+    // The id comes from the server, so it is escaped before it goes into a
+    // selector rather than trusted to be selector-safe.
+    const escaped = typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
+      ? CSS.escape(String(messageId))
+      : String(messageId).replace(/["\\]/g, '\\$&');
+    const message = chatMessages.querySelector(`.message[data-message-id="${escaped}"]`);
 
     if (message) {
       const statusIcon = message.querySelector('.message-status');
 
       if (statusIcon) {
         statusIcon.innerHTML = `
-          <svg class="status-icon read" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24">
+          <svg class="status-icon read" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
             <path d="M18 7l-1.41-1.41-6.34 6.34 1.41 1.41L18 7zm4.24-1.41L11.66 16.17 7.48 12l-1.41 1.41L11.66 19l12-12-1.42-1.41zM.41 13.41L6 19l1.41-1.41L1.83 12 .41 13.41z"/>
           </svg>
         `;
@@ -1559,24 +1913,101 @@
     }
   }
 
+  // ------------------------------------------------------------ helpers
+
   // Format time for messages
   function formatTime(date) {
-    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const value = date instanceof Date ? date : new Date(date);
+    if (isNaN(value.getTime())) {
+      return '';
+    }
+    return value.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }
+
+  /**
+   * Make a string safe to put inside HTML.
+   *
+   * This widget runs on the tenant's own website, in their page, next to their
+   * customers' sessions. Anything that reaches innerHTML unescaped is therefore
+   * not our bug to shrug at - it is script execution on somebody else's site.
+   * Message text is the obvious carrier, but so is a chatbot name typed into
+   * the appearance form and a filename chosen by whoever uploaded it.
+   */
+  function escapeHtml(value) {
+    return String(value === undefined || value === null ? '' : value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  /**
+   * A URL we are willing to put in an href.
+   *
+   * Only http(s) and same-origin relative paths. Anything else - `javascript:`
+   * most of all - becomes an inert anchor rather than a link that runs code.
+   */
+  function safeUrl(value) {
+    const raw = String(value || '').trim();
+
+    if (/^https?:\/\//i.test(raw) || raw.startsWith('/')) {
+      return raw;
+    }
+    return '#';
+  }
+
+  /**
+   * The small amount of formatting a reply is allowed to carry.
+   *
+   * Escaping happens first and the markup is added afterwards, so the only tags
+   * that can reach the page are the three this function puts there. Doing it the
+   * other way round - transforming and then trusting the result - is what let
+   * `<img src=x onerror=...>` in a bot reply run in the visitor's browser.
+   */
+  function formatMessage(message) {
+    return escapeHtml(message)
+      .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+      .replace(/\*(.*?)\*/g, '<em>$1</em>')
+      .replace(/\n/g, '<br>');
   }
 
   // Generate a unique message ID
   function generateMessageId() {
-    return 'msg_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+    return 'msg_' + Date.now() + '_' + Math.random().toString(36).slice(2, 11);
   }
 
   // Scroll chat messages to bottom
   function scrollToBottom() {
-    const messagesContainer = chatWindow.querySelector('.chat-messages');
-    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    if (chatMessagesContainer) {
+      chatMessagesContainer.scrollTop = chatMessagesContainer.scrollHeight;
+    }
   }
 
-  // Generate a unique session ID
+  /**
+   * A session id nobody can guess.
+   *
+   * `Math.random` is not designed to be unpredictable, and a predictable
+   * session id is a transcript somebody else can read.
+   */
   function generateSessionId() {
+    const cryptoObject = window.crypto || window.msCrypto;
+
+    if (cryptoObject && typeof cryptoObject.randomUUID === 'function') {
+      return cryptoObject.randomUUID();
+    }
+
+    if (cryptoObject && typeof cryptoObject.getRandomValues === 'function') {
+      const bytes = new Uint8Array(16);
+      cryptoObject.getRandomValues(bytes);
+      // RFC 4122 version and variant bits.
+      bytes[6] = (bytes[6] & 0x0f) | 0x40;
+      bytes[8] = (bytes[8] & 0x3f) | 0x80;
+      const hex = Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+      return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+    }
+
+    // No crypto at all: an ancient browser. Better a weak id than no chat.
     return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
       const r = Math.random() * 16 | 0;
       const v = c === 'x' ? r : (r & 0x3 | 0x8);

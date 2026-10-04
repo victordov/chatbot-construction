@@ -17,13 +17,29 @@
 const request = require('supertest');
 const express = require('express');
 const mongoose = require('mongoose');
+const fs = require('fs');
+const path = require('path');
 
 const DataRetentionService = require('../services/dataRetention');
+const uploads = require('../services/uploads');
 const Conversation = require('../models/conversation');
 const Company = require('../models/company');
 const User = require('../models/user');
 
 const daysAgo = (days) => new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+
+/** A conversation with an upload, and the file on disk the upload route would have written. */
+const conversationWithFile = async (company, sessionId, ageInDays, fileId) => {
+  const conversation = await conversationFor(company, sessionId, ageInDays, {
+    messages: [
+      { content: '[File uploaded: id.png]', sender: 'user', fileId, fileName: 'id.png', timestamp: daysAgo(ageInDays) }
+    ]
+  });
+  const target = uploads.filePath(company._id, fileId);
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.writeFileSync(target, 'a scan of a passport');
+  return { conversation, target };
+};
 
 const conversationFor = (company, sessionId, ageInDays, extra = {}) => Conversation.create({
   sessionId,
@@ -61,6 +77,8 @@ describe('Data retention', () => {
   afterAll(async () => {
     await User.deleteMany({ email: /@retention\.example$/ });
     await Company.deleteMany({ name: /Retention$/ });
+    await uploads.deleteCompanyFiles(acme._id);
+    await uploads.deleteCompanyFiles(globex._id);
     await mongoose.connection.close();
   });
 
@@ -195,6 +213,30 @@ describe('Data retention', () => {
       await service.runCleanup();
 
       expect(await Conversation.findOne({ sessionId: 'retention-orphan' })).toBeNull();
+    });
+
+    it('deletes the files of a conversation it deletes', async () => {
+      const { target } = await conversationWithFile(acme, 'retention-file-delete', 400, 'c'.repeat(32));
+      expect(fs.existsSync(target)).toBe(true);
+
+      const service = new DataRetentionService();
+      await service.sweepCompany(acme._id, { anonymizeAfterDays: 0, deleteAfterDays: 365 });
+
+      // A deleted conversation with its attachment still on disk is not
+      // deleted; it is merely unfindable.
+      expect(await Conversation.findOne({ sessionId: 'retention-file-delete' })).toBeNull();
+      expect(fs.existsSync(target)).toBe(false);
+    });
+
+    it('deletes the files of a conversation it anonymises', async () => {
+      const { target } = await conversationWithFile(acme, 'retention-file-scrub', 60, 'd'.repeat(32));
+
+      const service = new DataRetentionService();
+      await service.sweepCompany(acme._id, { anonymizeAfterDays: 30, deleteAfterDays: 0 });
+
+      const scrubbed = await Conversation.findOne({ sessionId: 'retention-file-scrub' });
+      expect(scrubbed.messages[0].fileId).toBeUndefined();
+      expect(fs.existsSync(target)).toBe(false);
     });
 
     it('stops at the per-run ceiling rather than holding the database open', async () => {

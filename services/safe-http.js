@@ -218,15 +218,21 @@ function request(url, options, body, timeoutMs, redirectsLeft = MAX_REDIRECTS) {
 
       const chunks = [];
       let size = 0;
+      // Callers that fetch documents rather than API responses need a bigger
+      // allowance than an action node does, so the cap is a parameter with the
+      // API-shaped default rather than a constant.
+      const maxBytes = options.maxBytes || MAX_RESPONSE_BYTES;
 
       response.on('data', chunk => {
         size += chunk.length;
 
-        if (size > MAX_RESPONSE_BYTES) {
+        if (size > maxBytes) {
           // Destroy rather than buffer: an endpoint streaming gigabytes would
           // otherwise take the process's memory with it.
           response.destroy();
-          reject(new Error('The API returned more data than we will read (256 KB limit)'));
+          reject(new Error(
+            `The server returned more data than we will read (${Math.round(maxBytes / 1024)} KB limit)`
+          ));
           return;
         }
 
@@ -234,7 +240,13 @@ function request(url, options, body, timeoutMs, redirectsLeft = MAX_REDIRECTS) {
       });
 
       response.on('end', () => {
-        resolve({ statusCode, headers, body: Buffer.concat(chunks).toString('utf8') });
+        const buffer = Buffer.concat(chunks);
+
+        resolve({
+          statusCode,
+          headers,
+          body: options.asBuffer ? buffer : buffer.toString('utf8')
+        });
       });
 
       response.on('error', reject);
@@ -253,8 +265,51 @@ function request(url, options, body, timeoutMs, redirectsLeft = MAX_REDIRECTS) {
   });
 }
 
+
+/**
+ * Fetch a URL somebody typed into the product.
+ *
+ * `request` takes an already-parsed URL and assumes the caller validated it.
+ * This is the front door for the places that hold a raw string - importing a
+ * document into the knowledge base, most of all - so that validation is not
+ * something each of them has to remember.
+ *
+ * @param {string} rawUrl
+ * @param {object} [options] `asBuffer`, `maxBytes`, `timeoutMs`, `headers`
+ * @returns {Promise<{statusCode: number, headers: object, body: string|Buffer}>}
+ */
+async function fetchUrl(rawUrl, options = {}) {
+  const check = validateUrl(rawUrl);
+
+  if (!check.valid) {
+    throw new Error(check.error);
+  }
+
+  const response = await request(
+    check.url,
+    {
+      method: 'GET',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; ChatbotKnowledgeBot/1.0)',
+        ...(options.headers || {})
+      },
+      asBuffer: options.asBuffer,
+      maxBytes: options.maxBytes
+    },
+    null,
+    options.timeoutMs || 30000
+  );
+
+  if (response.statusCode >= 400) {
+    throw new Error(`That URL answered ${response.statusCode}`);
+  }
+
+  return response;
+}
+
 module.exports = {
   request,
+  fetchUrl,
   validateUrl,
   isBlockedAddress,
   guardedLookup,
