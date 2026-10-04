@@ -7,8 +7,8 @@
  */
 
 import * as bootstrap from 'bootstrap';
-import { state } from './state.js';
-import { api, escapeHtml, logger, setLoading, showToast } from './utils.js';
+import { registerSection } from './nav.js';
+import { api, confirmDialog, escapeHtml, logger, setLoading, showToast } from './utils.js';
 
 let templates = [];
 
@@ -220,7 +220,9 @@ async function save() {
 
   setLoading(button, true);
   try {
-    await api(id ? `/${encodeURIComponent(id)}` : '', {
+    // The full path: this used to be `/<id>` relative to nothing, left over
+    // from a helper that prefixed /api/templates, so saving always failed.
+    await api(id ? `/api/templates/${encodeURIComponent(id)}` : '/api/templates', {
       method: id ? 'PUT' : 'POST',
       body: JSON.stringify(payload)
     });
@@ -237,7 +239,13 @@ async function save() {
 
 async function remove(id) {
   const template = templates.find(t => t._id === id);
-  if (!confirm(`Delete "${template ? template.name : 'this reply'}"?`)) {
+  const ok = await confirmDialog({
+    title: 'Delete this canned reply?',
+    message: `"${template ? template.name : 'This reply'}" - questions it matched are answered by the assistant instead.`,
+    confirmLabel: 'Delete',
+    danger: true
+  });
+  if (!ok) {
     return;
   }
 
@@ -289,24 +297,7 @@ async function preview() {
 
 // ------------------------------------------------------------------ setup
 
-export function setupAssistantSection() {
-  const user = state.currentUser;
-  if (!user || (user.role !== 'superadmin' && user.role !== 'company_admin')) {
-    return;
-  }
-  if (!document.getElementById('assistant-section')) {
-    return;
-  }
-
-  // A superadmin belongs to no tenant, so there is no assistant of their own.
-  if (!user.company) {
-    document.getElementById('template-list').innerHTML =
-      '<p class="text-muted mb-0">Assistants are configured per company. ' +
-      'Open a company from the Companies section to manage its replies.</p>';
-    document.getElementById('assistant-config-form').classList.add('d-none');
-    return;
-  }
-
+function setupAssistantSection() {
   document.getElementById('assistant-config-form').addEventListener('submit', saveAssistantConfig);
   document.getElementById('new-template-btn').addEventListener('click', () => openEditor());
   document.getElementById('save-template-btn').addEventListener('click', save);
@@ -330,6 +321,12 @@ export function setupAssistantSection() {
     renderVariables(current);
   });
 
-  loadAssistantConfig();
-  loadTemplates();
 }
+
+registerSection('assistant', {
+  setup: setupAssistantSection,
+  show() {
+    loadAssistantConfig();
+    loadTemplates();
+  }
+});

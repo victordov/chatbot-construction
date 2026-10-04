@@ -7,7 +7,7 @@
  */
 
 import feather from 'feather-icons';
-import { loadTaskDetails } from './tasks.js';
+import { showSection } from './nav.js';
 import { api, escapeHtml, formatRelativeTime, logger, showToast } from './utils.js';
 
 let notifications = [];
@@ -85,10 +85,7 @@ async function open(notificationId, taskId) {
   }
 
   if (taskId) {
-    window.location.hash = `#tasks-section?section=tasks&taskId=${encodeURIComponent(taskId)}`;
-    if (typeof loadTaskDetails === 'function') {
-      loadTaskDetails(taskId);
-    }
+    showSection('tasks', { params: { taskId } });
   }
 }
 

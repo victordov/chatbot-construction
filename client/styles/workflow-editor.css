@@ -747,3 +747,17 @@ body {
 .wf-node.wf-visited-last {
   box-shadow: 0 0 0 3px rgba(25, 135, 84, 0.9);
 }
+
+/* Settings most authors never need, folded away under "Advanced". */
+.wf-advanced > summary {
+  cursor: pointer;
+}
+
+.wf-advanced[open] > summary {
+  margin-bottom: 0.25rem;
+}
+
+/* Native dialogs replaced by these: kept above the editor's own modals. */
+.app-dialog {
+  z-index: 1065;
+}

@@ -16,10 +16,11 @@
 import * as bootstrap from 'bootstrap';
 import feather from 'feather-icons';
 import { marked } from 'marked';
-import { viewChatHistory } from './chats.js';
+import { openConversation, selectedSessionId } from './inbox.js';
+import { registerSection, showSection } from './nav.js';
 import { loadOperators } from './operators.js';
 import { state } from './state.js';
-import { authToken, errorMessage, escapeHtml, formatRelativeTime, getUrlParams, logger, parseJsonResponse, renderMarkdown, showNotification, updateUrlWithParams } from './utils.js';
+import { authToken, confirmDialog, errorMessage, escapeHtml, formatRelativeTime, logger, renderMarkdown, showNotification, updateUrlWithParams } from './utils.js';
 // Configure marked.js for Markdown rendering
 if (typeof marked !== 'undefined') {
   // `sanitize` was removed from marked in v5 and this call has been a silent
@@ -31,59 +32,22 @@ if (typeof marked !== 'undefined') {
 }
 
 // Task Management Functions
-export function setupTaskManagement(token) {
+export function setupTaskManagement() {
+  const token = authToken();
+
   // Set up event listeners for task-related buttons
   document.getElementById('create-task-btn').addEventListener('click', function() {
-    const selectedChatId = document.querySelector('#active-chat-list .active')?.dataset.sessionId;
+    const selectedChatId = selectedSessionId();
     if (selectedChatId) {
       openTaskModal(selectedChatId);
     }
   });
 
+  // The tasks raised from the open conversation, on the Tasks screen.
   document.getElementById('view-tasks-btn').addEventListener('click', function() {
-    const selectedChatId = document.querySelector('#active-chat-list .active')?.dataset.sessionId;
-    if (selectedChatId) {
-      // Navigate to tasks section
-      const tasksLink = document.querySelector('.nav-link[data-section="tasks"]');
-      if (tasksLink) {
-        tasksLink.click();
-
-        // Small delay to ensure the section is loaded
-        setTimeout(() => {
-          // Get the conversation object from MongoDB
-          const conversation = state.currentConversation;
-          if (conversation && conversation._id) {
-            // Set the conversation ID filter
-            document.getElementById('task-search').value = `Conversation: ${selectedChatId.substring(0, 8)}...`;
-
-            // Load tasks for this conversation
-            loadTasksForConversation(conversation._id);
-          } else {
-            // If we don't have the conversation object with _id, we need to fetch it
-            fetch(`/api/admin/chat/${selectedChatId}`, {
-              headers: {
-                'x-auth-token': authToken()
-              }
-            })
-              .then(parseJsonResponse)
-              .then(data => {
-                if (data && data._id) {
-                  // Set the conversation ID filter
-                  document.getElementById('task-search').value = `Conversation: ${selectedChatId.substring(0, 8)}...`;
-
-                  // Load tasks for this conversation
-                  loadTasksForConversation(data._id);
-                } else {
-                  showNotification('Error', 'Failed to load conversation details', 'error');
-                }
-              })
-              .catch(error => {
-                logger.error('Error fetching conversation details:', error);
-                showNotification('Error', errorMessage(error, 'Failed to load conversation details'), 'error');
-              });
-          }
-        }, 100);
-      }
+    const conversation = state.currentConversation;
+    if (conversation && conversation._id) {
+      showSection('tasks', { params: { conversation: conversation._id, chat: conversation.sessionId } });
     }
   });
 
@@ -103,15 +67,6 @@ export function setupTaskManagement(token) {
     const taskId = document.getElementById('task-detail-container').dataset.taskId;
     editTaskFromDetails(taskId);
   });
-
-  // Check URL parameters for task ID
-  const params = getUrlParams();
-  if (params.section === 'tasks' && params.taskId) {
-    // Small delay to ensure the section is loaded
-    setTimeout(() => {
-      loadTaskDetails(params.taskId);
-    }, 100);
-  }
 
   // Set up event listeners for task filters
   document.getElementById('task-status-filter').addEventListener('change', function() {
@@ -167,12 +122,6 @@ export function setupTaskManagement(token) {
       this.classList.remove('is-invalid');
     });
   });
-
-  // Load operators for assignee dropdown
-  loadOperators(token);
-
-  // Load initial tasks
-  loadTasks(token);
 
   // Set up WebSocket listeners for task events
   setupTaskSocketListeners();
@@ -435,8 +384,14 @@ export function displayTasks(tasks) {
     deleteBtn.className = 'btn btn-sm btn-outline-danger';
     deleteBtn.innerHTML = '<i data-feather="trash-2"></i>';
     deleteBtn.title = 'Delete Task';
-    deleteBtn.addEventListener('click', function() {
-      if (confirm('Are you sure you want to delete this task?')) {
+    deleteBtn.addEventListener('click', async function() {
+      const ok = await confirmDialog({
+        title: 'Delete this task?',
+        message: `"${task.title}" and its comments are removed for good.`,
+        confirmLabel: 'Delete',
+        danger: true
+      });
+      if (ok) {
         deleteTask(task._id);
       }
     });
@@ -614,11 +569,11 @@ export function displayTaskDetails(task) {
   const conversationLink = document.getElementById('task-conversation-link');
   if (task.conversationId) {
     const sessionId = task.conversationId.sessionId || task.conversationId;
-    conversationLink.href = `#active-chats-section?session=${sessionId}`;
+    conversationLink.href = `?section=active-chats&chat=${encodeURIComponent(sessionId)}`;
     conversationLink.style.display = 'inline-block';
     conversationLink.onclick = function(e) {
       e.preventDefault();
-      viewChatHistory(sessionId);
+      openConversation(sessionId);
       return false;
     };
   } else {
@@ -1315,3 +1270,21 @@ export function deleteTask(taskId) {
       showNotification('Error', errorMessage(error, 'Failed to delete task'), 'error');
     });
 }
+
+registerSection('tasks', {
+  show(params) {
+    // Assignee lists in the filter and the task form.
+    loadOperators(authToken());
+    if (params.taskId) {
+      loadTaskDetails(params.taskId);
+    } else if (params.conversation) {
+      showTaskList();
+      const label = params.chat ? params.chat.substring(0, 8) : params.conversation.substring(0, 8);
+      document.getElementById('task-search').value = `Conversation: ${label}…`;
+      loadTasksForConversation(params.conversation);
+    } else {
+      showTaskList();
+      loadTasks(authToken());
+    }
+  }
+});

@@ -1,10 +1,13 @@
-// Company Management JavaScript
+/**
+ * Companies: the tenants, for whoever runs the platform.
+ */
 
 import * as bootstrap from 'bootstrap';
+import { registerSection } from './nav.js';
 import { authToken, errorMessage, escapeHtml, getStoredUser, parseJsonResponse, showToast } from './utils.js';
 
 // Load all companies
-export function loadAllCompanies() {
+function loadAllCompanies() {
   const token = authToken();
   const currentUser = getStoredUser() || {};
 
@@ -93,7 +96,7 @@ export function loadAllCompanies() {
 }
 
 // Load a specific company
-export function loadCompany(companyId) {
+function loadCompany(companyId) {
   const token = authToken();
 
   fetch(`/api/companies/${escapeHtml(companyId)}`, {
@@ -160,7 +163,7 @@ export function loadCompany(companyId) {
 }
 
 // View company details and users
-export function viewCompany(event) {
+function viewCompany(event) {
   const companyId = event.currentTarget.dataset.id;
   loadCompanyUsers(companyId);
 
@@ -200,7 +203,7 @@ export function viewCompany(event) {
 }
 
 // Load company users
-export function loadCompanyUsers(companyId) {
+function loadCompanyUsers(companyId) {
   const token = authToken();
   const currentUser = getStoredUser() || {};
 
@@ -304,13 +307,13 @@ export function loadCompanyUsers(companyId) {
 }
 
 // Back to companies list
-export function backToCompaniesList() {
+function backToCompaniesList() {
   document.getElementById('companies-list-section').style.display = 'block';
   document.getElementById('company-detail-section').style.display = 'none';
 }
 
 // Create new company
-export function createCompany() {
+function createCompany() {
   const name = document.getElementById('company-name').value;
   const description = document.getElementById('company-description').value;
   const website = document.getElementById('company-website').value;
@@ -351,7 +354,7 @@ export function createCompany() {
 }
 
 // Toggle company active status
-export function toggleCompanyStatus(event) {
+function toggleCompanyStatus(event) {
   const button = event.currentTarget;
   const companyId = button.dataset.id;
   const currentStatus = button.dataset.status === 'true';
@@ -382,7 +385,7 @@ export function toggleCompanyStatus(event) {
 }
 
 // Open edit company modal
-export function openEditCompanyModal(event) {
+function openEditCompanyModal(event) {
   const companyId = event.currentTarget.dataset.id;
   const token = authToken();
 
@@ -419,7 +422,7 @@ export function openEditCompanyModal(event) {
 }
 
 // Save edited company details
-export function editCompany() {
+function editCompany() {
   const companyId = document.getElementById('edit-company-id').value;
   const name = document.getElementById('edit-company-name').value;
   const description = document.getElementById('edit-company-description').value;
@@ -465,7 +468,7 @@ export function editCompany() {
 }
 
 // Open edit company user modal
-export function openEditCompanyUserModal(event) {
+function openEditCompanyUserModal(event) {
   const userId = event.currentTarget.dataset.id;
   const companyId = event.currentTarget.dataset.companyId;
   const token = authToken();
@@ -515,7 +518,7 @@ export function openEditCompanyUserModal(event) {
 }
 
 // Toggle company user status
-export function toggleCompanyUserStatus(event) {
+function toggleCompanyUserStatus(event) {
   const button = event.currentTarget;
   const userId = button.dataset.id;
   const companyId = button.dataset.companyId;
@@ -547,7 +550,7 @@ export function toggleCompanyUserStatus(event) {
 }
 
 // Open reset company user password modal
-export function openResetCompanyUserPasswordModal(event) {
+function openResetCompanyUserPasswordModal(event) {
   const userId = event.currentTarget.dataset.id;
   const companyId = event.currentTarget.dataset.companyId;
 
@@ -566,7 +569,7 @@ export function openResetCompanyUserPasswordModal(event) {
 }
 
 // Reset company user password
-export function resetCompanyUserPassword() {
+function resetCompanyUserPassword() {
   const userId = document.getElementById('reset-company-user-id').value;
   const companyId = document.getElementById('reset-company-id').value;
   const generateRandom = document.getElementById('generate-random-password').checked;
@@ -621,7 +624,7 @@ export function resetCompanyUserPassword() {
 }
 
 // Open create company user modal
-export function openCreateCompanyUserModal() {
+function openCreateCompanyUserModal() {
   // Get company ID from the hidden input
   const companyId = document.getElementById('company-detail-id').value;
 
@@ -644,7 +647,7 @@ export function openCreateCompanyUserModal() {
 }
 
 // Save company user (create or edit)
-export function saveCompanyUser() {
+function saveCompanyUser() {
   const userId = document.getElementById('company-user-id').value;
   const companyId = document.getElementById('company-user-company-id').value;
   const username = document.getElementById('company-user-username').value;
@@ -727,13 +730,7 @@ export function saveCompanyUser() {
 }
 
 // Initialize company management
-document.addEventListener('DOMContentLoaded', function() {
-  // Check if companies section exists
-  const companiesSection = document.getElementById('companies-section');
-  if (!companiesSection) {
-    return;
-  }
-
+function setupCompanies() {
   // Set up event listeners
   const createCompanyBtn = document.getElementById('create-company-btn');
   if (createCompanyBtn) {
@@ -790,19 +787,9 @@ document.addEventListener('DOMContentLoaded', function() {
   if (companyDetailSection) {
     companyDetailSection.style.display = 'none';
   }
+}
 
-  // Load companies when the section is shown
-  const navLinks = document.querySelectorAll('#sidebar .nav-link');
-  navLinks.forEach(link => {
-    if (link.getAttribute('data-section') === 'companies') {
-      link.addEventListener('click', function() {
-        loadAllCompanies();
-      });
-    }
-  });
-
-  // Check if companies section is active on page load
-  if (companiesSection.classList.contains('active')) {
-    loadAllCompanies();
-  }
+registerSection('companies', {
+  setup: setupCompanies,
+  show: loadAllCompanies
 });

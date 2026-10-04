@@ -1,22 +1,23 @@
 /**
- * Plan & Usage section.
+ * Plan & billing.
  *
  * Shows a tenant what they are paying for and how close they are to their
- * limits, so that hitting one is never the first they hear of it. Superadmins
- * additionally get consumption across every tenant and can change plans.
+ * limits, so that hitting one is never the first they hear of it, and lets
+ * them pay: choosing a plan goes to Stripe's own checkout page, so card
+ * details never reach this server.
  */
 
-import * as bootstrap from 'bootstrap';
 import Chart from 'chart.js/auto';
 import feather from 'feather-icons';
-import { state } from './state.js';
-import { api, escapeHtml, logger, setLoading, showToast } from './utils.js';
+import { registerSection } from './nav.js';
+import { api, errorMessage, escapeHtml, logger, setLoading, showToast } from './utils.js';
 
 let usageHistoryChart = null;
 let catalogue = [];
+let summary = null;
 
 
-const formatNumber = value => Number(value || 0).toLocaleString();
+export const formatNumber = value => Number(value || 0).toLocaleString();
 
 /**
  * Turn a camelCase feature key into a label. Acronyms are spelled out
@@ -134,13 +135,21 @@ function renderMeters(summary) {
   }
 }
 
+/** The plans a tenant can buy online right now. */
+function buyable() {
+  return summary && summary.checkout && summary.checkout.available ? summary.checkout.plans || [] : [];
+}
+
 function renderCatalogue(currentPlanId) {
+  const canBuy = buyable();
+
   document.getElementById('plan-catalogue').innerHTML = catalogue.map(plan => {
     const current = plan.id === currentPlanId;
+    const purchasable = !current && canBuy.includes(plan.id);
     return `
       <div class="col-md-6 col-xl-3">
         <div class="card h-100 ${current ? 'border-primary' : ''}">
-          <div class="card-body">
+          <div class="card-body d-flex flex-column">
             <div class="d-flex justify-content-between align-items-start">
               <h6 class="card-title mb-1">${escapeHtml(plan.name)}</h6>
               ${current ? '<span class="badge bg-primary">Current</span>' : ''}
@@ -149,15 +158,54 @@ function renderCatalogue(currentPlanId) {
               ${plan.price === null ? 'Custom' : `$${plan.price}<span class="text-muted fs-6">/mo</span>`}
             </p>
             <p class="small text-muted">${escapeHtml(plan.description)}</p>
-            <ul class="small text-muted ps-3 mb-0">
+            <ul class="small text-muted ps-3 mb-3">
               <li>${formatLimit(plan.limits.conversationsPerMonth)} conversations/mo</li>
               <li>${formatLimit(plan.limits.operators)} operator seats</li>
               <li>${formatLimit(plan.limits.workflows)} workflows</li>
             </ul>
+            ${purchasable ? `
+              <button type="button" class="btn btn-sm btn-primary mt-auto checkout-btn" data-plan="${escapeHtml(plan.id)}">
+                Choose ${escapeHtml(plan.name)}
+              </button>` : ''}
           </div>
         </div>
       </div>`;
   }).join('');
+
+  const note = document.getElementById('plan-change-note');
+  if (summary && summary.portalAvailable) {
+    note.innerHTML = 'Already paying? <button type="button" class="btn btn-link btn-sm p-0 align-baseline" id="billing-portal-link">Manage your subscription, card and invoices</button>.';
+  } else if (canBuy.length) {
+    note.textContent = 'You pay on Stripe\'s secure page; your plan changes here as soon as the payment goes through.';
+  } else {
+    note.textContent = 'Online payment is not set up on this service yet. To change plan, contact the team that runs it.';
+  }
+}
+
+async function startCheckout(planId, button) {
+  setLoading(button, true);
+  try {
+    const { url } = await api('/api/billing/checkout', { method: 'POST', body: { plan: planId } });
+    window.location.href = url;
+  } catch (error) {
+    setLoading(button, false);
+    if (error.status === 409 && error.body && error.body.portalAvailable) {
+      // Already subscribed: a second checkout would bill them twice, so
+      // plan changes go through Stripe's portal instead.
+      openPortal();
+      return;
+    }
+    showToast(errorMessage(error, 'Could not start the payment'), 'danger');
+  }
+}
+
+async function openPortal() {
+  try {
+    const { url } = await api('/api/billing/portal', { method: 'POST' });
+    window.location.href = url;
+  } catch (error) {
+    showToast(errorMessage(error, 'Could not open the billing portal'), 'danger');
+  }
 }
 
 async function renderHistory() {
@@ -206,178 +254,48 @@ async function renderHistory() {
   }
 }
 
-async function renderTenantUsage() {
-  if (!state.currentUser || state.currentUser.role !== 'superadmin') {
-    return;
-  }
-
-  const card = document.getElementById('tenant-usage-card');
-  card.style.display = '';
-
-  try {
-    const { period, tenants, totals } = await api('/api/billing/usage');
-    document.getElementById('tenant-usage-period').textContent = period;
-
-    const table = document.getElementById('tenant-usage-table');
-
-    if (!tenants.length) {
-      table.innerHTML = '<tr><td colspan="8" class="text-muted text-center py-3">No usage recorded this month</td></tr>';
-      return;
-    }
-
-    table.innerHTML = tenants.map(row => `
-      <tr>
-        <td>${escapeHtml(row.companyName || 'Unknown')}</td>
-        <td><span class="badge bg-light text-dark">${escapeHtml(row.planId)}</span></td>
-        <td><span class="badge bg-${row.status === 'active' ? 'success' : row.status === 'trialing' ? 'info' : 'warning text-dark'}">${escapeHtml(row.status)}</span></td>
-        <td class="text-end">${formatNumber(row.conversations)}</td>
-        <td class="text-end">${formatNumber(row.messages)}</td>
-        <td class="text-end">${formatNumber(row.aiResponses)}</td>
-        <td class="text-end ${row.limitHits ? 'text-danger fw-semibold' : 'text-muted'}">${formatNumber(row.limitHits)}</td>
-        <td class="text-end">
-          <button class="btn btn-sm btn-outline-primary change-plan-btn"
-                  data-company-id="${escapeHtml(row.companyId)}"
-                  data-company-name="${escapeHtml(row.companyName || '')}"
-                  data-plan-id="${escapeHtml(row.planId)}"
-                  data-status="${escapeHtml(row.status)}">Change plan</button>
-        </td>
-      </tr>`).join('') + `
-      <tr class="table-light fw-semibold">
-        <td colspan="3">Total</td>
-        <td class="text-end">${formatNumber(totals.conversations)}</td>
-        <td class="text-end">${formatNumber(totals.messages)}</td>
-        <td class="text-end">${formatNumber(totals.aiResponses)}</td>
-        <td class="text-end">${formatNumber(totals.limitHits)}</td>
-        <td></td>
-      </tr>`;
-
-    table.querySelectorAll('.change-plan-btn').forEach(btn => {
-      btn.addEventListener('click', () => openPlanModal(btn.dataset));
-    });
-  } catch (error) {
-    logger.error('Failed to load tenant usage:', error);
-  }
-}
-
-function openPlanModal(data) {
-  document.getElementById('change-plan-company-id').value = data.companyId;
-  document.getElementById('change-plan-company-name').textContent = data.companyName;
-
-  const select = document.getElementById('change-plan-select');
-  select.innerHTML = catalogue.map(plan =>
-    `<option value="${escapeHtml(plan.id)}" ${plan.id === data.planId ? 'selected' : ''}>
-      ${escapeHtml(plan.name)}${plan.price === null ? ' (custom)' : ` ($${plan.price}/mo)`}
-    </option>`).join('');
-
-  document.getElementById('change-plan-status').value = data.status || 'active';
-  bootstrap.Modal.getOrCreateInstance(document.getElementById('changePlanModal')).show();
-}
-
-async function savePlan() {
-  const companyId = document.getElementById('change-plan-company-id').value;
-  const button = document.getElementById('save-plan-btn');
-
-  setLoading(button, true);
-  try {
-    await api(`/api/billing/companies/${encodeURIComponent(companyId)}/subscription`, {
-      method: 'PATCH',
-      body: JSON.stringify({
-        planId: document.getElementById('change-plan-select').value,
-        status: document.getElementById('change-plan-status').value,
-        overageAllowed: document.getElementById('change-plan-overage').checked
-      })
-    });
-
-    bootstrap.Modal.getOrCreateInstance(document.getElementById('changePlanModal')).hide();
-    showToast('Plan updated', 'success');
-    renderTenantUsage();
-  } catch (error) {
-    showToast(error.message, 'danger');
-  } finally {
-    setLoading(button, false);
-  }
-}
-
 async function loadBilling() {
-  const user = state.currentUser || {};
-
-  // A superadmin runs the platform rather than belonging to a tenant, so
-  // they have no company and no plan of their own. Loading the per-company
-  // summary for them used to fail and take the whole page down with it -
-  // including the cross-tenant table, which needs no company at all.
-  const hasOwnCompany = Boolean(user.company);
-
   try {
     catalogue = (await api('/api/billing/plans')).plans;
   } catch (error) {
     logger.error('Failed to load the plan catalogue:', error);
   }
 
-  if (hasOwnCompany) {
-    try {
-      const summary = await api('/api/billing/me');
-      renderPlan(summary);
-      renderMeters(summary);
-      renderCatalogue(summary.plan.id);
-      renderHistory();
-    } catch (error) {
-      logger.error('Failed to load billing:', error);
-      document.getElementById('plan-summary').innerHTML =
-        `<div class="text-danger">Could not load plan: ${escapeHtml(error.message)}</div>`;
+  try {
+    summary = await api('/api/billing/me');
+    renderPlan(summary);
+    renderMeters(summary);
+    renderCatalogue(summary.plan.id);
+    renderHistory();
+  } catch (error) {
+    logger.error('Failed to load billing:', error);
+    document.getElementById('plan-summary').innerHTML =
+      `<div class="text-danger">Could not load your plan: ${escapeHtml(error.message)}</div>`;
+  }
+
+  feather.replace();
+}
+
+function setupBilling() {
+  document.getElementById('billing-section').addEventListener('click', event => {
+    const checkout = event.target.closest('.checkout-btn');
+    if (checkout) {
+      startCheckout(checkout.dataset.plan, checkout);
+    } else if (event.target.closest('#billing-portal-link')) {
+      openPortal();
     }
-  } else {
-    renderPlatformView();
-  }
-
-  // Independent of the above: a failure to load one tenant's plan must not
-  // hide platform-wide usage.
-  await renderTenantUsage();
-
-  if (typeof feather !== 'undefined') {
-    feather.replace();
-  }
+  });
 }
 
-/**
- * What a superadmin sees in place of "your plan": they administer tenants
- * rather than having a subscription themselves.
- */
-function renderPlatformView() {
-  document.getElementById('plan-status').textContent = 'platform';
-  document.getElementById('plan-status').className = 'badge bg-dark';
-
-  document.getElementById('plan-summary').innerHTML = `
-    <p class="text-muted mb-2">
-      You administer the platform, so you are not on a tenant plan yourself.
-    </p>
-    <p class="text-muted mb-0">
-      Usage for every tenant is listed below, and you can change any tenant's
-      plan from there.
-    </p>`;
-
-  document.getElementById('usage-meters').innerHTML =
-    '<p class="text-muted mb-0">Select a tenant below to see their consumption against their plan.</p>';
-
-  document.getElementById('usage-history-chart').parentElement.innerHTML =
-    '<p class="text-muted mb-0">Per-tenant history is available from each tenant\'s own dashboard.</p>';
-
-  renderCatalogue(null);
-
-  const hint = document.querySelector('#plan-catalogue')?.parentElement?.querySelector('p.text-muted');
-  if (hint) {
-    hint.textContent = 'Change a tenant\'s plan from the usage table below.';
+registerSection('billing', {
+  setup: setupBilling,
+  show(params) {
+    // Back from Stripe's checkout page.
+    if (params.checkout === 'success') {
+      showToast('Thank you - your plan updates as soon as Stripe confirms the payment.', 'success', 8000);
+    } else if (params.checkout === 'cancelled') {
+      showToast('Payment cancelled. Nothing was charged.', 'info');
+    }
+    loadBilling();
   }
-}
-
-export function setupBillingSection() {
-  const user = state.currentUser;
-  if (!user || (user.role !== 'superadmin' && user.role !== 'company_admin')) {
-    return;
-  }
-  if (!document.getElementById('billing-section')) {
-    return;
-  }
-
-  document.getElementById('save-plan-btn')?.addEventListener('click', savePlan);
-  loadBilling();
-}
+});

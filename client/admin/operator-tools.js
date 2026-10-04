@@ -8,6 +8,7 @@
  */
 
 import * as bootstrap from 'bootstrap';
+import { selectedSessionId } from './inbox.js';
 import { saveJoinedChats, state } from './state.js';
 import { api, escapeHtml, formatRelativeTime, logger, setLoading, showToast } from './utils.js';
 
@@ -15,9 +16,6 @@ let cannedReplies = [];
 let currentNotes = [];
 let chatFilter = 'all';
 
-
-const selectedSessionId = () =>
-  document.getElementById('join-chat-btn').getAttribute('data-session-id');
 
 // ------------------------------------------------------------ saved replies
 
@@ -218,11 +216,6 @@ async function deleteNote(noteId) {
 }
 
 function setupNotes() {
-  document.getElementById('notes-toggle-btn').addEventListener('click', () => {
-    const panel = document.getElementById('notes-panel');
-    panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
-  });
-
   document.getElementById('add-note-btn').addEventListener('click', addNote);
 
   document.getElementById('note-input').addEventListener('keypress', event => {

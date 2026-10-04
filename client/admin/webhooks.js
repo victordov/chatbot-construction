@@ -6,7 +6,8 @@
  * Everything a developer would otherwise ask support for.
  */
 
-import { api, escapeHtml, formatRelativeTime, showToast } from './utils.js';
+import { registerSection } from './nav.js';
+import { api, confirmDialog, escapeHtml, formatRelativeTime, showToast } from './utils.js';
 
 let events = [];
 
@@ -136,7 +137,13 @@ function bindRowActions(container) {
 
   container.querySelectorAll('[data-rotate]').forEach(button => {
     button.addEventListener('click', async () => {
-      if (!confirm('Deliveries signed with the current secret will stop verifying. Continue?')) {
+      const ok = await confirmDialog({
+        title: 'Make a new signing secret?',
+        message: 'Deliveries signed with the current secret stop verifying until your receiver has the new one.',
+        confirmLabel: 'Make a new secret',
+        danger: true
+      });
+      if (!ok) {
         return;
       }
 
@@ -152,7 +159,13 @@ function bindRowActions(container) {
 
   container.querySelectorAll('[data-delete-hook]').forEach(button => {
     button.addEventListener('click', async () => {
-      if (!confirm('Delete this endpoint and its delivery history?')) {
+      const ok = await confirmDialog({
+        title: 'Delete this endpoint?',
+        message: 'Its delivery history goes with it, and nothing more is sent to it.',
+        confirmLabel: 'Delete',
+        danger: true
+      });
+      if (!ok) {
         return;
       }
 
@@ -305,13 +318,18 @@ async function loadDeliveries() {
   }
 }
 
-export function setupWebhooks() {
-  document.getElementById('webhook-create-btn')?.addEventListener('click', create);
-  document.getElementById('webhook-delivery-filter')?.addEventListener('change', loadDeliveries);
-  document.getElementById('webhook-refresh-deliveries')?.addEventListener('click', loadDeliveries);
-
-  loadEvents().then(() => {
-    loadWebhooks();
-    loadDeliveries();
-  });
+function setupWebhooks() {
+  document.getElementById('webhook-create-btn').addEventListener('click', create);
+  document.getElementById('webhook-delivery-filter').addEventListener('change', loadDeliveries);
+  document.getElementById('webhook-refresh-deliveries').addEventListener('click', loadDeliveries);
 }
+
+registerSection('webhooks', {
+  setup: setupWebhooks,
+  show() {
+    loadEvents().then(() => {
+      loadWebhooks();
+      loadDeliveries();
+    });
+  }
+});

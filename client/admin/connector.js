@@ -6,7 +6,8 @@
  * "unauthorised" and nothing else is one people give up on.
  */
 
-import { api, escapeHtml, formatRelativeTime, showToast } from './utils.js';
+import { registerSection } from './nav.js';
+import { api, confirmDialog, escapeHtml, formatRelativeTime, showToast } from './utils.js';
 
 let contract = [];
 
@@ -173,18 +174,20 @@ async function check() {
   }
 }
 
-export function setupConnector() {
-  if (!document.getElementById('connector-url')) {
-    return;
-  }
-
-  document.getElementById('connector-save')?.addEventListener('click', () => save(false));
-  document.getElementById('connector-check')?.addEventListener('click', check);
-  document.getElementById('connector-rotate')?.addEventListener('click', () => {
-    if (confirm('Your connector will reject our calls until you deploy the new secret. Continue?')) {
+function setupConnector() {
+  document.getElementById('connector-save').addEventListener('click', () => save(false));
+  document.getElementById('connector-check').addEventListener('click', check);
+  document.getElementById('connector-rotate').addEventListener('click', async () => {
+    const ok = await confirmDialog({
+      title: 'Make a new signing secret?',
+      message: 'Your connector rejects our calls until you deploy the new secret.',
+      confirmLabel: 'Make a new secret',
+      danger: true
+    });
+    if (ok) {
       save(true);
     }
   });
-
-  load();
 }
+
+registerSection('connector', { setup: setupConnector, show: load });

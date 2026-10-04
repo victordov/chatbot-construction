@@ -1,75 +1,261 @@
 @import "bootstrap/dist/css/bootstrap.min.css";
 
-/* Admin Dashboard Styles */
+/* ==========================================================================
+   Design tokens. One place for the colours and sizes the dashboard uses, so
+   a component does not carry its own idea of "the grey".
+   ========================================================================== */
+:root {
+  --app-sidebar-width: 15.5rem;
+  --app-sidebar-bg: #111827;
+  --app-sidebar-text: #9ca3af;
+  --app-sidebar-text-strong: #f9fafb;
+  --app-sidebar-active: #2563eb;
+  --app-bg: #f6f7f9;
+  --app-border: #e5e7eb;
+  --app-muted: #6b7280;
+  --app-header-height: 3.75rem;
+  --app-radius: 0.6rem;
+  --bubble-user: #f1f3f5;
+  --bubble-bot: #e8f1ff;
+  --bubble-operator: #e7f6ec;
+}
+
+body {
+  background: var(--app-bg);
+}
+
+.card {
+  border-color: var(--app-border);
+  border-radius: var(--app-radius);
+}
+
+/* ==========================================================================
+   App shell: a fixed sidebar and a main column.
+   ========================================================================== */
+.app-shell {
+  min-height: 100vh;
+}
+
 .sidebar {
   position: fixed;
-  top: 0;
-  bottom: 0;
-  left: 0;
-  z-index: 100;
-  padding: 48px 0 0;
-  box-shadow: inset -1px 0 0 rgba(0, 0, 0, .1);
+  inset: 0 auto 0 0;
+  width: var(--app-sidebar-width);
+  background: var(--app-sidebar-bg);
+  color: var(--app-sidebar-text);
+  display: flex;
+  flex-direction: column;
+  z-index: 1035;
 }
 
-/* Hide sidebar on small screens by default */
-@media (max-width: 767.98px) {
-  .sidebar {
-    transform: translateX(-100%);
-    transition: transform 0.3s ease-in-out;
-    width: 250px;
-    max-width: 75%;
-  }
-
-  .sidebar.show {
-    transform: translateX(0);
-    z-index: 1030; /* Higher than Bootstrap's navbar */
-    box-shadow: 0 0 10px rgba(0, 0, 0, 0.2);
-  }
-
-  /* Add overlay when sidebar is shown */
-  body::after {
-    content: '';
-    display: none;
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background: rgba(0, 0, 0, 0.5);
-    z-index: 1020;
-  }
-
-  .sidebar.show + main::before {
-    content: '';
-    display: block;
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background: rgba(0, 0, 0, 0.5);
-    z-index: 1020;
-  }
+.sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  height: var(--app-header-height);
+  padding: 0 1.1rem;
+  color: var(--app-sidebar-text-strong);
+  font-weight: 600;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
 
-.sidebar-sticky {
-  position: relative;
-  top: 0;
-  height: calc(100vh - 48px);
-  padding-top: .5rem;
-  overflow-x: hidden;
+.sidebar-brand span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-scroll {
+  flex: 1 1 auto;
   overflow-y: auto;
+  padding: 0.6rem 0.5rem 1rem;
 }
 
 .sidebar .nav-link {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.42rem 0.65rem;
+  border-radius: 0.4rem;
+  color: var(--app-sidebar-text);
+  font-size: 0.92rem;
   font-weight: 500;
-  color: #999;
+}
+
+.sidebar .nav-link svg {
+  width: 1rem;
+  height: 1rem;
+  flex: 0 0 auto;
+}
+
+.sidebar .nav-link:hover,
+.sidebar .nav-link:focus-visible {
+  color: var(--app-sidebar-text-strong);
+  background: rgba(255, 255, 255, 0.06);
 }
 
 .sidebar .nav-link.active {
   color: #fff;
-  background-color: #007bff;
+  background: var(--app-sidebar-active);
 }
+
+.nav-group {
+  margin-top: 0.9rem;
+}
+
+.nav-group-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 0 0.65rem 0.3rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #6b7280;
+  background: none;
+  border: 0;
+  text-align: left;
+}
+
+.nav-group-toggle svg {
+  width: 0.85rem;
+  height: 0.85rem;
+  transition: transform 0.15s ease;
+}
+
+.nav-group-toggle:not(.collapsed) svg {
+  transform: rotate(180deg);
+}
+
+.sidebar-profile {
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  padding: 0.5rem;
+}
+
+.sidebar-profile-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  width: 100%;
+  padding: 0.45rem;
+  border: 0;
+  border-radius: 0.4rem;
+  background: none;
+  color: var(--app-sidebar-text-strong);
+  text-align: left;
+}
+
+.sidebar-profile-btn:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.sidebar-profile-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1 1 auto;
+  line-height: 1.2;
+}
+
+.sidebar-profile-text span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#profile-email {
+  color: var(--app-sidebar-text);
+}
+
+.avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 50%;
+  background: var(--app-sidebar-active);
+  color: #fff;
+  font-size: 0.8rem;
+  font-weight: 600;
+  flex: 0 0 auto;
+}
+
+.sidebar-backdrop {
+  display: none;
+}
+
+.app-main {
+  margin-left: var(--app-sidebar-width);
+  min-width: 0;
+}
+
+.app-header {
+  position: sticky;
+  top: 0;
+  z-index: 1020;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  height: var(--app-header-height);
+  padding: 0 1.5rem;
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(6px);
+  border-bottom: 1px solid var(--app-border);
+}
+
+.app-content {
+  padding: 1.5rem;
+  max-width: 1500px;
+}
+
+/* Below the large breakpoint the sidebar becomes a drawer. */
+@media (max-width: 991.98px) {
+  .sidebar {
+    transform: translateX(-100%);
+    transition: transform 0.2s ease-in-out;
+    box-shadow: 0 0 24px rgba(0, 0, 0, 0.25);
+  }
+
+  .sidebar.show {
+    transform: translateX(0);
+  }
+
+  .sidebar-backdrop.show {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(17, 24, 39, 0.45);
+    z-index: 1030;
+  }
+
+  .app-main {
+    margin-left: 0;
+  }
+
+  .app-header,
+  .app-content {
+    padding-left: 1rem;
+    padding-right: 1rem;
+  }
+}
+
+/* A sentence of context above a section, with its main action beside it. */
+.section-intro {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-bottom: 1.25rem;
+}
+
+.section-intro > p,
+.section-intro > div:first-child {
+  max-width: 52rem;
+}
+
 
 .content-section {
   display: none;
@@ -234,17 +420,6 @@ th .col-resizer {
 }
 
 /* Sidebar profile section */
-#sidebar .sidebar-profile {
-  border-top: 1px solid #444;
-  padding-top: 1rem;
-  padding-bottom: 1rem;
-  color: #fff;
-}
-
-#sidebar .sidebar-profile button {
-  color: #fff;
-}
-
 .user-name {
   margin-top: 0.25rem;
 }
@@ -366,106 +541,6 @@ th .col-resizer {
 }
 
 .copy-snippet-btn svg { width: 14px; height: 14px; vertical-align: -2px; }
-
-/* --------------------------------------------------------------------------
-   Active chat list
-   -------------------------------------------------------------------------- */
-
-/* The list is the operator's queue; cap it so the message pane keeps its space
-   and long queues scroll rather than pushing the page down. */
-#active-chat-list {
-  max-height: 60vh;
-  overflow-y: auto;
-}
-
-#active-chat-list .list-group-item {
-  border-left: 3px solid transparent;
-}
-
-#active-chat-list .list-group-item.active {
-  border-left-color: #0a58ca;
-}
-
-/* Group the conversation actions so the destructive ones are visually last and
-   separated from the routine ones. */
-.chat-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.35rem;
-  align-items: center;
-}
-
-.chat-actions .action-divider {
-  width: 1px;
-  align-self: stretch;
-  background: #dee2e6;
-  margin: 0 0.15rem;
-}
-
-.chat-messages {
-  /* Flexes within the conversation card rather than claiming a fixed height.
-     A fixed height pushed the composer below the fold as soon as the contact
-     panel and internal notes were both open - the operator could see the
-     canned-reply picker but not the box they were typing into. */
-  flex: 1 1 auto;
-  min-height: 12rem;
-  overflow-y: auto;
-}
-
-/* The conversation card owns the viewport height and lays its children out
-   top to bottom, so the composer is pinned to the bottom and always visible
-   however much is open above it. */
-#active-chats-section .conversation-card {
-  display: flex;
-  flex-direction: column;
-  height: calc(100vh - 7.5rem);
-}
-
-#active-chats-section .conversation-card > .card-body {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  overflow: hidden;
-}
-
-/* Contact details and notes are secondary to the transcript: they may shrink
-   and scroll, the composer may not. */
-#user-contact-info,
-#notes-panel {
-  flex: 0 0 auto;
-  max-height: 40%;
-  overflow-y: auto;
-}
-
-#operator-input {
-  flex: 0 0 auto;
-}
-
-@media (max-width: 767.98px) {
-  /* On a phone the queue sits above the conversation, so a viewport-height
-     card would push the transcript off screen entirely. */
-  #active-chats-section .conversation-card {
-    height: auto;
-  }
-
-  .chat-messages {
-    height: 50vh;
-  }
-}
-
-.message {
-  /* Messages were max-width:80% with auto margins, which left user and
-     operator messages nearly indistinguishable at a glance. */
-  max-width: min(80%, 44rem);
-  word-break: break-word;
-  white-space: pre-wrap;
-}
-
-@media (max-width: 575.98px) {
-  .message { max-width: 92%; }
-  .chat-actions { width: 100%; }
-  .chat-actions .btn { flex: 1 1 auto; }
-}
 
 /* --------------------------------------------------------------------------
    Analytics
@@ -898,4 +973,560 @@ th .col-resizer {
 @keyframes typing-animation {
   0%, 80%, 100% { transform: scale(0.7); }
   40% { transform: scale(1); }
+}
+
+/* ------------------------------------------------------------------
+   AI suggestions shown to an operator in a conversation.
+   ------------------------------------------------------------------ */
+
+/* Suggestion styles */
+.suggestions-container {
+  background-color: #f8f9fa;
+  border: 1px solid #dee2e6;
+  border-radius: 4px;
+  margin: 10px 0;
+  padding: 10px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.suggestions-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+  border-bottom: 1px solid #dee2e6;
+  padding-bottom: 5px;
+}
+
+.suggestions-title {
+  font-weight: bold;
+  margin: 0;
+}
+
+.suggestions-controls {
+  display: flex;
+  align-items: center;
+}
+
+.suggestion-item {
+  background-color: white;
+  border-left: 4px solid #007bff;
+  margin-bottom: 8px;
+  padding: 10px;
+  border-radius: 0 4px 4px 0;
+  transition: all 0.2s ease;
+}
+
+.suggestion-item.used {
+  opacity: 0.6;
+}
+
+.suggestion-content {
+  margin-bottom: 8px;
+  white-space: pre-wrap;
+}
+
+.suggestion-actions {
+  display: flex;
+  gap: 5px;
+}
+
+.suggestion-edit-container {
+  margin-top: 10px;
+}
+
+.suggestion-edit-textarea {
+  width: 100%;
+  min-height: 100px;
+  margin-bottom: 8px;
+  padding: 5px;
+}
+
+.suggestion-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 5px;
+}
+
+.user-query {
+  font-style: italic;
+  color: #6c757d;
+  margin-bottom: 10px;
+  padding: 5px;
+  background-color: #f1f1f1;
+  border-radius: 4px;
+}
+
+/* ==========================================================================
+   Home
+   ========================================================================== */
+.setup-card {
+  border-color: #c7d7fe;
+  background: linear-gradient(180deg, #f5f8ff 0%, #fff 60%);
+}
+
+.setup-steps {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 0.5rem;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.setup-step {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  padding: 0.7rem 0.85rem;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius);
+  background: #fff;
+}
+
+.setup-step-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.setup-step-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 50%;
+  border: 2px solid #c7d2fe;
+  color: #4f46e5;
+  font-weight: 600;
+  font-size: 0.85rem;
+  flex: 0 0 auto;
+}
+
+.setup-step.is-done .setup-step-mark {
+  background: #16a34a;
+  border-color: #16a34a;
+  color: #fff;
+}
+
+.setup-step.is-done .setup-step-text {
+  opacity: 0.7;
+}
+
+.setup-step.is-next {
+  border-color: #93b4fd;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.08);
+}
+
+.quick-link {
+  color: inherit;
+  text-decoration: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.quick-link:hover {
+  border-color: #93b4fd;
+  box-shadow: 0 2px 10px rgba(37, 99, 235, 0.08);
+}
+
+.quick-link svg {
+  color: var(--app-sidebar-active);
+}
+
+/* ==========================================================================
+   Live chats: queue | conversation | details
+   ========================================================================== */
+.inbox-layout {
+  display: grid;
+  grid-template-columns: minmax(16rem, 20rem) minmax(0, 1fr) minmax(15rem, 19rem);
+  gap: 1rem;
+  height: calc(100vh - var(--app-header-height) - 3rem);
+  min-height: 30rem;
+}
+
+.inbox-queue,
+.inbox-conversation,
+.inbox-details {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.inbox-list {
+  flex: 1 1 auto;
+  overflow-y: auto;
+}
+
+.inbox-item {
+  border-left: 3px solid transparent;
+}
+
+.inbox-item.active {
+  border-left-color: #1d4ed8;
+}
+
+.inbox-item-name {
+  font-weight: 600;
+  font-size: 0.92rem;
+}
+
+.conversation-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.inbox-back {
+  display: none;
+}
+
+.conversation-body {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1 1 auto;
+  padding: 0;
+}
+
+.conversation-body .chat-messages {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
+  border: 0;
+  border-radius: 0;
+  padding: 1rem 1.25rem;
+}
+
+.inbox-details .card-body {
+  overflow-y: auto;
+}
+
+.inbox-details-close {
+  display: none;
+}
+
+.details-block + .details-block {
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--app-border);
+}
+
+.details-list {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.25rem 0.75rem;
+  font-size: 0.9rem;
+}
+
+.details-list dt {
+  font-weight: 500;
+  color: var(--app-muted);
+}
+
+.details-list dd {
+  margin: 0;
+  word-break: break-word;
+}
+
+.leave-menu .dropdown-item {
+  white-space: normal;
+  min-width: 16rem;
+}
+
+/* The composer: grows with what is typed, toolbar underneath. */
+.composer {
+  border-top: 1px solid var(--app-border);
+  padding: 0.75rem 1rem;
+  position: relative;
+}
+
+.composer-box {
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius);
+  background: #fff;
+}
+
+.composer-box:focus-within {
+  border-color: #86b7fe;
+  box-shadow: 0 0 0 0.2rem rgba(13, 110, 253, 0.15);
+}
+
+.composer-input {
+  border: 0;
+  resize: none;
+  max-height: 200px;
+  box-shadow: none !important;
+}
+
+.composer-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.35rem 0.5rem;
+  border-top: 1px solid var(--app-border);
+}
+
+.composer-toolbar svg {
+  width: 1rem;
+  height: 1rem;
+}
+
+/* Files and citations inside a message. */
+.message-file {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.message-file-thumb {
+  max-width: 14rem;
+  max-height: 10rem;
+  border-radius: 0.4rem;
+  object-fit: cover;
+}
+
+.file-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  max-width: 100%;
+  padding: 0.35rem 0.6rem;
+  border: 1px solid var(--app-border);
+  border-radius: 999px;
+  background: #fff;
+  font-size: 0.85rem;
+}
+
+.file-chip:hover {
+  border-color: #93b4fd;
+}
+
+.message-sources {
+  margin-top: 0.35rem;
+  font-size: 0.78rem;
+  color: var(--app-muted);
+  white-space: normal;
+}
+
+.message-actions {
+  margin-top: 0.3rem;
+}
+
+.message.user { background: var(--bubble-user); }
+.message.bot { background: var(--bubble-bot); }
+.message.operator { background: var(--bubble-operator); }
+
+/* Details as a drawer, and then one pane at a time. */
+@media (max-width: 1399.98px) {
+  .inbox-layout {
+    grid-template-columns: minmax(15rem, 19rem) minmax(0, 1fr);
+  }
+
+  .inbox-details {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(22rem, 92vw);
+    z-index: 1040;
+    border-radius: 0;
+    transform: translateX(100%);
+    transition: transform 0.2s ease-in-out;
+    box-shadow: -8px 0 24px rgba(0, 0, 0, 0.12);
+  }
+
+  .details-open .inbox-details {
+    transform: translateX(0);
+  }
+
+  .inbox-details-close {
+    display: inline-block;
+  }
+}
+
+@media (max-width: 767.98px) {
+  .inbox-layout {
+    grid-template-columns: 1fr;
+    height: calc(100vh - var(--app-header-height) - 2rem);
+  }
+
+  .inbox-conversation {
+    display: none;
+  }
+
+  .conversation-open .inbox-queue {
+    display: none;
+  }
+
+  .conversation-open .inbox-conversation {
+    display: flex;
+  }
+
+  .inbox-back {
+    display: inline-block;
+  }
+
+  .chat-actions {
+    width: 100%;
+  }
+}
+
+/* ==========================================================================
+   Knowledge, Test your bot, Actions, widget preview
+   ========================================================================== */
+.sheets-card > summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+.sheets-card > summary::-webkit-details-marker {
+  display: none;
+}
+
+.sheets-card > summary svg {
+  width: 1rem;
+  height: 1rem;
+}
+
+.bot-test {
+  display: flex;
+  flex-direction: column;
+  height: min(70vh, 44rem);
+  background: #fff;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius);
+}
+
+.bot-test-drawer .bot-test {
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+}
+
+.bot-test-drawer {
+  --bs-offcanvas-width: min(30rem, 100vw);
+}
+
+.bot-test-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.6rem 0.9rem;
+  border-bottom: 1px solid var(--app-border);
+}
+
+.bot-test-log {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
+  border: 0;
+}
+
+.bot-test-form {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  border-top: 1px solid var(--app-border);
+}
+
+.bot-test-meta {
+  margin-top: 0.4rem;
+  font-size: 0.78rem;
+  white-space: normal;
+}
+
+.bot-test-choices,
+.bot-test-cards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 0.5rem;
+}
+
+.bot-test-card {
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--app-border);
+  border-radius: 0.4rem;
+  background: #fff;
+}
+
+.action-inputs-table td {
+  min-width: 7rem;
+}
+
+.action-test-result {
+  max-height: 16rem;
+  overflow: auto;
+  background: #111827;
+  color: #e5e7eb;
+  padding: 0.6rem;
+  border-radius: 0.4rem;
+  white-space: pre-wrap;
+}
+
+.widget-preview-card {
+  position: sticky;
+  top: calc(var(--app-header-height) + 1rem);
+}
+
+.widget-preview-frame {
+  display: block;
+  width: 100%;
+  height: 40rem;
+  border: 0;
+  border-radius: 0 0 var(--app-radius) var(--app-radius);
+  background: #eef0f3;
+}
+
+/* Native dialogs replaced by these: kept above Bootstrap's own modals. */
+.app-dialog {
+  z-index: 1065;
+}
+
+/* Bootstrap's "active" list item is white text on blue; in the queue the
+   selected row stays readable and the left border says which one it is. */
+#active-chat-list .inbox-item.active,
+#active-chat-list .inbox-item.active:hover,
+#active-chat-list .inbox-item.active:focus {
+  background: #eef4ff;
+  color: inherit;
+  border-color: var(--app-border);
+  border-left-color: #1d4ed8;
+}
+
+#active-chat-list .inbox-item.active .text-muted {
+  color: var(--app-muted) !important;
+}
+
+/* Drafts are a help, not the conversation: they may not crowd it out. */
+.conversation-body .suggestions-container {
+  flex: 0 0 auto;
+  max-height: 32%;
+  margin: 0 1rem 0.5rem;
+}
+
+.empty-state {
+  flex-direction: column;
+  text-align: center;
+  gap: 0.25rem;
+}
+
+.setup-step .btn {
+  white-space: nowrap;
+}
+
+@media (max-width: 575.98px) {
+  .setup-step {
+    flex-wrap: wrap;
+  }
+
+  .setup-step .btn {
+    margin-left: 2.6rem;
+  }
+
+  .stat-card .stat-value {
+    font-size: 1.6rem;
+  }
 }

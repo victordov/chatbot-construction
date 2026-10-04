@@ -10,50 +10,23 @@
  * alternative way of finding out is a customer complaint.
  */
 
-import { api, authToken, getStoredUser, showNotification } from './utils.js';
+import { registerSection } from './nav.js';
+import { setupSheets } from './sheets.js';
+import { api, confirmDialog, errorMessage, escapeHtml, setLoading, showToast } from './utils.js';
 
-// Which tenant we are looking at. Empty for a superadmin until they choose.
-let companyId = null;
-
-
-function currentUser() {
-  return getStoredUser() || {};
-}
-
-function isSuperadmin() {
-  return currentUser().role === 'superadmin';
-}
-
-/**
- * Knowledge is tenant-scoped, so every call has to say whose.
- *
- * A company admin has exactly one and it comes from their account. A
- * superadmin has none of their own and picks one; until they do, the screen
- * says so rather than sitting silently empty.
- */
-function withCompany(path) {
-  if (!companyId) {
-    return path;
-  }
-  return path.includes('?')
-    ? `${path}&companyId=${encodeURIComponent(companyId)}`
-    : `${path}?companyId=${encodeURIComponent(companyId)}`;
-}
-
-/**
- * The shared `api()` plus this section's company scoping: a superadmin's
- * chosen company travels in the body on a write and in the query string on
- * a read, because that is what the route accepts.
- */
+/** Every call goes to the signed-in admin's own company's knowledge base. */
 function knowledgeApi(path, options = {}) {
-  if (companyId && options.body) {
-    const payload = JSON.parse(options.body);
-    payload.companyId = companyId;
-    options = { ...options, body: JSON.stringify(payload) };
-  }
-
-  return api(`/api/knowledge${withCompany(path)}`, options);
+  return api(`/api/knowledge${path}`, options);
 }
+
+const SOURCE_LABELS = {
+  url: 'Web page',
+  pdf: 'PDF',
+  file: 'Uploaded file',
+  text: 'Pasted text',
+  manual: 'Pasted text',
+  google_sheets: 'Google Sheet'
+};
 
 /**
  * Bytes are not a unit anybody thinks in; characters roughly are.
@@ -108,7 +81,7 @@ function renderSources(data) {
     const empty = document.createElement('li');
     empty.className = 'list-group-item text-muted';
     empty.textContent =
-      'Nothing yet. Your bot answers from its persona alone until you add something here.';
+      'Nothing yet. Until you add something, your bot answers from its persona alone - and has to say it does not know a lot.';
     list.appendChild(empty);
     return;
   }
@@ -127,8 +100,19 @@ function renderSources(data) {
 
     const meta = document.createElement('div');
     meta.className = 'small text-muted';
-    meta.textContent = `${describeSize(source)} · imported ${new Date(source.importedAt).toLocaleDateString()}`;
+    const kind = SOURCE_LABELS[source.sourceType] || source.sourceType;
+    meta.textContent = `${kind} · ${describeSize(source)} · added ${new Date(source.importedAt).toLocaleDateString()}`;
     body.appendChild(meta);
+
+    if (source.metadata && source.metadata.url) {
+      const link = document.createElement('a');
+      link.className = 'small d-block text-truncate';
+      link.href = source.metadata.url;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      link.textContent = source.metadata.url;
+      body.appendChild(link);
+    }
 
     if (source.excerpt) {
       const excerpt = document.createElement('div');
@@ -168,55 +152,11 @@ function renderSources(data) {
 }
 
 async function load() {
-  if (isSuperadmin() && !companyId) {
-    // Say what to do rather than showing an empty list and a toast that has
-    // already faded by the time anybody looks.
-    document.getElementById('kb-stats').textContent = '';
-    document.getElementById('kb-source-list').innerHTML =
-      '<li class="list-group-item text-muted">' +
-      'Knowledge belongs to a tenant. Choose a company above to see and edit theirs.' +
-      '</li>';
-    return;
-  }
-
   try {
     renderSources(await knowledgeApi(''));
   } catch (error) {
-    showNotification(error.message, 'error');
+    showToast(errorMessage(error, 'Could not load your knowledge base'), 'danger');
   }
-}
-
-/** Populate the tenant picker, for a superadmin only. */
-async function setupCompanyPicker() {
-  const select = document.getElementById('kb-company');
-
-  if (!select || !isSuperadmin()) {
-    return;
-  }
-
-  select.classList.remove('d-none');
-
-  try {
-    const response = await fetch('/api/companies', { headers: { 'x-auth-token': authToken() } });
-    const data = await response.json();
-    const companies = Array.isArray(data) ? data : (data.companies || []);
-
-    companies.forEach(company => {
-      const option = document.createElement('option');
-      option.value = company._id;
-      option.textContent = company.name;
-      select.appendChild(option);
-    });
-  } catch {
-    // A picker that could not be filled is better left empty than replaced
-    // with an error where the list should be.
-  }
-
-  select.addEventListener('change', () => {
-    companyId = select.value || null;
-    document.getElementById('kb-test-results').innerHTML = '';
-    load();
-  });
 }
 
 async function addUrl() {
@@ -233,13 +173,13 @@ async function addUrl() {
 
   try {
     const result = await knowledgeApi('/sources', { method: 'POST', body: JSON.stringify({ url }) });
-    showNotification(`Imported ${result.chunks} pieces from that page`, 'success');
+    showToast(`Imported ${result.chunks} pieces from that page`, 'success');
     input.value = '';
     await load();
   } catch (error) {
     // The message is theirs to act on: a bad URL, a scanned PDF, a site that
     // refused us.
-    showNotification(error.message, 'error');
+    showToast(error.message, 'danger');
   } finally {
     button.disabled = false;
     button.textContent = 'Import';
@@ -252,7 +192,7 @@ async function addText() {
   const button = document.getElementById('kb-add-text');
 
   if (!text.value.trim()) {
-    showNotification('Paste something first', 'error');
+    showToast('Paste something first', 'warning');
     return;
   }
 
@@ -264,12 +204,12 @@ async function addText() {
       body: JSON.stringify({ title: title.value.trim() || 'Note', text: text.value })
     });
 
-    showNotification(`Added ${result.chunks} pieces`, 'success');
+    showToast(`Added ${result.chunks} pieces`, 'success');
     title.value = '';
     text.value = '';
     await load();
   } catch (error) {
-    showNotification(error.message, 'error');
+    showToast(error.message, 'danger');
   } finally {
     button.disabled = false;
   }
@@ -281,10 +221,10 @@ async function refreshSource(sourceId, button) {
 
   try {
     const result = await knowledgeApi(`/sources/${encodeURIComponent(sourceId)}/refresh`, { method: 'POST' });
-    showNotification(`Re-fetched: ${result.chunks} pieces`, 'success');
+    showToast(`Re-fetched: ${result.chunks} pieces`, 'success');
     await load();
   } catch (error) {
-    showNotification(error.message, 'error');
+    showToast(error.message, 'danger');
     button.disabled = false;
     button.textContent = 'Re-fetch';
   }
@@ -293,16 +233,22 @@ async function refreshSource(sourceId, button) {
 async function removeSource(source) {
   // Removing a source changes what the bot can answer, so name the thing
   // rather than asking "are you sure?" about an unnamed row.
-  if (!confirm(`Remove "${source.title || source.sourceId}"? Your bot will stop answering from it.`)) {
+  const ok = await confirmDialog({
+    title: 'Remove this source?',
+    message: `"${source.title || source.sourceId}" - your bot stops answering from it straight away.`,
+    confirmLabel: 'Remove',
+    danger: true
+  });
+  if (!ok) {
     return;
   }
 
   try {
     await knowledgeApi(`/sources/${encodeURIComponent(source.sourceId)}`, { method: 'DELETE' });
-    showNotification('Removed', 'success');
+    showToast('Removed', 'success');
     await load();
   } catch (error) {
-    showNotification(error.message, 'error');
+    showToast(error.message, 'danger');
   }
 }
 
@@ -325,7 +271,7 @@ async function testSearch() {
     if (data.results.length === 0) {
       results.innerHTML =
         '<div class="alert alert-warning py-2 small mb-0">' +
-        'Nothing matched. Your bot would answer this from its persona alone.' +
+        'Nothing matched. Your bot would answer this from its persona alone - add the material that covers it.' +
         '</div>';
       return;
     }
@@ -337,6 +283,7 @@ async function testSearch() {
       const score = document.createElement('span');
       score.className = 'badge bg-light text-dark float-end';
       score.textContent = result.score;
+      score.title = 'How closely this passage matches the question';
       card.appendChild(score);
 
       const content = document.createElement('div');
@@ -346,26 +293,124 @@ async function testSearch() {
       results.appendChild(card);
     });
   } catch (error) {
-    showNotification(error.message, 'error');
+    showToast(error.message, 'danger');
     results.innerHTML = '';
   }
 }
 
-export function setupKnowledge() {
-  if (!document.getElementById('kb-source-list')) {
+async function crawlSite() {
+  const input = document.getElementById('kb-crawl-url');
+  const button = document.getElementById('kb-crawl-btn');
+  const output = document.getElementById('kb-crawl-result');
+  const url = input.value.trim();
+
+  if (!url) {
+    input.focus();
     return;
   }
 
-  document.getElementById('kb-add-url')?.addEventListener('click', addUrl);
-  document.getElementById('kb-add-text')?.addEventListener('click', addText);
-  document.getElementById('kb-reload')?.addEventListener('click', load);
-  document.getElementById('kb-test')?.addEventListener('click', testSearch);
+  button.disabled = true;
+  button.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Reading…';
+  output.innerHTML = '<div class="small text-muted">This takes up to a minute for a larger site.</div>';
 
-  document.getElementById('kb-test-query')?.addEventListener('keydown', event => {
+  try {
+    const result = await knowledgeApi('/crawl', {
+      method: 'POST',
+      body: { url, maxPages: Number(document.getElementById('kb-crawl-max').value) }
+    });
+    const imported = result.imported || [];
+    const skipped = result.skipped || [];
+
+    output.innerHTML = `
+      <div class="alert alert-${imported.length ? 'success' : 'warning'} py-2 small mb-0">
+        ${imported.length
+    ? `Read ${imported.length} page${imported.length === 1 ? '' : 's'}.`
+    : 'No pages could be read from that address.'}
+        ${skipped.length ? `
+          <details class="mt-1">
+            <summary>${skipped.length} skipped</summary>
+            <ul class="mb-0 ps-3">
+              ${skipped.slice(0, 20).map(item => `<li><span class="text-break">${escapeHtml(item.url)}</span> - ${escapeHtml(item.reason)}</li>`).join('')}
+            </ul>
+          </details>` : ''}
+      </div>`;
+    await load();
+  } catch (error) {
+    output.innerHTML = '';
+    showToast(errorMessage(error, 'Could not read that site'), 'danger');
+  } finally {
+    button.disabled = false;
+    button.textContent = 'Read my site';
+  }
+}
+
+async function uploadFile() {
+  const input = document.getElementById('kb-file');
+  const title = document.getElementById('kb-file-title');
+  const button = document.getElementById('kb-upload-btn');
+  const file = input.files[0];
+
+  if (!file) {
+    showToast('Choose a file first', 'warning');
+    return;
+  }
+
+  const form = new FormData();
+  form.append('file', file);
+  if (title.value.trim()) {
+    form.append('title', title.value.trim());
+  }
+
+  setLoading(button, true);
+  try {
+    const result = await knowledgeApi('/upload', { method: 'POST', body: form });
+    showToast(`Added "${result.title || file.name}" (${result.chunks} pieces)`, 'success');
+    input.value = '';
+    title.value = '';
+    await load();
+  } catch (error) {
+    showToast(errorMessage(error, 'Could not read that file'), 'danger');
+  } finally {
+    setLoading(button, false);
+  }
+}
+
+function setupKnowledge() {
+  document.getElementById('kb-add-url').addEventListener('click', addUrl);
+  document.getElementById('kb-add-text').addEventListener('click', addText);
+  document.getElementById('kb-crawl-btn').addEventListener('click', crawlSite);
+  document.getElementById('kb-upload-btn').addEventListener('click', uploadFile);
+  document.getElementById('kb-reload').addEventListener('click', load);
+  document.getElementById('kb-test').addEventListener('click', testSearch);
+
+  document.getElementById('kb-test-query').addEventListener('keydown', event => {
     if (event.key === 'Enter') {
       testSearch();
     }
   });
+  document.getElementById('kb-crawl-url').addEventListener('keydown', event => {
+    if (event.key === 'Enter') {
+      crawlSite();
+    }
+  });
 
-  setupCompanyPicker().then(load);
+  // The Sheets wizard wakes up only when somebody opens its panel.
+  document.getElementById('sheets-card').addEventListener('toggle', event => {
+    if (event.target.open) {
+      setupSheetsOnce();
+    }
+  });
 }
+
+let sheetsReady = false;
+function setupSheetsOnce() {
+  if (!sheetsReady) {
+    sheetsReady = true;
+    setupSheets();
+  }
+}
+
+registerSection('knowledge', {
+  setup: setupKnowledge,
+  show: load
+});

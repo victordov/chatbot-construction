@@ -12,6 +12,9 @@
 
 import * as bootstrap from 'bootstrap';
 import feather from 'feather-icons';
+import { confirmDialog, promptDialog } from '../shared/dialogs.js';
+import { escapeHtml } from '../shared/html.js';
+import { showToast } from '../shared/toast.js';
 
 const AUTH_TOKEN_KEY = 'chatbot-auth-token';
 
@@ -20,6 +23,9 @@ const AUTH_TOKEN_KEY = 'chatbot-auth-token';
  * implements, fetched once at start-up for the Use Your Data node.
  */
 const workflowCapabilities = { contract: [], connector: [] };
+
+/** The tenant's saved Actions, for an action node that uses one. */
+let savedActions = [];
 const GRID = 16;
 const NODE_WIDTH = 190;
 const NODE_HEIGHT = 74;
@@ -57,15 +63,26 @@ const NODE_TYPES = {
     description: 'Ground answers in your data',
     inputs: 1, outputs: 1,
     fields: [
-      { key: 'sourceType', label: 'Source type', type: 'select', required: true,
-        options: ['google_sheets', 'pdf', 'url', 'vector_store'] },
+      // Every Knowledge step searches the tenant's knowledge base, whatever
+      // its source type says; the other types survive only on old nodes, so
+      // they are offered only when a node already has one.
+      { key: 'sourceType', label: 'Search', type: 'select', required: true,
+        options: d => [
+          { value: 'vector_store', label: 'Everything in your knowledge base' },
+          ...(['google_sheets', 'pdf', 'url'].includes(d.sourceType)
+            ? [{ value: d.sourceType, label: `${d.sourceType} (older setting - searches your knowledge base)` }]
+            : [])
+        ],
+        help: 'Add material under Knowledge in the dashboard; this step finds the passages that answer the question.' },
       { key: 'config.sheetId', label: 'Spreadsheet ID', type: 'text',
         showWhen: d => d.sourceType === 'google_sheets' },
       { key: 'config.range', label: 'Range', type: 'text', placeholder: 'A:Z',
         showWhen: d => d.sourceType === 'google_sheets' },
       { key: 'config.url', label: 'Document URL', type: 'text',
         showWhen: d => d.sourceType === 'pdf' || d.sourceType === 'url' },
-      { key: 'config.collectionName', label: 'Collection', type: 'text',
+      { key: 'config.collectionName', label: 'Collection', type: 'text', advanced: true,
+        placeholder: 'Leave empty',
+        help: 'Only for a separately managed vector index. Leave empty to search your knowledge base.',
         showWhen: d => d.sourceType === 'vector_store' }
     ]
   },
@@ -76,10 +93,11 @@ const NODE_TYPES = {
     fields: [
       { key: 'prompt', label: 'Instruction', type: 'textarea', rows: 4, required: true,
         placeholder: 'Answer the question using the knowledge provided.\n\nQuestion: {{user_input}}',
-        help: 'Use {{user_input}} and {{knowledge_result}} as placeholders.' },
-      { key: 'model', label: 'Model', type: 'select',
+        help: '{{user_input}} is what the customer just wrote; {{knowledge_result}} is what a Knowledge step found.' },
+      { key: 'model', label: 'Model', type: 'select', advanced: true,
         options: ['gpt-4o', 'gpt-4o-mini', 'gpt-4.1', 'gpt-4.1-mini'] },
-      { key: 'temperature', label: 'Temperature', type: 'range', min: 0, max: 1, step: 0.1 }
+      { key: 'temperature', label: 'Creativity', type: 'range', min: 0, max: 1, step: 0.1, advanced: true,
+        help: 'Lower sticks closer to your material; higher varies the wording more.' }
     ]
   },
   response: {
@@ -225,18 +243,20 @@ const NODE_TYPES = {
     description: 'Look something up in your own system',
     inputs: 1, outputs: 2,
     fields: [
-      { key: 'preset', label: 'Start from a service', type: 'preset' },
-      { key: 'url', label: 'URL', type: 'text', required: true,
+      { key: 'actionId', label: 'Use a saved action', type: 'saved-action' },
+      { key: 'preset', label: 'Start from a service', type: 'preset', showWhen: d => !d.actionId },
+      { key: 'url', label: 'URL', type: 'text', required: true, showWhen: d => !d.actionId,
         placeholder: 'https://api.yourcompany.com/orders/{{order_id}}',
         help: 'Must be https. Placeholders are URL-encoded before being sent.' },
-      { key: 'method', label: 'Method', type: 'select',
+      { key: 'method', label: 'Method', type: 'select', showWhen: d => !d.actionId,
         options: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] },
       { key: 'body', label: 'Request body (JSON)', type: 'textarea', rows: 4,
         placeholder: '{"question": "{{user_input}}"}',
-        showWhen: d => (d.method || 'GET') !== 'GET' },
-      { key: 'auth', label: 'Authentication', type: 'auth' },
-      { key: 'outputs', label: 'Read from the response', type: 'outputs' },
-      { key: 'timeoutMs', label: 'Timeout (ms)', type: 'text', placeholder: '8000',
+        showWhen: d => !d.actionId && (d.method || 'GET') !== 'GET' },
+      { key: 'auth', label: 'Authentication', type: 'auth', showWhen: d => !d.actionId },
+      { key: 'outputs', label: 'Read from the response', type: 'outputs', showWhen: d => !d.actionId },
+      { key: 'timeoutMs', label: 'Timeout (ms)', type: 'text', placeholder: '8000', advanced: true,
+        showWhen: d => !d.actionId,
         help: 'Between 1000 and 20000. A visitor is waiting, so keep it short.' }
     ]
   },
@@ -255,7 +275,7 @@ const NODE_TYPES = {
 const NODE_DEFAULTS = {
   start: { label: 'Start' },
   persona: { label: 'Persona', prompt: 'You are a helpful assistant.', tone: 'professional', personality: 'helpful' },
-  knowledge: { label: 'Knowledge', sourceType: 'google_sheets', config: { range: 'A:Z' } },
+  knowledge: { label: 'Knowledge', sourceType: 'vector_store', config: {} },
   llm: { label: 'AI Reply', prompt: 'Answer the question.\n\nQuestion: {{user_input}}', model: 'gpt-4o-mini', temperature: 0.7 },
   response: { label: 'Fixed Reply', template: 'Thanks for reaching out!' },
   router: { label: 'Router', conditions: [] },
@@ -481,9 +501,6 @@ const CONDITION_HELP = {
   }
 };
 
-const escapeHtml = value => String(value === undefined || value === null ? '' : value)
-  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-  .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
 /** Read/write `a.b.c` paths so field keys can target nested config objects. */
 const getPath = (obj, path) =>
@@ -544,9 +561,16 @@ class WorkflowEditor {
     if (document.getElementById('wf-loading')) {
       this.setBusy(true);
     }
-    if (!(await this.verifyToken())) {
+    const verified = await this.verifyToken();
+    if (!verified) {
       localStorage.removeItem(AUTH_TOKEN_KEY);
       location.href = '/admin/login.html?expired=1';
+      return;
+    }
+    // Workflows belong to a company and are its admin's to change; anyone
+    // else would meet a wall of refused requests.
+    if (verified.user && verified.user.role !== 'company_admin') {
+      location.href = '/admin/';
       return;
     }
 
@@ -554,7 +578,7 @@ class WorkflowEditor {
 
     // Before the palette, so the Use Your Data node knows what this tenant
     // has actually implemented the first time somebody opens it.
-    await this.loadCapabilities();
+    await Promise.all([this.loadCapabilities(), this.loadSavedActions()]);
 
     this.bindPalette();
     this.bindCanvas();
@@ -575,6 +599,10 @@ class WorkflowEditor {
     } else {
       this.startBlankWorkflow();
       this.setBusy(false);
+      // Workflows → "Start from a template" lands here.
+      if (new URLSearchParams(location.search).get('templates')) {
+        this.openTemplates();
+      }
     }
   }
 
@@ -589,9 +617,9 @@ class WorkflowEditor {
       const response = await fetch('/api/auth/verify', {
         headers: { 'x-auth-token': this.token }
       });
-      return response.ok;
+      return response.ok ? (await response.json().catch(() => ({}))) : false;
     } catch {
-      return true;
+      return {};
     }
   }
 
@@ -1226,7 +1254,11 @@ class WorkflowEditor {
     this.el.version.textContent = `v${wf.version || 1}`;
 
     const status = wf.status || 'draft';
-    this.el.status.textContent = status;
+    // "Live" says what published means for a customer.
+    this.el.status.textContent = { published: 'live', draft: 'draft', archived: 'archived' }[status] || status;
+    this.el.status.title = status === 'published'
+      ? 'Customers are talking to this workflow now'
+      : 'Not answering customers. Publish to make it live.';
     this.el.status.className = `wf-status wf-status-${status}`;
 
     if (!this.dirty) {
@@ -1417,7 +1449,11 @@ class WorkflowEditor {
     }
 
     const def = NODE_TYPES[node.type];
-    const fields = (def.fields || []).filter(f => !f.showWhen || f.showWhen(node.data));
+    const visible = (def.fields || []).filter(f => !f.showWhen || f.showWhen(node.data));
+    const fields = visible.filter(f => !f.advanced);
+    // Settings most authors never need wait behind "Advanced", so the panel
+    // reads as what the step does rather than how a model is tuned.
+    const advanced = visible.filter(f => f.advanced);
 
     this.el.properties.innerHTML = `
       <div class="wf-properties-head">
@@ -1436,7 +1472,13 @@ class WorkflowEditor {
 
       ${fields.map(field => this.renderField(node, field)).join('')}
 
-      ${node.type === 'action' ? this.renderActionTest(node) : ''}
+      ${advanced.length ? `
+        <details class="wf-advanced mb-3">
+          <summary class="small text-muted">Advanced</summary>
+          <div class="pt-2">${advanced.map(field => this.renderField(node, field)).join('')}</div>
+        </details>` : ''}
+
+      ${node.type === 'action' && !node.data.actionId ? this.renderActionTest(node) : ''}
 
       ${def.singleton ? '' : `
         <button class="btn btn-outline-danger btn-sm w-100 mt-3" id="wf-delete-node">
@@ -1460,11 +1502,27 @@ class WorkflowEditor {
           >${escapeHtml(value)}</textarea>`;
       break;
 
-    case 'select':
+    case 'select': {
+      const options = typeof field.options === 'function' ? field.options(node.data) : (field.options || []);
       control = `<select class="form-select form-select-sm" id="${id}" data-field="${field.key}">
-          ${(field.options || []).map(opt =>
-    `<option value="${escapeHtml(opt)}" ${opt === value ? 'selected' : ''}>${escapeHtml(opt)}</option>`).join('')}
+          ${options.map(opt => {
+    const optionValue = typeof opt === 'object' ? opt.value : opt;
+    const optionLabel = typeof opt === 'object' ? opt.label : opt;
+    return `<option value="${escapeHtml(optionValue)}" ${optionValue === value ? 'selected' : ''}>${escapeHtml(optionLabel)}</option>`;
+  }).join('')}
         </select>`;
+      break;
+    }
+
+    case 'saved-action':
+      control = `<select class="form-select form-select-sm" id="${id}" data-field="${field.key}">
+          <option value="">No - describe the request here</option>
+          ${savedActions.map(action => `<option value="${escapeHtml(action._id)}" ${action._id === value ? 'selected' : ''}>
+            ${escapeHtml(action.title || action.name)}${action.enabled ? '' : ' (switched off)'}</option>`).join('')}
+        </select>`;
+      if (!savedActions.length) {
+        return '<div class="mb-3 small text-muted">Actions you define under Bot → Actions can be used here too.</div>';
+      }
       break;
 
     case 'range':
@@ -2472,6 +2530,16 @@ class WorkflowEditor {
     }
   }
 
+  /** The tenant's saved Actions, offered in the action node. */
+  async loadSavedActions() {
+    try {
+      const response = await fetch('/api/actions', { headers: { 'x-auth-token': this.token } });
+      savedActions = response.ok ? ((await response.json()).actions || []) : [];
+    } catch {
+      savedActions = [];
+    }
+  }
+
   async openTemplates() {
     this.el.templatePicker.hidden = false;
     this.el.templateList.innerHTML = '<p class="text-muted">Loading…</p>';
@@ -2504,8 +2572,12 @@ class WorkflowEditor {
    * once the page has moved on.
    */
   async applyTemplate(id) {
-    if (this.nodes.length > 0 &&
-        !confirm('This replaces everything on the canvas. Continue?')) {
+    if (this.nodes.length > 0 && !(await confirmDialog({
+      title: 'Replace the canvas?',
+      message: 'This template replaces everything on the canvas. Anything unsaved is lost.',
+      confirmLabel: 'Use the template',
+      danger: true
+    }))) {
       return;
     }
 
@@ -2593,9 +2665,15 @@ class WorkflowEditor {
     on('wf-zoom-in', () => this.zoomBy(1.2));
     on('wf-zoom-out', () => this.zoomBy(1 / 1.2));
     on('wf-rename', () => this.rename());
-    on('wf-back', () => {
-      if (!this.dirty || confirm('You have unsaved changes. Leave anyway?')) {
-        location.href = '/admin/';
+    on('wf-back', async () => {
+      if (!this.dirty || await confirmDialog({
+        title: 'Leave without saving?',
+        message: 'You have changes that are not saved.',
+        confirmLabel: 'Leave',
+        danger: true
+      })) {
+        this.dirty = false;
+        location.href = '/admin/?section=workflows';
       }
     });
   }
@@ -2690,9 +2768,14 @@ class WorkflowEditor {
     this.applyTransform();
   }
 
-  /** @returns {boolean} whether a name was given (false when cancelled). */
-  rename() {
-    const name = prompt('Workflow name', this.workflow?.name || '');
+  /** @returns {Promise<boolean>} whether a name was given (false when cancelled). */
+  async rename() {
+    const name = await promptDialog({
+      title: 'Name this workflow',
+      label: 'Name',
+      value: this.workflow?.name || '',
+      placeholder: 'Order status'
+    });
     if (name && name.trim()) {
       this.workflow.name = name.trim();
       this.markDirty();
@@ -2706,7 +2789,7 @@ class WorkflowEditor {
   async save() {
     if (!this.workflow?.name?.trim()) {
       this.toast('Give the workflow a name first', 'warning');
-      if (!this.rename()) {
+      if (!(await this.rename())) {
         return false;
       }
     }
@@ -2815,7 +2898,11 @@ class WorkflowEditor {
       return;
     }
 
-    if (!confirm('Publish this workflow? It will immediately handle live conversations.')) {
+    if (!(await confirmDialog({
+      title: 'Publish this workflow?',
+      message: 'It starts answering customers straight away, ahead of your assistant, and replaces any workflow that is live now. Anything it does not handle still goes to the assistant.',
+      confirmLabel: 'Publish'
+    }))) {
       return;
     }
 
@@ -2870,7 +2957,12 @@ class WorkflowEditor {
   }
 
   async rollback(version) {
-    if (!confirm(`Restore version ${version}? The current graph will be replaced.`)) {
+    if (!(await confirmDialog({
+      title: `Restore version ${version}?`,
+      message: 'The canvas is replaced with that version.',
+      confirmLabel: 'Restore',
+      danger: true
+    }))) {
       return;
     }
 
@@ -2911,7 +3003,12 @@ class WorkflowEditor {
     if (!this.workflowId) {
       return;
     }
-    if (!confirm(`Delete "${this.workflow.name}"? This cannot be undone.`)) {
+    if (!(await confirmDialog({
+      title: 'Delete this workflow?',
+      message: `"${this.workflow.name}" and its versions are removed for good.`,
+      confirmLabel: 'Delete',
+      danger: true
+    }))) {
       return;
     }
 
@@ -2936,18 +3033,7 @@ class WorkflowEditor {
    *        instructions is a toast nobody finishes reading.
    */
   toast(message, variant = 'info', delay = 4000) {
-    const container = document.querySelector('.toast-container');
-    const el = document.createElement('div');
-    el.className = `toast align-items-center text-bg-${variant} border-0`;
-    el.setAttribute('role', 'alert');
-    el.innerHTML = `<div class="d-flex">
-      <div class="toast-body">${escapeHtml(message)}</div>
-      <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
-    </div>`;
-    container.appendChild(el);
-    const toast = new bootstrap.Toast(el, { delay });
-    toast.show();
-    el.addEventListener('hidden.bs.toast', () => el.remove());
+    showToast(message, variant, delay);
   }
 }
 

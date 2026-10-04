@@ -6,7 +6,8 @@
  * is carrying the load.
  */
 
-import { lastAnalyticsData } from './chats.js';
+import { initializeReportCharts, loadOverview, overviewData, resizeChartsIn } from './charts.js';
+import { registerSection } from './nav.js';
 import { authToken, escapeHtml, logger } from './utils.js';
 
 const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -314,15 +315,9 @@ async function load(days = currentRange) {
       // satisfaction figures are not part of that gate — they come from the
       // basic endpoint, so they are rendered here regardless.
       showLocked(true);
-      // Read from the basic payload the dashboard already loaded. `let` at
-      // script scope is not a property of `window`, so this is the binding
-      // itself rather than a lookup that would silently be undefined.
-      renderSatisfaction(
-        typeof lastAnalyticsData !== 'undefined' && lastAnalyticsData
-          ? lastAnalyticsData.satisfaction
-          : null,
-        { summaryOnly: true }
-      );
+      // Read from the basic payload Home already loaded.
+      const overview = overviewData();
+      renderSatisfaction(overview ? overview.satisfaction : null, { summaryOnly: true });
       return;
     }
 
@@ -347,11 +342,8 @@ async function load(days = currentRange) {
   }
 }
 
-export function setupAnalytics() {
+function setupAnalytics() {
   const section = document.getElementById('analytics-section');
-  if (!section) {
-    return;
-  }
 
   section.querySelectorAll('[data-range]').forEach(button => {
     button.addEventListener('click', () => {
@@ -361,21 +353,16 @@ export function setupAnalytics() {
     });
   });
 
-  // Loaded on demand: these aggregations are heavier than the dashboard's,
-  // and most sessions never open this tab.
-  const navLink = document.querySelector('#sidebar .nav-link[data-section="analytics"]');
-  let loaded = false;
-
-  const loadOnce = () => {
-    if (!loaded) {
-      loaded = true;
-      load();
-    }
-  };
-
-  navLink?.addEventListener('click', loadOnce);
-
-  if (section.classList.contains('active')) {
-    loadOnce();
-  }
+  initializeReportCharts();
+  // These aggregations are heavier than Home's, and most sessions never open
+  // Reports, so they load the first time it is opened rather than at boot.
+  load();
 }
+
+registerSection('analytics', {
+  setup: setupAnalytics,
+  show: () => {
+    resizeChartsIn('analytics-section');
+    loadOverview();
+  }
+});

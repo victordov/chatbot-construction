@@ -7,6 +7,7 @@
  * details are rendered rather than dumped as JSON.
  */
 
+import { registerSection } from './nav.js';
 import { authToken, escapeHtml } from './utils.js';
 
 const state = { skip: 0, limit: 50, action: '', outcome: '', days: 30 };
@@ -173,7 +174,7 @@ async function loadActions() {
   }
 }
 
-export function setupAudit() {
+function setupAudit() {
   const onChange = (id, key, transform = value => value) => {
     document.getElementById(id)?.addEventListener('change', event => {
       state[key] = transform(event.target.value);
@@ -199,7 +200,6 @@ export function setupAudit() {
   });
 
   loadActions();
-  load();
 }
 
-export { load as reloadAudit };
+registerSection('audit', { setup: setupAudit, show: () => load() });

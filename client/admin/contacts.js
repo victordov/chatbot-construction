@@ -6,12 +6,12 @@
  * different device.
  */
 
-import { viewChatHistory } from './chats.js';
-import { api, debounce, escapeHtml, formatRelativeTime, logger, setLoading, showToast } from './utils.js';
+import { openConversation } from './inbox.js';
+import { registerSection } from './nav.js';
+import { api, debounce, escapeHtml, formatRelativeTime, setLoading, showToast } from './utils.js';
 
 const contactsState = { page: 1, search: '', filter: '' };
 let currentContact = null;
-let identityExamples = {};
 
 
 /**
@@ -197,7 +197,7 @@ function renderConversationHistory(conversations) {
     button.addEventListener('click', () => {
       // Reuse the existing transcript view rather than building a second one.
       if (typeof viewChatHistory === 'function') {
-        viewChatHistory(button.dataset.sessionId);
+        openConversation(button.dataset.sessionId);
       }
     });
   });
@@ -232,92 +232,9 @@ async function saveContact() {
   }
 }
 
-// ------------------------------------------------------ identity settings
-
-function renderIdentitySnippet() {
-  const origin = window.location.origin;
-  document.getElementById('identity-snippet').textContent = [
-    '<script',
-    `  src="${origin}/widget/js/widget-loader.js"`,
-    '  data-widget-key="YOUR_WIDGET_KEY"',
-    '  data-user-id="<%= user.id %>"',
-    '  data-user-hash="<%= userHash %>"',
-    '  defer><' + '/script>'
-  ].join('\n');
-}
-
-async function loadIdentitySecret() {
-  try {
-    const { secret, examples } = await api('/api/contacts/identity/secret');
-    identityExamples = examples;
-
-    document.getElementById('identity-secret').value = secret;
-    document.getElementById('identity-example').textContent = examples.node;
-    renderIdentitySnippet();
-  } catch (error) {
-    // Operators without admin rights simply do not see this.
-    logger.error('Could not load identity secret:', error);
-  }
-}
-
-async function rotateSecret() {
-  if (!confirm(
-    'Rotate the identity secret?\n\n' +
-    'Every hash your application has already generated stops working, so ' +
-    'logged-in visitors become anonymous until you deploy the new secret.'
-  )) {
-    return;
-  }
-
-  try {
-    const { secret } = await api('/api/contacts/identity/secret/rotate', { method: 'POST' });
-    document.getElementById('identity-secret').value = secret;
-    showToast('Secret rotated — update your server', 'success');
-  } catch (error) {
-    showToast(error.message, 'danger');
-  }
-}
-
-function setupIdentitySection() {
-  if (!document.getElementById('identity-secret')) {
-    return;
-  }
-
-  document.getElementById('reveal-secret-btn').addEventListener('click', event => {
-    const field = document.getElementById('identity-secret');
-    const hidden = field.type === 'password';
-    field.type = hidden ? 'text' : 'password';
-    event.target.textContent = hidden ? 'Hide' : 'Show';
-  });
-
-  document.getElementById('copy-secret-btn').addEventListener('click', () => {
-    navigator.clipboard.writeText(document.getElementById('identity-secret').value)
-      .then(() => showToast('Secret copied — keep it server-side', 'success'))
-      .catch(() => showToast('Could not copy', 'warning'));
-  });
-
-  document.getElementById('rotate-secret-btn').addEventListener('click', rotateSecret);
-
-  document.querySelectorAll('#identity-lang-tabs [data-lang]').forEach(button => {
-    button.addEventListener('click', () => {
-      document.querySelectorAll('#identity-lang-tabs [data-lang]')
-        .forEach(other => other.classList.remove('active'));
-      button.classList.add('active');
-      document.getElementById('identity-example').textContent =
-        identityExamples[button.dataset.lang] || '';
-    });
-  });
-
-  loadIdentitySecret();
-}
-
 // ------------------------------------------------------------------ setup
 
-export function setupContacts() {
-  if (!document.getElementById('contacts-section')) {
-    return;
-  }
-
+function setupContacts() {
   document.getElementById('contact-search')
     .addEventListener('input', debounce(event => {
       contactsState.search = event.target.value.trim();
@@ -337,24 +254,10 @@ export function setupContacts() {
   document.getElementById('save-contact-btn').addEventListener('click', saveContact);
 
   // Loaded on demand; most sessions never open this tab.
-  let loaded = false;
-  const loadOnce = () => {
-    if (!loaded) {
-      loaded = true;
-      loadContacts(1);
-    }
-  };
-
-  document.querySelector('#sidebar .nav-link[data-section="contacts"]')
-    ?.addEventListener('click', loadOnce);
-
-  if (document.getElementById('contacts-section').classList.contains('active')) {
-    loadOnce();
-  }
-
-  setupIdentitySection();
+  loadContacts(1);
 }
 
-// Lets the conversation panel jump straight to this person's history.
+registerSection('contacts', { setup: setupContacts });
 
+// Lets the conversation panel jump straight to this person's history.
 export { openContact as openContactById };

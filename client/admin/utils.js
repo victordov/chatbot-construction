@@ -1,11 +1,20 @@
 /**
- * Shared helpers for the admin dashboard.
- *
- * Loaded before every other admin_parts script.
+ * Helpers the dashboard modules share. HTTP, escaping, toasts and dialogs live
+ * in client/shared/ because the workflow editor uses them too; they are
+ * re-exported here so a dashboard module has one place to import from.
  */
 
-import * as bootstrap from 'bootstrap';
 import { marked } from 'marked';
+import { escapeHtml } from '../shared/html.js';
+import { showToast } from '../shared/toast.js';
+
+export { escapeHtml, safeHref } from '../shared/html.js';
+export { showToast } from '../shared/toast.js';
+export { confirmDialog, promptDialog } from '../shared/dialogs.js';
+export {
+  api, apiFetch, authHeaders, authToken, downloadFile, errorMessage, getStoredUser,
+  parseJsonResponse, sessionExpired, setAuthToken, setStoredUser
+} from '../shared/http.js';
 
 
 /**
@@ -18,26 +27,6 @@ export const logger = {
   error: (message, error) => (error === undefined ? console.error(message) : console.error(message, error)),
   debug: (message, data) => (data === undefined ? console.info('[DEBUG]', message) : console.info('[DEBUG]', message, data))
 };
-
-/**
- * Escape a value for interpolation into an HTML template string.
- *
- * The dashboard builds rows with `innerHTML` from data that visitors control -
- * chat domains, contact names, message content, task titles. Without escaping,
- * a visitor who types `<img src=x onerror=...>` into the chat widget executes
- * script in the operator's authenticated session.
- */
-export function escapeHtml(value) {
-  if (value === null || value === undefined) {
-    return '';
-  }
-  return String(value)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
 
 /**
  * Render Markdown to a safe HTML fragment.
@@ -158,53 +147,6 @@ export function showNotification(title, message = '', type = 'info') {
   showToast(text, type);
 }
 
-/**
- * Bootstrap's colour names, from whatever a caller passed. `error` is what
- * half the call sites say and `text-bg-error` is not a class Bootstrap has,
- * so those toasts rendered as unstyled white boxes.
- */
-export const TOAST_VARIANTS = new Set(['primary', 'secondary', 'success', 'danger', 'warning', 'info', 'light', 'dark']);
-
-export function toastVariant(type) {
-  const aliases = { error: 'danger', warn: 'warning', notice: 'info' };
-  const variant = aliases[type] || type;
-  return TOAST_VARIANTS.has(variant) ? variant : 'info';
-}
-
-/**
- * A toast in the corner. The one implementation for every module.
- *
- * @param {string} message
- * @param {string} [type] a Bootstrap colour name, or `error`
- */
-export function showToast(message, type = 'info') {
-  const container = document.querySelector('.toast-container');
-  if (!container) {
-    logger.info(message);
-    return;
-  }
-
-  const variant = toastVariant(type);
-  const wrapper = document.createElement('div');
-  wrapper.className = `toast align-items-center text-bg-${variant} border-0`;
-  wrapper.setAttribute('role', variant === 'danger' || variant === 'warning' ? 'alert' : 'status');
-  wrapper.setAttribute('aria-live', variant === 'danger' || variant === 'warning' ? 'assertive' : 'polite');
-  wrapper.setAttribute('aria-atomic', 'true');
-  wrapper.innerHTML = `
-    <div class="d-flex">
-      <div class="toast-body">${escapeHtml(message)}</div>
-      <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
-    </div>`;
-  container.appendChild(wrapper);
-
-  if (typeof bootstrap === 'undefined' || !bootstrap.Toast) {
-    return;
-  }
-  const toast = new bootstrap.Toast(wrapper, { delay: 5000 });
-  toast.show();
-  wrapper.addEventListener('hidden.bs.toast', () => wrapper.remove());
-}
-
 // Toggle loading state for buttons
 export function setLoading(button, isLoading) {
   if (!button) {
@@ -221,122 +163,6 @@ export function setLoading(button, isLoading) {
     }
     button.disabled = false;
   }
-}
-
-// ---------------------------------------------------------------- auth + API
-
-export const AUTH_TOKEN_KEY = 'chatbot-auth-token';
-export const STORED_USER_KEY = 'chatbot-user';
-
-/**
- * The signed-in operator's token. One accessor rather than eighty-four
- * `localStorage.getItem('chatbot-auth-token')` calls, so the key lives in
- * exactly one place and a blocked localStorage cannot throw mid-render.
- */
-export function authToken() {
-  try {
-    return localStorage.getItem(AUTH_TOKEN_KEY);
-  } catch (error) {
-    return null;
-  }
-}
-
-export function setAuthToken(token) {
-  try {
-    if (token) {
-      localStorage.setItem(AUTH_TOKEN_KEY, token);
-    } else {
-      localStorage.removeItem(AUTH_TOKEN_KEY);
-    }
-  } catch (error) {
-    // Nothing to do: the next page load will ask them to sign in again.
-  }
-}
-
-/**
- * The cached user record from login, or null.
- *
- * Wrapped because `JSON.parse(localStorage.getItem(...))` throws on a corrupt
- * or missing value, and a throw at the top of a module means the whole
- * module never loads.
- */
-export function getStoredUser() {
-  try {
-    const raw = localStorage.getItem(STORED_USER_KEY);
-    return raw ? JSON.parse(raw) : null;
-  } catch (error) {
-    return null;
-  }
-}
-
-export function setStoredUser(user) {
-  try {
-    if (user) {
-      localStorage.setItem(STORED_USER_KEY, JSON.stringify(user));
-    } else {
-      localStorage.removeItem(STORED_USER_KEY);
-    }
-  } catch (error) {
-    // Ignore.
-  }
-}
-
-/** Headers for a JSON request to our own API. */
-export function authHeaders(extra = {}) {
-  return {
-    'Content-Type': 'application/json',
-    'x-auth-token': authToken(),
-    ...extra
-  };
-}
-
-/**
- * Parse a JSON response, refusing to pretend a failure was a success.
- *
- * `.then(response => response.json())` handed an error body to code that
- * then read `data.operators.forEach` and crashed with a message that had
- * nothing to do with the real problem. Throwing here sends every failure to
- * the caller's `.catch`, with the server's own message when it gave one.
- */
-export async function parseJsonResponse(response) {
-  const body = await response.json().catch(() => ({}));
-
-  if (!response.ok) {
-    const serverMessage = body && (body.error || body.message);
-    const error = new Error(serverMessage || `Request failed (${response.status})`);
-    error.status = response.status;
-    error.body = body;
-    // Only set when the server actually said something, so a network failure
-    // still gets the caller's own wording.
-    error.apiMessage = serverMessage || null;
-    throw error;
-  }
-
-  return body;
-}
-
-/**
- * What to tell the operator: the server's message if there is one, else the
- * caller's fallback.
- */
-export function errorMessage(error, fallback) {
-  return (error && error.apiMessage) || fallback;
-}
-
-/**
- * A JSON call to our own API, authenticated.
- *
- * @param {string} path full path, e.g. `/api/companies/me/widget`
- * @param {RequestInit} [options]
- * @returns {Promise<any>} the parsed body; rejects with the server's error
- */
-export async function api(path, options = {}) {
-  const response = await fetch(path, {
-    ...options,
-    headers: authHeaders(options.headers)
-  });
-
-  return parseJsonResponse(response);
 }
 
 // ------------------------------------------------------------------ the URL
