@@ -47,6 +47,8 @@ which in turn override the built-in defaults.
 | `data-require-email` | `true`/`false`: ask for the visitor's email before the chat | `true` |
 | `data-require-phone` | `true`/`false`: ask for the visitor's phone number before the chat | `false` |
 | `data-privacy-policy-url` | The privacy policy linked from the pre-chat form | `<server-url>/privacy-policy.html` |
+| `data-language` | `en`, `es`, `fr`, `de`, `it`, `pt`, `ro`, `ru`, `uk`, `pl`, `nl`, or `auto` for the visitor's browser. Wins over the dashboard setting | dashboard setting, else `auto` |
+| `data-logo-url` | An `https://` image shown in the header | none |
 | `data-user-id` | Your own id for a logged-in visitor | none |
 | `data-user-hash` | HMAC of `data-user-id`, computed on your server with your identity secret | none |
 

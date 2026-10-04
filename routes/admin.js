@@ -13,6 +13,7 @@ const csatService = require('../services/csat');
 const assignmentService = require('../services/assignment');
 const audit = require('../services/audit');
 const webhookService = require('../services/webhooks');
+const uploads = require('../services/uploads');
 const {
   containsRegex,
   companyFilter,
@@ -473,6 +474,132 @@ router.post('/chat/:sessionId/claim', async (req, res) => {
   } catch (error) {
     logger.error('Error claiming conversation', { error });
     res.status(500).json({ error: 'Failed to claim the conversation' });
+  }
+});
+
+/**
+ * An operator sending the visitor a file: a form, a label, a screenshot of
+ * where the setting is.
+ *
+ * The same rules as a visitor's upload - one allowlist, one size cap, one
+ * directory per tenant, the plan's `fileUploads` feature - and the message it
+ * produces travels the same way a typed operator reply does: `operator-message`
+ * to the visitor's room, `new-message` to the company's operators, each with
+ * the file's id, name and download path added. The visitor downloads it with
+ * their session token (`GET /api/upload/:fileId`).
+ */
+const attachmentParser = uploads.createUploadParser().single('file');
+
+router.post('/conversations/:sessionId/files', (req, res, next) => {
+  attachmentParser(req, res, err => {
+    if (uploads.sendUploadError(err, res)) {
+      return;
+    }
+    next();
+  });
+}, async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file provided' });
+    }
+
+    const conversation = await loadScopedConversation(req, res);
+    if (!conversation) {
+      return;
+    }
+
+    if (conversation.channel === 'email') {
+      // The email channel has no attachment support yet, and storing a file
+      // the customer never receives would read in the transcript as sent.
+      return res.status(409).json({ error: 'Attachments cannot be sent on email conversations yet' });
+    }
+
+    const companyId = conversation.company;
+
+    if (companyId && !(await usageService.hasFeature(companyId, 'fileUploads'))) {
+      return res.status(402).json({
+        error: 'File uploads are not available on this plan',
+        code: 'FEATURE_NOT_IN_PLAN'
+      });
+    }
+
+    const fileId = await uploads.storeFile(companyId, req.file.buffer);
+    const fileName = uploads.cleanFileName(req.file.originalname);
+    const fileUrl = uploads.downloadPath(fileId);
+    const operatorName = req.user.displayName || req.user.username;
+    const timestamp = new Date();
+
+    conversation.messages.push({
+      content: fileName,
+      sender: 'operator',
+      fileId,
+      fileName,
+      operatorId: req.user.id,
+      operatorName,
+      timestamp
+    });
+    conversation.lastActivity = timestamp;
+    await conversation.save();
+
+    usageService.record(companyId, {
+      operatorMessages: 1,
+      messages: 1,
+      filesUploaded: 1,
+      fileBytes: req.file.size
+    });
+
+    const saved = conversation.messages[conversation.messages.length - 1];
+    const messageId = saved && saved._id ? saved._id.toString() : undefined;
+
+    // What a typed operator reply sends the visitor, plus the file.
+    socketManager.emitToSession(conversation.sessionId, 'operator-message', {
+      id: messageId,
+      text: fileName,
+      senderName: operatorName,
+      timestamp,
+      fileId,
+      fileName,
+      fileUrl
+    });
+
+    // And what the other operators hear about any message in the chat.
+    socketManager.emitToOperators(companyId, 'new-message', {
+      sessionId: conversation.sessionId,
+      message: fileName,
+      sender: 'operator',
+      messageId,
+      operatorId: String(req.user.id),
+      operatorName,
+      timestamp,
+      fileId,
+      fileName,
+      fileUrl
+    });
+
+    logger.info('Operator sent a file', {
+      fileId,
+      sessionId: conversation.sessionId,
+      size: req.file.size,
+      mimeType: req.file.mimetype
+    });
+
+    res.status(201).json({
+      success: true,
+      message: {
+        id: messageId,
+        content: fileName,
+        sender: 'operator',
+        operatorName,
+        timestamp,
+        fileId,
+        fileName,
+        fileUrl,
+        size: req.file.size
+      }
+    });
+  } catch (error) {
+    logger.error('Operator file upload failed', { error: error.message });
+    res.status(500).json({ error: 'Failed to send the file' });
   }
 });
 

@@ -420,6 +420,31 @@ describe('WebSockets', () => {
       expect(heardByGlobex).not.toHaveBeenCalled();
     });
 
+    it('tells operators about a visitor\'s file with a link they can open', async () => {
+      const acmeSocket = await connectOperator(acmeOperator);
+      acmeSocket.emit('join-operator-room');
+      await pause(50);
+
+      const { socket: visitor, sessionId } = await startVisitor('file');
+      // What POST /api/upload records before the widget announces the file.
+      const fileId = 'a'.repeat(32);
+      await Conversation.updateOne({ sessionId }, {
+        $push: { messages: { content: '[File uploaded: receipt.pdf]', sender: 'user', fileId, fileName: 'receipt.pdf' } }
+      });
+
+      visitor.emit('file-uploaded', { fileId, fileName: 'ignored-client-name.pdf' });
+
+      const seen = await waitFor(acmeSocket, 'new-message');
+      expect(seen).toMatchObject({
+        sessionId,
+        sender: 'user',
+        fileId,
+        fileName: 'receipt.pdf',
+        fileUrl: `/api/upload/${fileId}`
+      });
+      expect(seen.messageId).toBeTruthy();
+    });
+
     it('reactivates an ended conversation and switches the bot back on', async () => {
       const sessionId = `ws-reactivate-${Date.now()}`;
       await Conversation.create({

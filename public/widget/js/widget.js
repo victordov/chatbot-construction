@@ -38,8 +38,20 @@
     requireEmail: true,
     requirePhone: false,
     // Linked from the pre-chat form. Defaults to the server's own policy page.
-    privacyPolicyUrl: null
+    privacyPolicyUrl: null,
+    // The language asked for: the snippet's `data-language` when it has one,
+    // otherwise the tenant's setting. `languageFallback` is the tenant's
+    // setting on its own, so an unsupported attribute falls through to it.
+    // Either may be `auto`, which means the visitor's browser.
+    language: null,
+    languageFallback: null,
+    // An https image shown in the header as the assistant's avatar. Optional.
+    logoUrl: null
   };
+
+  // The defaults as shipped, so a preview can be re-rendered from scratch
+  // with new settings rather than layered on top of the previous ones.
+  const DEFAULT_CONFIG = Object.assign({}, config);
 
   // Every localStorage key the widget writes, in one place.
   const STORAGE_KEYS = {
@@ -93,6 +105,8 @@
   let fileIndicator;
   let chatMessagesContainer;
   let connectionStatus;
+  let chatInputArea;
+  let humanButton;
 
   // Heartbeat interval for keeping the socket connection alive
   let heartbeatInterval;
@@ -108,6 +122,16 @@
   let closedNoticeShown = false;
   let everConnected = false;
   let uploading = false;
+
+  // Whether the conversation has begun: the visitor has said something, or
+  // the server replayed a transcript with them in it. "Talk to a person"
+  // waits for this - offered before anyone has asked anything, it reads as
+  // the only way in and skips the assistant entirely.
+  let chatStarted = false;
+  // A person has picked the conversation up, so asking for one is moot.
+  let operatorConnected = false;
+  // The pre-chat form is on screen and is the one thing to do.
+  let preChatShowing = false;
 
   // Logger utility to avoid direct console usage
   const logger = {
@@ -126,6 +150,924 @@
       console.warn(...arguments);
     }
   };
+
+  // ------------------------------------------------------- translations
+
+  /**
+   * Every word a visitor reads, in every language the widget speaks.
+   *
+   * Kept here rather than fetched: the widget has no build step and no second
+   * request to spare before it can draw, and the whole table is a few
+   * kilobytes. `config/widget-languages.js` holds the same list of codes on
+   * the server, which validates the tenant's `language` setting against it.
+   *
+   * `{name}`-style placeholders are filled by `t()`. A key missing from a
+   * language falls back to English rather than showing the key, so a new
+   * string can ship before its translations do.
+   *
+   * Portuguese is Brazilian; Spanish is neutral; both use the informal
+   * second person, as do the Romanian, Polish and Dutch tables. German and
+   * French use the formal form, which is what customer service there expects.
+   */
+  const STRINGS = {
+    en: {
+      openChat: 'Open chat with {name}',
+      closeChatWith: 'Close chat with {name}',
+      chatWith: 'Chat with {name}',
+      talkToPerson: 'Talk to a person',
+      closeChat: 'Close chat',
+      typing: 'Typing',
+      attachFile: 'Attach a file',
+      chooseFile: 'Choose a file to send',
+      yourMessage: 'Your message',
+      placeholder: 'Type your message...',
+      send: 'Send',
+      placeholderUnavailable: 'Chat is unavailable right now',
+      placeholderWaiting: 'Waiting for connection...',
+      statusUnavailable: 'Chat unavailable',
+      reconnecting: 'Reconnecting…',
+      offline: 'Offline',
+      fieldName: 'Name',
+      fieldEmail: 'Email',
+      fieldPhone: 'Phone',
+      optional: '(optional)',
+      detailsTitle: 'Please provide your details',
+      privacyNotice: 'By starting a chat you agree to our {link}.',
+      privacyLink: 'privacy policy',
+      startChat: 'Start chat',
+      errorName: 'Please enter your name.',
+      errorEmail: 'Please enter your email.',
+      errorPhone: 'Please enter your phone number.',
+      errorEmailInvalid: 'Please enter a valid email address.',
+      greeting: 'Hello! How can I assist you today?',
+      closedDefault: 'We are closed at the moment.',
+      reopen: 'We reopen {when}.',
+      whenToday: 'today at {time}',
+      whenTomorrow: 'tomorrow at {time}',
+      whenDay: '{day} at {time}',
+      unavailableNotice: 'Chat is unavailable at the moment. Please try again later.',
+      genericError: 'Something went wrong. Please try again.',
+      conversationClosed: 'This conversation has been closed.',
+      operatorJoined: '{name} has joined the conversation.',
+      connectedToTeam: 'You are connected to a member of the team.',
+      queued: 'Nobody is free right now. Your conversation is in the queue and someone will reply here as soon as they can.',
+      offlineNotSent: 'You are offline. Your message was not sent.',
+      unavailableNotSent: 'Chat is unavailable at the moment. Your message was not sent.',
+      fileTooLarge: 'That file is too large. The limit is {size} MB.',
+      offlineFileNotSent: 'You are offline. The file was not sent.',
+      uploading: 'Uploading {file}…',
+      sentFile: 'Sent {file}',
+      fileSelected: 'File selected: {file}',
+      uploadFailed: 'Sorry, there was a problem uploading your file. Please try again.',
+      uploadedFile: 'I\'ve uploaded a file: {file}',
+      downloadFile: 'Download {file}',
+      sources: 'Sources',
+      suggestedReplies: 'Suggested replies',
+      view: 'View',
+      you: 'You',
+      assistant: 'AI Assistant',
+      operator: 'Operator',
+      ratingQuestion: 'How did we do?',
+      rateConversation: 'Rate this conversation',
+      scoreLabel: '{score} out of 5',
+      notHelpful: 'Not helpful',
+      veryHelpful: 'Very helpful',
+      noThanks: 'No thanks',
+      thankYou: 'Thank you.',
+      addComment: 'Anything you would like to add?',
+      optionalPlaceholder: 'Optional',
+      thanksFeedback: 'Thanks for the feedback.',
+      previewVisitor: 'Do you ship to Canada?',
+      previewBot: 'Yes, we ship to Canada. Delivery usually takes 5 to 7 working days.',
+      previewSource: 'Shipping and delivery',
+      previewReply: 'This is a preview. Replies appear here once the widget is live.'
+    },
+    es: {
+      openChat: 'Abrir chat con {name}',
+      closeChatWith: 'Cerrar chat con {name}',
+      chatWith: 'Chat con {name}',
+      talkToPerson: 'Hablar con una persona',
+      closeChat: 'Cerrar chat',
+      typing: 'Escribiendo',
+      attachFile: 'Adjuntar un archivo',
+      chooseFile: 'Elige un archivo para enviar',
+      yourMessage: 'Tu mensaje',
+      placeholder: 'Escribe tu mensaje...',
+      send: 'Enviar',
+      placeholderUnavailable: 'El chat no está disponible ahora',
+      placeholderWaiting: 'Esperando conexión...',
+      statusUnavailable: 'Chat no disponible',
+      reconnecting: 'Reconectando…',
+      offline: 'Sin conexión',
+      fieldName: 'Nombre',
+      fieldEmail: 'Correo electrónico',
+      fieldPhone: 'Teléfono',
+      optional: '(opcional)',
+      detailsTitle: 'Indícanos tus datos',
+      privacyNotice: 'Al iniciar un chat aceptas nuestra {link}.',
+      privacyLink: 'política de privacidad',
+      startChat: 'Iniciar chat',
+      errorName: 'Introduce tu nombre.',
+      errorEmail: 'Introduce tu correo electrónico.',
+      errorPhone: 'Introduce tu número de teléfono.',
+      errorEmailInvalid: 'Introduce una dirección de correo válida.',
+      greeting: '¡Hola! ¿En qué puedo ayudarte hoy?',
+      closedDefault: 'En este momento estamos cerrados.',
+      reopen: 'Volvemos a abrir {when}.',
+      whenToday: 'hoy a las {time}',
+      whenTomorrow: 'mañana a las {time}',
+      whenDay: 'el {day} a las {time}',
+      unavailableNotice: 'El chat no está disponible en este momento. Inténtalo de nuevo más tarde.',
+      genericError: 'Algo salió mal. Inténtalo de nuevo.',
+      conversationClosed: 'Esta conversación se ha cerrado.',
+      operatorJoined: '{name} se ha unido a la conversación.',
+      connectedToTeam: 'Estás hablando con un miembro del equipo.',
+      queued: 'Ahora mismo no hay nadie disponible. Tu conversación está en la cola y alguien te responderá aquí lo antes posible.',
+      offlineNotSent: 'No tienes conexión. Tu mensaje no se ha enviado.',
+      unavailableNotSent: 'El chat no está disponible en este momento. Tu mensaje no se ha enviado.',
+      fileTooLarge: 'El archivo es demasiado grande. El límite es de {size} MB.',
+      offlineFileNotSent: 'No tienes conexión. El archivo no se ha enviado.',
+      uploading: 'Subiendo {file}…',
+      sentFile: 'Enviado: {file}',
+      fileSelected: 'Archivo seleccionado: {file}',
+      uploadFailed: 'Lo sentimos, hubo un problema al subir tu archivo. Inténtalo de nuevo.',
+      uploadedFile: 'He subido un archivo: {file}',
+      downloadFile: 'Descargar {file}',
+      sources: 'Fuentes',
+      suggestedReplies: 'Respuestas sugeridas',
+      view: 'Ver',
+      you: 'Tú',
+      assistant: 'Asistente IA',
+      operator: 'Agente',
+      ratingQuestion: '¿Qué tal lo hemos hecho?',
+      rateConversation: 'Valora esta conversación',
+      scoreLabel: '{score} de 5',
+      notHelpful: 'Nada útil',
+      veryHelpful: 'Muy útil',
+      noThanks: 'No, gracias',
+      thankYou: 'Gracias.',
+      addComment: '¿Quieres añadir algo?',
+      optionalPlaceholder: 'Opcional',
+      thanksFeedback: 'Gracias por tus comentarios.',
+      previewVisitor: '¿Hacéis envíos a Canadá?',
+      previewBot: 'Sí, enviamos a Canadá. La entrega suele tardar de 5 a 7 días laborables.',
+      previewSource: 'Envíos y entregas',
+      previewReply: 'Esto es una vista previa. Las respuestas aparecerán aquí cuando el widget esté activo.'
+    },
+    fr: {
+      openChat: 'Ouvrir la discussion avec {name}',
+      closeChatWith: 'Fermer la discussion avec {name}',
+      chatWith: 'Discussion avec {name}',
+      talkToPerson: 'Parler à une personne',
+      closeChat: 'Fermer la discussion',
+      typing: 'En train d’écrire',
+      attachFile: 'Joindre un fichier',
+      chooseFile: 'Choisir un fichier à envoyer',
+      yourMessage: 'Votre message',
+      placeholder: 'Écrivez votre message...',
+      send: 'Envoyer',
+      placeholderUnavailable: 'La discussion est indisponible pour le moment',
+      placeholderWaiting: 'En attente de connexion...',
+      statusUnavailable: 'Discussion indisponible',
+      reconnecting: 'Reconnexion…',
+      offline: 'Hors ligne',
+      fieldName: 'Nom',
+      fieldEmail: 'E-mail',
+      fieldPhone: 'Téléphone',
+      optional: '(facultatif)',
+      detailsTitle: 'Merci d’indiquer vos coordonnées',
+      privacyNotice: 'En démarrant une discussion, vous acceptez notre {link}.',
+      privacyLink: 'politique de confidentialité',
+      startChat: 'Démarrer la discussion',
+      errorName: 'Veuillez saisir votre nom.',
+      errorEmail: 'Veuillez saisir votre e-mail.',
+      errorPhone: 'Veuillez saisir votre numéro de téléphone.',
+      errorEmailInvalid: 'Veuillez saisir une adresse e-mail valide.',
+      greeting: 'Bonjour ! Comment puis-je vous aider aujourd’hui ?',
+      closedDefault: 'Nous sommes fermés pour le moment.',
+      reopen: 'Nous rouvrons {when}.',
+      whenToday: 'aujourd’hui à {time}',
+      whenTomorrow: 'demain à {time}',
+      whenDay: '{day} à {time}',
+      unavailableNotice: 'La discussion est indisponible pour le moment. Veuillez réessayer plus tard.',
+      genericError: 'Une erreur s’est produite. Veuillez réessayer.',
+      conversationClosed: 'Cette conversation est terminée.',
+      operatorJoined: '{name} a rejoint la conversation.',
+      connectedToTeam: 'Vous êtes en contact avec un membre de l’équipe.',
+      queued: 'Personne n’est disponible pour le moment. Votre conversation est en file d’attente et quelqu’un vous répondra ici dès que possible.',
+      offlineNotSent: 'Vous êtes hors ligne. Votre message n’a pas été envoyé.',
+      unavailableNotSent: 'La discussion est indisponible pour le moment. Votre message n’a pas été envoyé.',
+      fileTooLarge: 'Ce fichier est trop volumineux. La limite est de {size} Mo.',
+      offlineFileNotSent: 'Vous êtes hors ligne. Le fichier n’a pas été envoyé.',
+      uploading: 'Envoi de {file}…',
+      sentFile: '{file} envoyé',
+      fileSelected: 'Fichier sélectionné : {file}',
+      uploadFailed: 'Désolé, un problème est survenu lors de l’envoi de votre fichier. Veuillez réessayer.',
+      uploadedFile: 'J’ai envoyé un fichier : {file}',
+      downloadFile: 'Télécharger {file}',
+      sources: 'Sources',
+      suggestedReplies: 'Réponses suggérées',
+      view: 'Voir',
+      you: 'Vous',
+      assistant: 'Assistant IA',
+      operator: 'Conseiller',
+      ratingQuestion: 'Comment s’est passé cet échange ?',
+      rateConversation: 'Évaluer cette conversation',
+      scoreLabel: '{score} sur 5',
+      notHelpful: 'Pas utile',
+      veryHelpful: 'Très utile',
+      noThanks: 'Non merci',
+      thankYou: 'Merci.',
+      addComment: 'Souhaitez-vous ajouter quelque chose ?',
+      optionalPlaceholder: 'Facultatif',
+      thanksFeedback: 'Merci pour votre avis.',
+      previewVisitor: 'Livrez-vous au Canada ?',
+      previewBot: 'Oui, nous livrons au Canada. La livraison prend généralement 5 à 7 jours ouvrés.',
+      previewSource: 'Expédition et livraison',
+      previewReply: 'Ceci est un aperçu. Les réponses s’afficheront ici une fois le widget en ligne.'
+    },
+    de: {
+      openChat: 'Chat mit {name} öffnen',
+      closeChatWith: 'Chat mit {name} schließen',
+      chatWith: 'Chat mit {name}',
+      talkToPerson: 'Mit einem Menschen sprechen',
+      closeChat: 'Chat schließen',
+      typing: 'Schreibt',
+      attachFile: 'Datei anhängen',
+      chooseFile: 'Datei zum Senden auswählen',
+      yourMessage: 'Ihre Nachricht',
+      placeholder: 'Nachricht eingeben...',
+      send: 'Senden',
+      placeholderUnavailable: 'Der Chat ist gerade nicht verfügbar',
+      placeholderWaiting: 'Warte auf Verbindung...',
+      statusUnavailable: 'Chat nicht verfügbar',
+      reconnecting: 'Verbindung wird wiederhergestellt…',
+      offline: 'Offline',
+      fieldName: 'Name',
+      fieldEmail: 'E-Mail',
+      fieldPhone: 'Telefon',
+      optional: '(optional)',
+      detailsTitle: 'Bitte geben Sie Ihre Daten an',
+      privacyNotice: 'Mit dem Start des Chats stimmen Sie unserer {link} zu.',
+      privacyLink: 'Datenschutzerklärung',
+      startChat: 'Chat starten',
+      errorName: 'Bitte geben Sie Ihren Namen ein.',
+      errorEmail: 'Bitte geben Sie Ihre E-Mail-Adresse ein.',
+      errorPhone: 'Bitte geben Sie Ihre Telefonnummer ein.',
+      errorEmailInvalid: 'Bitte geben Sie eine gültige E-Mail-Adresse ein.',
+      greeting: 'Hallo! Wie kann ich Ihnen heute helfen?',
+      closedDefault: 'Wir haben gerade geschlossen.',
+      reopen: 'Wir öffnen wieder {when}.',
+      whenToday: 'heute um {time}',
+      whenTomorrow: 'morgen um {time}',
+      whenDay: 'am {day} um {time}',
+      unavailableNotice: 'Der Chat ist im Moment nicht verfügbar. Bitte versuchen Sie es später erneut.',
+      genericError: 'Etwas ist schiefgelaufen. Bitte versuchen Sie es erneut.',
+      conversationClosed: 'Diese Unterhaltung wurde beendet.',
+      operatorJoined: '{name} ist der Unterhaltung beigetreten.',
+      connectedToTeam: 'Sie sind mit einem Teammitglied verbunden.',
+      queued: 'Gerade ist niemand frei. Ihre Unterhaltung ist in der Warteschlange, und jemand antwortet Ihnen hier so bald wie möglich.',
+      offlineNotSent: 'Sie sind offline. Ihre Nachricht wurde nicht gesendet.',
+      unavailableNotSent: 'Der Chat ist im Moment nicht verfügbar. Ihre Nachricht wurde nicht gesendet.',
+      fileTooLarge: 'Die Datei ist zu groß. Die Grenze liegt bei {size} MB.',
+      offlineFileNotSent: 'Sie sind offline. Die Datei wurde nicht gesendet.',
+      uploading: '{file} wird hochgeladen…',
+      sentFile: '{file} gesendet',
+      fileSelected: 'Ausgewählte Datei: {file}',
+      uploadFailed: 'Beim Hochladen Ihrer Datei ist leider ein Problem aufgetreten. Bitte versuchen Sie es erneut.',
+      uploadedFile: 'Ich habe eine Datei hochgeladen: {file}',
+      downloadFile: '{file} herunterladen',
+      sources: 'Quellen',
+      suggestedReplies: 'Antwortvorschläge',
+      view: 'Ansehen',
+      you: 'Sie',
+      assistant: 'KI-Assistent',
+      operator: 'Mitarbeiter',
+      ratingQuestion: 'Wie waren wir?',
+      rateConversation: 'Diese Unterhaltung bewerten',
+      scoreLabel: '{score} von 5',
+      notHelpful: 'Nicht hilfreich',
+      veryHelpful: 'Sehr hilfreich',
+      noThanks: 'Nein danke',
+      thankYou: 'Vielen Dank.',
+      addComment: 'Möchten Sie noch etwas hinzufügen?',
+      optionalPlaceholder: 'Optional',
+      thanksFeedback: 'Danke für Ihr Feedback.',
+      previewVisitor: 'Liefern Sie nach Kanada?',
+      previewBot: 'Ja, wir liefern nach Kanada. Die Lieferung dauert in der Regel 5 bis 7 Werktage.',
+      previewSource: 'Versand und Lieferung',
+      previewReply: 'Dies ist eine Vorschau. Antworten erscheinen hier, sobald das Widget live ist.'
+    },
+    it: {
+      openChat: 'Apri la chat con {name}',
+      closeChatWith: 'Chiudi la chat con {name}',
+      chatWith: 'Chat con {name}',
+      talkToPerson: 'Parla con una persona',
+      closeChat: 'Chiudi la chat',
+      typing: 'Sta scrivendo',
+      attachFile: 'Allega un file',
+      chooseFile: 'Scegli un file da inviare',
+      yourMessage: 'Il tuo messaggio',
+      placeholder: 'Scrivi il tuo messaggio...',
+      send: 'Invia',
+      placeholderUnavailable: 'La chat non è disponibile al momento',
+      placeholderWaiting: 'In attesa di connessione...',
+      statusUnavailable: 'Chat non disponibile',
+      reconnecting: 'Riconnessione…',
+      offline: 'Offline',
+      fieldName: 'Nome',
+      fieldEmail: 'Email',
+      fieldPhone: 'Telefono',
+      optional: '(facoltativo)',
+      detailsTitle: 'Inserisci i tuoi dati',
+      privacyNotice: 'Avviando una chat accetti la nostra {link}.',
+      privacyLink: 'informativa sulla privacy',
+      startChat: 'Inizia la chat',
+      errorName: 'Inserisci il tuo nome.',
+      errorEmail: 'Inserisci la tua email.',
+      errorPhone: 'Inserisci il tuo numero di telefono.',
+      errorEmailInvalid: 'Inserisci un indirizzo email valido.',
+      greeting: 'Ciao! Come posso aiutarti oggi?',
+      closedDefault: 'Al momento siamo chiusi.',
+      reopen: 'Riapriamo {when}.',
+      whenToday: 'oggi alle {time}',
+      whenTomorrow: 'domani alle {time}',
+      whenDay: '{day} alle {time}',
+      unavailableNotice: 'La chat non è disponibile al momento. Riprova più tardi.',
+      genericError: 'Qualcosa è andato storto. Riprova.',
+      conversationClosed: 'Questa conversazione è stata chiusa.',
+      operatorJoined: '{name} si è unito alla conversazione.',
+      connectedToTeam: 'Sei in contatto con un membro del team.',
+      queued: 'Al momento non c’è nessuno disponibile. La tua conversazione è in coda e qualcuno ti risponderà qui il prima possibile.',
+      offlineNotSent: 'Sei offline. Il messaggio non è stato inviato.',
+      unavailableNotSent: 'La chat non è disponibile al momento. Il messaggio non è stato inviato.',
+      fileTooLarge: 'Il file è troppo grande. Il limite è {size} MB.',
+      offlineFileNotSent: 'Sei offline. Il file non è stato inviato.',
+      uploading: 'Caricamento di {file}…',
+      sentFile: '{file} inviato',
+      fileSelected: 'File selezionato: {file}',
+      uploadFailed: 'Si è verificato un problema durante il caricamento del file. Riprova.',
+      uploadedFile: 'Ho caricato un file: {file}',
+      downloadFile: 'Scarica {file}',
+      sources: 'Fonti',
+      suggestedReplies: 'Risposte suggerite',
+      view: 'Vedi',
+      you: 'Tu',
+      assistant: 'Assistente IA',
+      operator: 'Operatore',
+      ratingQuestion: 'Come ci siamo comportati?',
+      rateConversation: 'Valuta questa conversazione',
+      scoreLabel: '{score} su 5',
+      notHelpful: 'Per niente utile',
+      veryHelpful: 'Molto utile',
+      noThanks: 'No, grazie',
+      thankYou: 'Grazie.',
+      addComment: 'Vuoi aggiungere qualcosa?',
+      optionalPlaceholder: 'Facoltativo',
+      thanksFeedback: 'Grazie per il tuo feedback.',
+      previewVisitor: 'Spedite in Canada?',
+      previewBot: 'Sì, spediamo in Canada. La consegna richiede di solito da 5 a 7 giorni lavorativi.',
+      previewSource: 'Spedizioni e consegne',
+      previewReply: 'Questa è un’anteprima. Le risposte appariranno qui quando il widget sarà attivo.'
+    },
+    pt: {
+      openChat: 'Abrir chat com {name}',
+      closeChatWith: 'Fechar chat com {name}',
+      chatWith: 'Chat com {name}',
+      talkToPerson: 'Falar com uma pessoa',
+      closeChat: 'Fechar chat',
+      typing: 'Digitando',
+      attachFile: 'Anexar um arquivo',
+      chooseFile: 'Escolha um arquivo para enviar',
+      yourMessage: 'Sua mensagem',
+      placeholder: 'Digite sua mensagem...',
+      send: 'Enviar',
+      placeholderUnavailable: 'O chat não está disponível agora',
+      placeholderWaiting: 'Aguardando conexão...',
+      statusUnavailable: 'Chat indisponível',
+      reconnecting: 'Reconectando…',
+      offline: 'Sem conexão',
+      fieldName: 'Nome',
+      fieldEmail: 'E-mail',
+      fieldPhone: 'Telefone',
+      optional: '(opcional)',
+      detailsTitle: 'Informe seus dados',
+      privacyNotice: 'Ao iniciar um chat, você concorda com nossa {link}.',
+      privacyLink: 'política de privacidade',
+      startChat: 'Iniciar chat',
+      errorName: 'Informe seu nome.',
+      errorEmail: 'Informe seu e-mail.',
+      errorPhone: 'Informe seu número de telefone.',
+      errorEmailInvalid: 'Informe um endereço de e-mail válido.',
+      greeting: 'Olá! Como posso ajudar você hoje?',
+      closedDefault: 'Estamos fechados no momento.',
+      reopen: 'Reabrimos {when}.',
+      whenToday: 'hoje às {time}',
+      whenTomorrow: 'amanhã às {time}',
+      whenDay: '{day} às {time}',
+      unavailableNotice: 'O chat não está disponível no momento. Tente novamente mais tarde.',
+      genericError: 'Algo deu errado. Tente novamente.',
+      conversationClosed: 'Esta conversa foi encerrada.',
+      operatorJoined: '{name} entrou na conversa.',
+      connectedToTeam: 'Você está falando com um membro da equipe.',
+      queued: 'Ninguém está disponível agora. Sua conversa está na fila e alguém responderá aqui assim que possível.',
+      offlineNotSent: 'Você está sem conexão. Sua mensagem não foi enviada.',
+      unavailableNotSent: 'O chat não está disponível no momento. Sua mensagem não foi enviada.',
+      fileTooLarge: 'Esse arquivo é grande demais. O limite é {size} MB.',
+      offlineFileNotSent: 'Você está sem conexão. O arquivo não foi enviado.',
+      uploading: 'Enviando {file}…',
+      sentFile: '{file} enviado',
+      fileSelected: 'Arquivo selecionado: {file}',
+      uploadFailed: 'Desculpe, houve um problema ao enviar seu arquivo. Tente novamente.',
+      uploadedFile: 'Enviei um arquivo: {file}',
+      downloadFile: 'Baixar {file}',
+      sources: 'Fontes',
+      suggestedReplies: 'Respostas sugeridas',
+      view: 'Ver',
+      you: 'Você',
+      assistant: 'Assistente de IA',
+      operator: 'Atendente',
+      ratingQuestion: 'Como foi o atendimento?',
+      rateConversation: 'Avalie esta conversa',
+      scoreLabel: '{score} de 5',
+      notHelpful: 'Nada útil',
+      veryHelpful: 'Muito útil',
+      noThanks: 'Não, obrigado',
+      thankYou: 'Obrigado.',
+      addComment: 'Quer acrescentar algo?',
+      optionalPlaceholder: 'Opcional',
+      thanksFeedback: 'Obrigado pelo seu feedback.',
+      previewVisitor: 'Vocês enviam para o Canadá?',
+      previewBot: 'Sim, enviamos para o Canadá. A entrega costuma levar de 5 a 7 dias úteis.',
+      previewSource: 'Envio e entrega',
+      previewReply: 'Esta é uma prévia. As respostas aparecerão aqui quando o widget estiver no ar.'
+    },
+    ro: {
+      openChat: 'Deschide chatul cu {name}',
+      closeChatWith: 'Închide chatul cu {name}',
+      chatWith: 'Chat cu {name}',
+      talkToPerson: 'Vorbește cu o persoană',
+      closeChat: 'Închide chatul',
+      typing: 'Scrie',
+      attachFile: 'Atașează un fișier',
+      chooseFile: 'Alege un fișier de trimis',
+      yourMessage: 'Mesajul tău',
+      placeholder: 'Scrie mesajul tău...',
+      send: 'Trimite',
+      placeholderUnavailable: 'Chatul nu este disponibil acum',
+      placeholderWaiting: 'Se așteaptă conexiunea...',
+      statusUnavailable: 'Chat indisponibil',
+      reconnecting: 'Se reconectează…',
+      offline: 'Offline',
+      fieldName: 'Nume',
+      fieldEmail: 'E-mail',
+      fieldPhone: 'Telefon',
+      optional: '(opțional)',
+      detailsTitle: 'Te rugăm să ne lași datele tale',
+      privacyNotice: 'Pornind un chat, ești de acord cu {link} noastră.',
+      privacyLink: 'politica de confidențialitate',
+      startChat: 'Începe chatul',
+      errorName: 'Te rugăm să introduci numele.',
+      errorEmail: 'Te rugăm să introduci adresa de e-mail.',
+      errorPhone: 'Te rugăm să introduci numărul de telefon.',
+      errorEmailInvalid: 'Te rugăm să introduci o adresă de e-mail validă.',
+      greeting: 'Bună! Cu ce te pot ajuta astăzi?',
+      closedDefault: 'Momentan suntem închiși.',
+      reopen: 'Redeschidem {when}.',
+      whenToday: 'astăzi la {time}',
+      whenTomorrow: 'mâine la {time}',
+      whenDay: '{day} la {time}',
+      unavailableNotice: 'Chatul nu este disponibil momentan. Te rugăm să încerci mai târziu.',
+      genericError: 'Ceva nu a funcționat. Te rugăm să încerci din nou.',
+      conversationClosed: 'Această conversație a fost închisă.',
+      operatorJoined: '{name} s-a alăturat conversației.',
+      connectedToTeam: 'Vorbești cu un membru al echipei.',
+      queued: 'Nimeni nu este disponibil acum. Conversația ta este în așteptare și cineva îți va răspunde aici cât mai curând.',
+      offlineNotSent: 'Ești offline. Mesajul nu a fost trimis.',
+      unavailableNotSent: 'Chatul nu este disponibil momentan. Mesajul nu a fost trimis.',
+      fileTooLarge: 'Fișierul este prea mare. Limita este de {size} MB.',
+      offlineFileNotSent: 'Ești offline. Fișierul nu a fost trimis.',
+      uploading: 'Se încarcă {file}…',
+      sentFile: 'Trimis: {file}',
+      fileSelected: 'Fișier selectat: {file}',
+      uploadFailed: 'Ne pare rău, a apărut o problemă la încărcarea fișierului. Te rugăm să încerci din nou.',
+      uploadedFile: 'Am încărcat un fișier: {file}',
+      downloadFile: 'Descarcă {file}',
+      sources: 'Surse',
+      suggestedReplies: 'Răspunsuri sugerate',
+      view: 'Vezi',
+      you: 'Tu',
+      assistant: 'Asistent AI',
+      operator: 'Operator',
+      ratingQuestion: 'Cum ne-am descurcat?',
+      rateConversation: 'Evaluează această conversație',
+      scoreLabel: '{score} din 5',
+      notHelpful: 'Deloc util',
+      veryHelpful: 'Foarte util',
+      noThanks: 'Nu, mulțumesc',
+      thankYou: 'Mulțumim.',
+      addComment: 'Vrei să adaugi ceva?',
+      optionalPlaceholder: 'Opțional',
+      thanksFeedback: 'Mulțumim pentru feedback.',
+      previewVisitor: 'Livrați în Canada?',
+      previewBot: 'Da, livrăm în Canada. Livrarea durează de obicei între 5 și 7 zile lucrătoare.',
+      previewSource: 'Expediere și livrare',
+      previewReply: 'Aceasta este o previzualizare. Răspunsurile vor apărea aici după ce widgetul este activ.'
+    },
+    ru: {
+      openChat: 'Открыть чат: {name}',
+      closeChatWith: 'Закрыть чат: {name}',
+      chatWith: 'Чат: {name}',
+      talkToPerson: 'Связаться с человеком',
+      closeChat: 'Закрыть чат',
+      typing: 'Печатает',
+      attachFile: 'Прикрепить файл',
+      chooseFile: 'Выберите файл для отправки',
+      yourMessage: 'Ваше сообщение',
+      placeholder: 'Введите сообщение...',
+      send: 'Отправить',
+      placeholderUnavailable: 'Чат сейчас недоступен',
+      placeholderWaiting: 'Ожидание подключения...',
+      statusUnavailable: 'Чат недоступен',
+      reconnecting: 'Переподключение…',
+      offline: 'Нет связи',
+      fieldName: 'Имя',
+      fieldEmail: 'Эл. почта',
+      fieldPhone: 'Телефон',
+      optional: '(необязательно)',
+      detailsTitle: 'Пожалуйста, укажите ваши данные',
+      privacyNotice: 'Начиная чат, вы соглашаетесь с нашей {link}.',
+      privacyLink: 'политикой конфиденциальности',
+      startChat: 'Начать чат',
+      errorName: 'Пожалуйста, введите имя.',
+      errorEmail: 'Пожалуйста, введите адрес эл. почты.',
+      errorPhone: 'Пожалуйста, введите номер телефона.',
+      errorEmailInvalid: 'Пожалуйста, введите корректный адрес эл. почты.',
+      greeting: 'Здравствуйте! Чем я могу помочь?',
+      closedDefault: 'Сейчас мы не работаем.',
+      reopen: 'Снова откроемся: {when}.',
+      whenToday: 'сегодня в {time}',
+      whenTomorrow: 'завтра в {time}',
+      whenDay: '{day}, {time}',
+      unavailableNotice: 'Чат сейчас недоступен. Пожалуйста, попробуйте позже.',
+      genericError: 'Что-то пошло не так. Пожалуйста, попробуйте ещё раз.',
+      conversationClosed: 'Этот разговор завершён.',
+      operatorJoined: '{name} теперь в чате.',
+      connectedToTeam: 'Вы на связи с сотрудником.',
+      queued: 'Сейчас все заняты. Ваш разговор в очереди, и вам ответят здесь, как только смогут.',
+      offlineNotSent: 'Нет связи. Сообщение не отправлено.',
+      unavailableNotSent: 'Чат сейчас недоступен. Сообщение не отправлено.',
+      fileTooLarge: 'Файл слишком большой. Максимальный размер — {size} МБ.',
+      offlineFileNotSent: 'Нет связи. Файл не отправлен.',
+      uploading: 'Загрузка: {file}…',
+      sentFile: 'Отправлено: {file}',
+      fileSelected: 'Выбран файл: {file}',
+      uploadFailed: 'К сожалению, не удалось загрузить файл. Пожалуйста, попробуйте ещё раз.',
+      uploadedFile: 'Загружен файл: {file}',
+      downloadFile: 'Скачать {file}',
+      sources: 'Источники',
+      suggestedReplies: 'Варианты ответа',
+      view: 'Подробнее',
+      you: 'Вы',
+      assistant: 'ИИ-ассистент',
+      operator: 'Оператор',
+      ratingQuestion: 'Как мы справились?',
+      rateConversation: 'Оцените этот разговор',
+      scoreLabel: '{score} из 5',
+      notHelpful: 'Бесполезно',
+      veryHelpful: 'Очень полезно',
+      noThanks: 'Нет, спасибо',
+      thankYou: 'Спасибо.',
+      addComment: 'Хотите что-нибудь добавить?',
+      optionalPlaceholder: 'Необязательно',
+      thanksFeedback: 'Спасибо за отзыв.',
+      previewVisitor: 'Вы доставляете в Канаду?',
+      previewBot: 'Да, мы доставляем в Канаду. Обычно доставка занимает от 5 до 7 рабочих дней.',
+      previewSource: 'Доставка',
+      previewReply: 'Это предпросмотр. Ответы появятся здесь, когда виджет будет запущен.'
+    },
+    uk: {
+      openChat: 'Відкрити чат: {name}',
+      closeChatWith: 'Закрити чат: {name}',
+      chatWith: 'Чат: {name}',
+      talkToPerson: 'Зв’язатися з людиною',
+      closeChat: 'Закрити чат',
+      typing: 'Друкує',
+      attachFile: 'Прикріпити файл',
+      chooseFile: 'Виберіть файл для надсилання',
+      yourMessage: 'Ваше повідомлення',
+      placeholder: 'Введіть повідомлення...',
+      send: 'Надіслати',
+      placeholderUnavailable: 'Чат зараз недоступний',
+      placeholderWaiting: 'Очікування з’єднання...',
+      statusUnavailable: 'Чат недоступний',
+      reconnecting: 'Повторне з’єднання…',
+      offline: 'Немає зв’язку',
+      fieldName: 'Ім’я',
+      fieldEmail: 'Ел. пошта',
+      fieldPhone: 'Телефон',
+      optional: '(необов’язково)',
+      detailsTitle: 'Будь ласка, вкажіть ваші дані',
+      privacyNotice: 'Розпочинаючи чат, ви погоджуєтеся з нашою {link}.',
+      privacyLink: 'політикою конфіденційності',
+      startChat: 'Почати чат',
+      errorName: 'Будь ласка, введіть ім’я.',
+      errorEmail: 'Будь ласка, введіть адресу ел. пошти.',
+      errorPhone: 'Будь ласка, введіть номер телефону.',
+      errorEmailInvalid: 'Будь ласка, введіть коректну адресу ел. пошти.',
+      greeting: 'Вітаю! Чим я можу допомогти?',
+      closedDefault: 'Зараз ми не працюємо.',
+      reopen: 'Знову відкриємося: {when}.',
+      whenToday: 'сьогодні о {time}',
+      whenTomorrow: 'завтра о {time}',
+      whenDay: '{day}, {time}',
+      unavailableNotice: 'Чат зараз недоступний. Будь ласка, спробуйте пізніше.',
+      genericError: 'Щось пішло не так. Будь ласка, спробуйте ще раз.',
+      conversationClosed: 'Цю розмову завершено.',
+      operatorJoined: '{name} тепер у чаті.',
+      connectedToTeam: 'Ви на зв’язку з членом команди.',
+      queued: 'Зараз усі зайняті. Ваша розмова в черзі, і вам дадуть відповідь тут, щойно зможуть.',
+      offlineNotSent: 'Немає зв’язку. Повідомлення не надіслано.',
+      unavailableNotSent: 'Чат зараз недоступний. Повідомлення не надіслано.',
+      fileTooLarge: 'Файл завеликий. Максимальний розмір — {size} МБ.',
+      offlineFileNotSent: 'Немає зв’язку. Файл не надіслано.',
+      uploading: 'Завантаження: {file}…',
+      sentFile: 'Надіслано: {file}',
+      fileSelected: 'Вибрано файл: {file}',
+      uploadFailed: 'На жаль, не вдалося завантажити файл. Будь ласка, спробуйте ще раз.',
+      uploadedFile: 'Завантажено файл: {file}',
+      downloadFile: 'Завантажити {file}',
+      sources: 'Джерела',
+      suggestedReplies: 'Варіанти відповіді',
+      view: 'Переглянути',
+      you: 'Ви',
+      assistant: 'ШІ-асистент',
+      operator: 'Оператор',
+      ratingQuestion: 'Як ми впоралися?',
+      rateConversation: 'Оцініть цю розмову',
+      scoreLabel: '{score} з 5',
+      notHelpful: 'Некорисно',
+      veryHelpful: 'Дуже корисно',
+      noThanks: 'Ні, дякую',
+      thankYou: 'Дякуємо.',
+      addComment: 'Бажаєте щось додати?',
+      optionalPlaceholder: 'Необов’язково',
+      thanksFeedback: 'Дякуємо за відгук.',
+      previewVisitor: 'Ви доставляєте до Канади?',
+      previewBot: 'Так, ми доставляємо до Канади. Зазвичай доставка триває від 5 до 7 робочих днів.',
+      previewSource: 'Доставка',
+      previewReply: 'Це попередній перегляд. Відповіді з’являться тут, коли віджет буде запущено.'
+    },
+    pl: {
+      openChat: 'Otwórz czat: {name}',
+      closeChatWith: 'Zamknij czat: {name}',
+      chatWith: 'Czat: {name}',
+      talkToPerson: 'Porozmawiaj z człowiekiem',
+      closeChat: 'Zamknij czat',
+      typing: 'Pisze',
+      attachFile: 'Załącz plik',
+      chooseFile: 'Wybierz plik do wysłania',
+      yourMessage: 'Twoja wiadomość',
+      placeholder: 'Wpisz wiadomość...',
+      send: 'Wyślij',
+      placeholderUnavailable: 'Czat jest teraz niedostępny',
+      placeholderWaiting: 'Oczekiwanie na połączenie...',
+      statusUnavailable: 'Czat niedostępny',
+      reconnecting: 'Ponowne łączenie…',
+      offline: 'Brak połączenia',
+      fieldName: 'Imię',
+      fieldEmail: 'E-mail',
+      fieldPhone: 'Telefon',
+      optional: '(opcjonalnie)',
+      detailsTitle: 'Podaj swoje dane',
+      privacyNotice: 'Rozpoczynając czat, akceptujesz naszą {link}.',
+      privacyLink: 'politykę prywatności',
+      startChat: 'Rozpocznij czat',
+      errorName: 'Podaj swoje imię.',
+      errorEmail: 'Podaj swój adres e-mail.',
+      errorPhone: 'Podaj swój numer telefonu.',
+      errorEmailInvalid: 'Podaj prawidłowy adres e-mail.',
+      greeting: 'Dzień dobry! W czym mogę dziś pomóc?',
+      closedDefault: 'W tej chwili jesteśmy nieczynni.',
+      reopen: 'Ponownie otwieramy: {when}.',
+      whenToday: 'dziś o {time}',
+      whenTomorrow: 'jutro o {time}',
+      whenDay: '{day}, {time}',
+      unavailableNotice: 'Czat jest w tej chwili niedostępny. Spróbuj ponownie później.',
+      genericError: 'Coś poszło nie tak. Spróbuj ponownie.',
+      conversationClosed: 'Ta rozmowa została zakończona.',
+      operatorJoined: '{name} dołącza do rozmowy.',
+      connectedToTeam: 'Rozmawiasz z członkiem zespołu.',
+      queued: 'W tej chwili nikt nie jest dostępny. Twoja rozmowa czeka w kolejce i ktoś odpowie tutaj najszybciej, jak to możliwe.',
+      offlineNotSent: 'Brak połączenia. Wiadomość nie została wysłana.',
+      unavailableNotSent: 'Czat jest w tej chwili niedostępny. Wiadomość nie została wysłana.',
+      fileTooLarge: 'Ten plik jest za duży. Limit wynosi {size} MB.',
+      offlineFileNotSent: 'Brak połączenia. Plik nie został wysłany.',
+      uploading: 'Przesyłanie: {file}…',
+      sentFile: 'Wysłano: {file}',
+      fileSelected: 'Wybrany plik: {file}',
+      uploadFailed: 'Niestety wystąpił problem z przesłaniem pliku. Spróbuj ponownie.',
+      uploadedFile: 'Przesłano plik: {file}',
+      downloadFile: 'Pobierz {file}',
+      sources: 'Źródła',
+      suggestedReplies: 'Sugerowane odpowiedzi',
+      view: 'Zobacz',
+      you: 'Ty',
+      assistant: 'Asystent AI',
+      operator: 'Konsultant',
+      ratingQuestion: 'Jak nam poszło?',
+      rateConversation: 'Oceń tę rozmowę',
+      scoreLabel: '{score} z 5',
+      notHelpful: 'Nieprzydatne',
+      veryHelpful: 'Bardzo przydatne',
+      noThanks: 'Nie, dziękuję',
+      thankYou: 'Dziękujemy.',
+      addComment: 'Chcesz coś dodać?',
+      optionalPlaceholder: 'Opcjonalnie',
+      thanksFeedback: 'Dziękujemy za opinię.',
+      previewVisitor: 'Czy wysyłacie do Kanady?',
+      previewBot: 'Tak, wysyłamy do Kanady. Dostawa trwa zwykle od 5 do 7 dni roboczych.',
+      previewSource: 'Wysyłka i dostawa',
+      previewReply: 'To jest podgląd. Odpowiedzi pojawią się tutaj, gdy widżet będzie aktywny.'
+    },
+    nl: {
+      openChat: 'Chat met {name} openen',
+      closeChatWith: 'Chat met {name} sluiten',
+      chatWith: 'Chat met {name}',
+      talkToPerson: 'Met een medewerker praten',
+      closeChat: 'Chat sluiten',
+      typing: 'Typt',
+      attachFile: 'Bestand bijvoegen',
+      chooseFile: 'Kies een bestand om te versturen',
+      yourMessage: 'Je bericht',
+      placeholder: 'Typ je bericht...',
+      send: 'Versturen',
+      placeholderUnavailable: 'De chat is nu niet beschikbaar',
+      placeholderWaiting: 'Wachten op verbinding...',
+      statusUnavailable: 'Chat niet beschikbaar',
+      reconnecting: 'Opnieuw verbinden…',
+      offline: 'Offline',
+      fieldName: 'Naam',
+      fieldEmail: 'E-mail',
+      fieldPhone: 'Telefoon',
+      optional: '(optioneel)',
+      detailsTitle: 'Vul je gegevens in',
+      privacyNotice: 'Door een chat te starten ga je akkoord met ons {link}.',
+      privacyLink: 'privacybeleid',
+      startChat: 'Chat starten',
+      errorName: 'Vul je naam in.',
+      errorEmail: 'Vul je e-mailadres in.',
+      errorPhone: 'Vul je telefoonnummer in.',
+      errorEmailInvalid: 'Vul een geldig e-mailadres in.',
+      greeting: 'Hallo! Waarmee kan ik je vandaag helpen?',
+      closedDefault: 'We zijn op dit moment gesloten.',
+      reopen: 'We gaan weer open {when}.',
+      whenToday: 'vandaag om {time}',
+      whenTomorrow: 'morgen om {time}',
+      whenDay: 'op {day} om {time}',
+      unavailableNotice: 'De chat is op dit moment niet beschikbaar. Probeer het later opnieuw.',
+      genericError: 'Er ging iets mis. Probeer het opnieuw.',
+      conversationClosed: 'Dit gesprek is beëindigd.',
+      operatorJoined: '{name} neemt deel aan het gesprek.',
+      connectedToTeam: 'Je bent verbonden met een teamlid.',
+      queued: 'Er is nu niemand vrij. Je gesprek staat in de wachtrij en iemand reageert hier zo snel mogelijk.',
+      offlineNotSent: 'Je bent offline. Je bericht is niet verstuurd.',
+      unavailableNotSent: 'De chat is op dit moment niet beschikbaar. Je bericht is niet verstuurd.',
+      fileTooLarge: 'Dat bestand is te groot. De limiet is {size} MB.',
+      offlineFileNotSent: 'Je bent offline. Het bestand is niet verstuurd.',
+      uploading: '{file} uploaden…',
+      sentFile: '{file} verstuurd',
+      fileSelected: 'Geselecteerd bestand: {file}',
+      uploadFailed: 'Sorry, er ging iets mis bij het uploaden van je bestand. Probeer het opnieuw.',
+      uploadedFile: 'Ik heb een bestand geüpload: {file}',
+      downloadFile: '{file} downloaden',
+      sources: 'Bronnen',
+      suggestedReplies: 'Voorgestelde antwoorden',
+      view: 'Bekijken',
+      you: 'Jij',
+      assistant: 'AI-assistent',
+      operator: 'Medewerker',
+      ratingQuestion: 'Hoe hebben we het gedaan?',
+      rateConversation: 'Beoordeel dit gesprek',
+      scoreLabel: '{score} van 5',
+      notHelpful: 'Niet nuttig',
+      veryHelpful: 'Zeer nuttig',
+      noThanks: 'Nee, bedankt',
+      thankYou: 'Bedankt.',
+      addComment: 'Wil je nog iets toevoegen?',
+      optionalPlaceholder: 'Optioneel',
+      thanksFeedback: 'Bedankt voor je feedback.',
+      previewVisitor: 'Verzenden jullie naar Canada?',
+      previewBot: 'Ja, we verzenden naar Canada. De levering duurt meestal 5 tot 7 werkdagen.',
+      previewSource: 'Verzending en levering',
+      previewReply: 'Dit is een voorbeeld. Antwoorden verschijnen hier zodra de widget live is.'
+    }
+  };
+
+  /** Languages written right to left. None in the table yet; ready when one is. */
+  const RTL_LANGUAGES = ['ar', 'he', 'fa', 'ur'];
+
+  /** The greeting the server and this file ship with, which means "not customised". */
+  const DEFAULT_GREETINGS = [
+    'Hello! How can I assist you today?',
+    'Hi! How can we help you today?'
+  ];
+
+  /** The language the widget speaks, settled once in `init`. */
+  let language = 'en';
+
+  /**
+   * A supported language code from a setting or a browser tag, or null.
+   * `pt-BR` -> `pt`; `auto`, empty and unknown -> null.
+   */
+  function supportedLanguage(value) {
+    if (typeof value !== 'string') {
+      return null;
+    }
+    const primary = value.trim().toLowerCase().split(/[-_]/)[0];
+    return Object.prototype.hasOwnProperty.call(STRINGS, primary) ? primary : null;
+  }
+
+  /**
+   * Which language to speak: the snippet's `data-language`, then the
+   * tenant's setting, then the browser, then English. `auto` at either of
+   * the first two steps means "ask the browser"; an unsupported code falls
+   * through to the next step rather than to English.
+   */
+  function resolveLanguage(attribute, tenantSetting, browserLanguages) {
+    const candidates = [attribute, tenantSetting];
+    for (const candidate of candidates) {
+      const found = supportedLanguage(candidate);
+      if (found) {
+        return found;
+      }
+    }
+
+    for (const tag of browserLanguages || []) {
+      const found = supportedLanguage(tag);
+      if (found) {
+        return found;
+      }
+    }
+    return 'en';
+  }
+
+  function browserLanguages() {
+    try {
+      const list = Array.isArray(navigator.languages) ? navigator.languages.slice() : [];
+      if (navigator.language) {
+        list.push(navigator.language);
+      }
+      return list;
+    } catch (error) {
+      return [];
+    }
+  }
+
+  /** A visitor-facing string in the widget's language, with `{name}`s filled. */
+  function t(key, values) {
+    const table = STRINGS[language] || STRINGS.en;
+    const template = Object.prototype.hasOwnProperty.call(table, key) ? table[key] : STRINGS.en[key];
+    return String(template === undefined ? key : template).replace(/\{(\w+)\}/g, (match, name) => (
+      values && values[name] !== undefined && values[name] !== null ? String(values[name]) : match
+    ));
+  }
+
+  /**
+   * The server describes the next opening in English ("Monday at 09:00",
+   * "tomorrow at 08:30"), because it does not know who is reading. Turn the
+   * shapes it produces into this language; anything else is shown as sent.
+   */
+  function translateOpening(value) {
+    const text = String(value || '').trim();
+    const match = /^(today|tomorrow|sunday|monday|tuesday|wednesday|thursday|friday|saturday) at (\d{1,2}:\d{2})$/i
+      .exec(text);
+    if (!match) {
+      return text;
+    }
+
+    const word = match[1].toLowerCase();
+    const time = match[2];
+    if (word === 'today') {
+      return t('whenToday', { time });
+    }
+    if (word === 'tomorrow') {
+      return t('whenTomorrow', { time });
+    }
+
+    const index = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'].indexOf(word);
+    let day = match[1];
+    try {
+      // 7 January 2024 was a Sunday; noon UTC keeps every timezone on the same date.
+      day = new Date(Date.UTC(2024, 0, 7 + index, 12)).toLocaleDateString(language, {
+        weekday: 'long',
+        timeZone: 'UTC'
+      });
+    } catch (error) {
+      // Keep the English day name.
+    }
+    return t('whenDay', { day, time });
+  }
 
   // ------------------------------------------------------------ storage
 
@@ -183,6 +1125,9 @@
   }
 
   function storedUserDetails() {
+    if (config.preview) {
+      return { name: '', email: '', phone: '' };
+    }
     expireStoredUserDetails();
     return {
       name: readStorage(STORAGE_KEYS.userName) || '',
@@ -197,6 +1142,7 @@
   function init(customConfig = {}) {
     // Merge custom configuration with defaults
     Object.assign(config, customConfig);
+    config.preview = config.preview === true || config.preview === 'true';
 
     if (!config.serverUrl) {
       logger.error('Chatbot widget: Server URL is required');
@@ -207,6 +1153,13 @@
     // would otherwise open a second socket for the same session.
     if (document.getElementById('chatbot-widget-host')) {
       logger.warn('Chatbot widget: already initialised on this page');
+      return;
+    }
+
+    language = resolveLanguage(config.language, config.languageFallback, browserLanguages());
+
+    if (config.preview) {
+      startPreview();
       return;
     }
 
@@ -239,6 +1192,83 @@
         startHeartbeat();
       }
     });
+  }
+
+  // ------------------------------------------------------------ preview
+
+  /**
+   * The dashboard's live appearance preview.
+   *
+   * Everything a visitor would see - colour, name, logo, position, language,
+   * greeting, the pre-chat form - and nothing that touches the server: no
+   * socket, so no session, no conversation and no usage; no config fetch, so
+   * the settings being edited are the ones shown; no upload. Typing gets a
+   * canned answer so the composer can be tried.
+   */
+  function startPreview() {
+    createWidgetElements();
+    addEventListeners();
+    applyCustomStyles();
+    setConnectionState('online');
+
+    // A small conversation so the bubbles, the sources line and the colours
+    // can be judged without anyone having to chat.
+    greetingShown = true;
+    closedNoticeShown = true;
+    addBotMessage(greetingText(), false);
+    addUserMessage(t('previewVisitor'), false);
+    addBotMessage(t('previewBot'), false, t('assistant'), null, null, {
+      sources: [{ title: t('previewSource'), url: 'https://example.com/help' }]
+    });
+
+    setChatWindowOpen(true, false);
+    if (preChatFormNeeded()) {
+      showUserDetailsForm();
+    } else {
+      showChatInterface();
+    }
+  }
+
+  /** Answer a preview message without a server. */
+  function previewReply() {
+    setTypingIndicator(true, false);
+    setTimeout(() => {
+      setTypingIndicator(false, false);
+      addBotMessage(t('previewReply'), false);
+    }, 400);
+  }
+
+  /**
+   * Re-render the preview with new settings, without reloading the frame.
+   * Only ever used in preview mode: a live widget is never torn down.
+   */
+  function rerenderPreview(newConfig = {}) {
+    if (!config.preview) {
+      return;
+    }
+
+    if (host && host.parentNode) {
+      host.parentNode.removeChild(host);
+    }
+    host = null;
+    root = null;
+
+    renderedMessageIds.clear();
+    historyReceived = false;
+    greetingShown = false;
+    closedNoticeShown = false;
+    chatStarted = false;
+    operatorConnected = false;
+    preChatShowing = false;
+    chatUnavailable = false;
+    uploading = false;
+
+    const keep = { serverUrl: config.serverUrl, assets: config.assets };
+    Object.keys(config).forEach(key => {
+      delete config[key];
+    });
+    Object.assign(config, DEFAULT_CONFIG, keep, newConfig, { preview: true });
+    init({});
   }
 
   // Start heartbeat to keep socket connection alive
@@ -279,8 +1309,8 @@
             if (data.sender === 'user') {
               addUserMessage(data.message, false, data.id);
             } else if (data.sender === 'bot') {
-              // Use the sender name if provided, otherwise default to "AI Assistant"
-              const senderName = data.senderName || 'AI Assistant';
+              // Use the sender name if provided, otherwise the assistant's.
+              const senderName = data.senderName || t('assistant');
               addBotMessage(data.message, false, senderName, data.id);
             }
             break;
@@ -298,7 +1328,7 @@
           case 'file-uploaded':
             // Update file indicator across tabs
             if (data.fileName) {
-              fileIndicator.textContent = `File selected: ${data.fileName}`;
+              fileIndicator.textContent = t('fileSelected', { file: data.fileName });
               fileIndicator.classList.add('active');
             } else {
               fileIndicator.classList.remove('active');
@@ -335,12 +1365,12 @@
   /** Which pre-chat fields to show, and whether each one is mandatory. */
   function preChatFields() {
     return [
-      { key: 'name', id: 'chatbot-user-name', label: 'Name', type: 'text',
-        autocomplete: 'name', required: config.requireName !== false },
-      { key: 'email', id: 'chatbot-user-email', label: 'Email', type: 'email',
-        autocomplete: 'email', required: config.requireEmail !== false },
-      { key: 'phone', id: 'chatbot-user-phone', label: 'Phone', type: 'tel',
-        autocomplete: 'tel', required: config.requirePhone === true }
+      { key: 'name', id: 'chatbot-user-name', label: t('fieldName'), missing: t('errorName'),
+        type: 'text', autocomplete: 'name', required: config.requireName !== false },
+      { key: 'email', id: 'chatbot-user-email', label: t('fieldEmail'), missing: t('errorEmail'),
+        type: 'email', autocomplete: 'email', required: config.requireEmail !== false },
+      { key: 'phone', id: 'chatbot-user-phone', label: t('fieldPhone'), missing: t('errorPhone'),
+        type: 'tel', autocomplete: 'tel', required: config.requirePhone === true }
     ];
   }
 
@@ -365,22 +1395,24 @@
 
     const fields = preChatFields().map(field => `
       <div class="user-details-field">
-        <label for="${field.id}">${escapeHtml(field.label)}${field.required ? '' : ' <span class="optional">(optional)</span>'}</label>
+        <label for="${field.id}">${escapeHtml(field.label)}${field.required ? '' : ` <span class="optional">${escapeHtml(t('optional'))}</span>`}</label>
         <input type="${field.type}" id="${field.id}" name="${field.key}"
                autocomplete="${field.autocomplete}"
                ${field.required ? 'required aria-required="true"' : ''}>
       </div>`).join('');
 
+    // The link sits wherever the sentence puts it, which is not the end of
+    // the sentence in every language.
+    const privacyLink = `<a href="${escapeHtml(privacyPolicyHref())}" target="_blank" rel="noopener noreferrer">${escapeHtml(t('privacyLink'))}</a>`;
+    const privacyNotice = t('privacyNotice').split('{link}').map(escapeHtml).join(privacyLink);
+
     userDetailsForm.innerHTML = `
-      <h3 id="chatbot-user-details-title">Please provide your details</h3>
+      <h3 id="chatbot-user-details-title">${escapeHtml(t('detailsTitle'))}</h3>
       <form id="chatbot-user-details-form" aria-labelledby="chatbot-user-details-title" novalidate>
         ${fields}
-        <p class="user-details-privacy">
-          By starting a chat you agree to our
-          <a href="${escapeHtml(privacyPolicyHref())}" target="_blank" rel="noopener noreferrer">privacy policy</a>.
-        </p>
+        <p class="user-details-privacy">${privacyNotice}</p>
         <div class="user-details-error" role="alert" aria-live="assertive"></div>
-        <button type="submit">Start Chat</button>
+        <button type="submit">${escapeHtml(t('startChat'))}</button>
       </form>
     `;
 
@@ -411,6 +1443,11 @@
       'line-height: normal'
     ].join('; ');
 
+    // Screen readers pick a voice from `lang`; the host page's own `lang`
+    // says nothing about the language this widget is speaking.
+    host.setAttribute('lang', language);
+    host.setAttribute('dir', RTL_LANGUAGES.includes(language) ? 'rtl' : 'ltr');
+
     root = host.attachShadow({ mode: 'open' });
 
     // The stylesheet goes inside the shadow root, where it applies to the
@@ -424,6 +1461,8 @@
     // Create container
     container = document.createElement('div');
     container.className = 'chatbot-widget-container';
+    container.setAttribute('lang', language);
+    container.setAttribute('dir', RTL_LANGUAGES.includes(language) ? 'rtl' : 'ltr');
     if (config.position === 'left') {
       container.classList.add('position-left');
     }
@@ -432,7 +1471,7 @@
     chatIconButton = document.createElement('button');
     chatIconButton.type = 'button';
     chatIconButton.className = 'chat-icon-button';
-    chatIconButton.setAttribute('aria-label', `Open chat with ${config.chatbotName}`);
+    chatIconButton.setAttribute('aria-label', t('openChat', { name: config.chatbotName }));
     chatIconButton.setAttribute('aria-expanded', 'false');
     chatIconButton.setAttribute('aria-haspopup', 'dialog');
     chatIconButton.innerHTML = `
@@ -445,20 +1484,38 @@
     chatWindow = document.createElement('div');
     chatWindow.className = 'chat-window';
     chatWindow.setAttribute('role', 'dialog');
-    chatWindow.setAttribute('aria-label', `Chat with ${config.chatbotName}`);
+    chatWindow.setAttribute('aria-label', t('chatWith', { name: config.chatbotName }));
     chatWindow.setAttribute('aria-hidden', 'true');
 
     // Create chat header
     const chatHeader = document.createElement('div');
     chatHeader.className = 'chat-header';
     chatHeader.innerHTML = `
-      <h3>${escapeHtml(config.chatbotName)}</h3>
+      <div class="chat-header-title">
+        <h3>${escapeHtml(config.chatbotName)}</h3>
+      </div>
       <div class="chat-header-actions">
-        <button class="human-button" type="button"
-                title="Talk to a person">Talk to a person</button>
-        <button class="close-button" type="button" aria-label="Close chat">&times;</button>
+        <button class="human-button" type="button" hidden
+                title="${escapeHtml(t('talkToPerson'))}">${escapeHtml(t('talkToPerson'))}</button>
+        <button class="close-button" type="button" aria-label="${escapeHtml(t('closeChat'))}">&times;</button>
       </div>
     `;
+    humanButton = chatHeader.querySelector('.human-button');
+
+    // The tenant's logo, when they gave one. Built as a node so the URL never
+    // passes through innerHTML, and only ever https: this is drawn on the
+    // tenant's own site, where anything else is mixed content or worse.
+    const logoUrl = safeLogoUrl(config.logoUrl);
+    if (logoUrl) {
+      const logo = document.createElement('img');
+      logo.className = 'chat-header-logo';
+      logo.src = logoUrl;
+      // Decorative: the name beside it says who this is.
+      logo.alt = '';
+      logo.referrerPolicy = 'no-referrer';
+      logo.addEventListener('error', () => logo.remove());
+      chatHeader.querySelector('.chat-header-title').prepend(logo);
+    }
 
     // Connection state. Empty while everything is fine; says "Reconnecting…"
     // or "Offline" when it is not, so a visitor knows why Send is greyed out.
@@ -482,7 +1539,7 @@
     // Create typing indicator
     typingIndicator = document.createElement('div');
     typingIndicator.className = 'typing-indicator';
-    typingIndicator.setAttribute('aria-label', 'Typing');
+    typingIndicator.setAttribute('aria-label', t('typing'));
     typingIndicator.innerHTML = `
       <span></span>
       <span></span>
@@ -490,15 +1547,15 @@
     `;
 
     // Create chat input area
-    const chatInputArea = document.createElement('div');
+    chatInputArea = document.createElement('div');
     chatInputArea.className = 'chat-input-area';
 
     // Create file upload button and hidden input
     fileUploadButton = document.createElement('button');
     fileUploadButton.type = 'button';
     fileUploadButton.className = 'file-upload-button';
-    fileUploadButton.setAttribute('aria-label', 'Attach a file');
-    fileUploadButton.title = 'Attach a file';
+    fileUploadButton.setAttribute('aria-label', t('attachFile'));
+    fileUploadButton.title = t('attachFile');
     fileUploadButton.innerHTML = `
       <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
         <path d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5a2.5 2.5 0 0 1 5 0v10.5c0 .55-.45 1-1 1s-1-.45-1-1V6H10v9.5a2.5 2.5 0 0 0 5 0V5c0-2.21-1.79-4-4-4S7 2.79 7 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z"/>
@@ -508,7 +1565,7 @@
     fileUploadInput = document.createElement('input');
     fileUploadInput.type = 'file';
     fileUploadInput.id = 'chatbot-file-input';
-    fileUploadInput.setAttribute('aria-label', 'Choose a file to send');
+    fileUploadInput.setAttribute('aria-label', t('chooseFile'));
     fileUploadInput.style.display = 'none';
     // Everything the server's MIME allowlist accepts (`routes/upload.js`).
     // This said `.pdf` while the server had accepted images, text, Word and
@@ -527,12 +1584,12 @@
     const inputLabel = document.createElement('label');
     inputLabel.className = 'visually-hidden';
     inputLabel.setAttribute('for', 'chatbot-message-input');
-    inputLabel.textContent = 'Your message';
+    inputLabel.textContent = t('yourMessage');
 
     chatInput = document.createElement('input');
     chatInput.type = 'text';
     chatInput.id = 'chatbot-message-input';
-    chatInput.placeholder = 'Type your message...';
+    chatInput.placeholder = t('placeholder');
     chatInput.autocomplete = 'off';
     chatInput.setAttribute('enterkeyhint', 'send');
 
@@ -540,7 +1597,7 @@
     sendButton = document.createElement('button');
     sendButton.className = 'send-button';
     sendButton.type = 'button';
-    sendButton.textContent = 'Send';
+    sendButton.textContent = t('send');
 
     // Assemble the widget
     chatInputArea.appendChild(fileUploadButton);
@@ -660,14 +1717,23 @@
     const text = messageText(message);
 
     if (kind === 'user') {
-      addUserMessage(text, false, id);
-      if (message.fileUrl) {
-        addUserMessage(`I've uploaded a file: ${message.fileName}`, false);
-      }
+      markChatStarted();
+      addUserMessage(message.fileUrl ? t('uploadedFile', { file: message.fileName }) : text, false, id);
       return true;
     }
 
-    addBotMessage(text, true, sender, id);
+    if (kind === 'operator') {
+      markChatStarted();
+    }
+
+    // A file sent from the other side is the message: its text is only the
+    // file name, so it is drawn once, as something to open.
+    if (message.fileUrl || message.fileId) {
+      addAttachmentMessage(message, sender, id);
+      return true;
+    }
+
+    addBotMessage(text, true, sender, id, null, { sources: message.sources });
 
     // Products or appointment times, rendered properly rather than
     // described in a sentence. This is what knowing the shape buys.
@@ -678,11 +1744,6 @@
     // Quick replies, when the workflow offered a set of choices.
     if (Array.isArray(message.choices) && message.choices.length > 0) {
       addQuickReplies(message.choices);
-    }
-
-    // Handle file responses if present
-    if (message.fileUrl) {
-      addFileResponse(message.fileUrl, message.fileName, sender);
     }
 
     return true;
@@ -712,21 +1773,22 @@
       const timestamp = message.timestamp ? new Date(message.timestamp) : null;
 
       const fromOperator = message.sender === 'operator' || message.isOperator === true;
-      const operatorName = message.operatorName || message.senderName || 'Operator';
+      const operatorName = message.operatorName || message.senderName || t('operator');
+      const sender = fromOperator ? operatorName : t('assistant');
 
-      if (message.sender === 'user') {
-        addUserMessage(text, false, id, timestamp);
-        if (message.fileUrl && message.fileName) {
-          addUserMessage(`I've uploaded a file: ${message.fileName}`, false, null, timestamp);
-        }
-      } else if (fromOperator) {
-        addBotMessage(text, false, operatorName, id, timestamp);
-      } else {
-        addBotMessage(text, false, 'AI Assistant', id, timestamp);
+      if (message.sender === 'user' || fromOperator) {
+        // Somebody has already talked here, so this is a conversation in
+        // progress, not a fresh one.
+        markChatStarted();
       }
 
-      if (message.fileUrl && message.sender !== 'user') {
-        addFileResponse(message.fileUrl, message.fileName, fromOperator ? operatorName : 'AI Assistant');
+      if (message.sender === 'user') {
+        addUserMessage(message.fileUrl ? t('uploadedFile', { file: message.fileName }) : text,
+          false, id, timestamp);
+      } else if (message.fileUrl || message.fileId) {
+        addAttachmentMessage(message, sender, id, timestamp);
+      } else {
+        addBotMessage(text, false, sender, id, timestamp, { sources: message.sources });
       }
     });
   }
@@ -741,11 +1803,25 @@
     }
     greetingShown = true;
 
-    if (renderedMessageIds.size === 0 && !chatMessages.querySelector('.message') && config.initialMessage) {
-      addBotMessage(config.initialMessage, false);
+    if (renderedMessageIds.size === 0 && !chatMessages.querySelector('.message')) {
+      addBotMessage(greetingText(), false);
     }
 
     showClosedNotice();
+  }
+
+  /**
+   * The tenant's own greeting, or ours in the visitor's language. Every
+   * company has the stock English greeting stored until somebody changes it,
+   * so that one counts as "not customised" and is translated; a greeting a
+   * tenant wrote is theirs, and shown as written.
+   */
+  function greetingText() {
+    const configured = String(config.initialMessage || '').trim();
+    if (!configured || DEFAULT_GREETINGS.includes(configured)) {
+      return t('greeting');
+    }
+    return configured;
   }
 
   /**
@@ -759,10 +1835,9 @@
     closedNoticeShown = true;
 
     if (config.availability && config.availability.open === false) {
-      const closedMessage = config.availability.offlineMessage ||
-        'We are closed at the moment.';
+      const closedMessage = config.availability.offlineMessage || t('closedDefault');
       const returnHint = config.availability.opensAt
-        ? ` We reopen ${config.availability.opensAt}.`
+        ? ` ${t('reopen', { when: translateOpening(config.availability.opensAt) })}`
         : '';
       addBotMessage(closedMessage + returnHint, false);
     }
@@ -781,7 +1856,7 @@
     if (unavailable) {
       historyReceived = true;
       greetingShown = true;
-      addSystemNotice('Chat is unavailable at the moment. Please try again later.');
+      addSystemNotice(t('unavailableNotice'));
     }
     setConnectionState(socket && socket.connected ? 'online' : 'reconnecting');
   }
@@ -798,16 +1873,16 @@
     const canSend = online && !chatUnavailable;
 
     connectionStatus.textContent = state === 'online'
-      ? (chatUnavailable ? 'Chat unavailable' : '')
-      : (state === 'reconnecting' ? 'Reconnecting…' : 'Offline');
+      ? (chatUnavailable ? t('statusUnavailable') : '')
+      : (state === 'reconnecting' ? t('reconnecting') : t('offline'));
     connectionStatus.classList.toggle('active', !canSend);
 
     sendButton.disabled = !canSend;
     fileUploadButton.disabled = !canSend || uploading;
     chatInput.disabled = !canSend;
     chatInput.placeholder = canSend
-      ? 'Type your message...'
-      : (online ? 'Chat is unavailable right now' : 'Waiting for connection...');
+      ? t('placeholder')
+      : (online ? t('placeholderUnavailable') : t('placeholderWaiting'));
   }
 
   // Initialize socket.io connection
@@ -883,7 +1958,7 @@
       // entry nobody sees.
       socket.on('error', (data = {}) => {
         const message = typeof data === 'string' ? data : data.message;
-        addSystemNotice(message || 'Something went wrong. Please try again.');
+        addSystemNotice(message || t('genericError'));
         setTypingIndicator(false);
       });
 
@@ -893,8 +1968,8 @@
       socket.on('bot-message', (message = {}) => {
         setTypingIndicator(false);
 
-        // For bot messages, the sender is always AI Assistant
-        const sender = 'AI Assistant';
+        // For bot messages, the sender is always the assistant
+        const sender = t('assistant');
 
         if (!renderIncoming(message, sender, 'bot')) {
           return;
@@ -921,7 +1996,7 @@
         setTypingIndicator(false);
 
         // Get operator name from message
-        const sender = message.senderName || 'Operator';
+        const sender = message.senderName || t('operator');
 
         if (!renderIncoming(message, sender, 'operator')) {
           return;
@@ -973,7 +2048,11 @@
        * reply to a chat that had already been closed.
        */
       socket.on('chat-ended', (data = {}) => {
-        addSystemNotice(data.message || 'This conversation has been closed.');
+        // Our own words rather than the server's: its message is a fixed
+        // English sentence, and the visitor may not read English.
+        addSystemNotice(t('conversationClosed'));
+        operatorConnected = false;
+        updateHumanButton();
 
         if (data.requestRating) {
           showRatingPrompt();
@@ -987,22 +2066,16 @@
        * people repeat themselves and then leave.
        */
       socket.on('operator-requested', (data = {}) => {
-        const humanButton = chatWindow.querySelector('.human-button');
-
         if (data.connected) {
           addSystemNotice(data.operatorName
-            ? `${data.operatorName} has joined the conversation.`
-            : 'You are connected to a member of the team.');
-          if (humanButton) {
-            humanButton.style.display = 'none';
-          }
+            ? t('operatorJoined', { name: data.operatorName })
+            : t('connectedToTeam'));
+          operatorConnected = true;
+          updateHumanButton();
           return;
         }
 
-        addSystemNotice(
-          'Nobody is free right now. Your conversation is in the queue and ' +
-          'someone will reply here as soon as they can.'
-        );
+        addSystemNotice(t('queued'));
 
         if (humanButton) {
           // Re-enabled: they may want to ask again later, and a button that
@@ -1085,9 +2158,8 @@
      * wants a human" gets it wrong in both directions: it escalates people
      * being polite, and misses the ones quietly giving up.
      */
-    const humanButton = chatWindow.querySelector('.human-button');
     humanButton.addEventListener('click', () => {
-      if (!socket || !socket.connected) {
+      if (config.preview || !socket || !socket.connected) {
         return;
       }
       humanButton.disabled = true;
@@ -1132,7 +2204,8 @@
 
     // File upload button click
     fileUploadButton.addEventListener('click', () => {
-      if (!uploading) {
+      // Nothing is uploaded from a preview.
+      if (!uploading && !config.preview) {
         fileUploadInput.click();
       }
     });
@@ -1172,11 +2245,20 @@
     userDetailsForm.style.display = 'block';
     chatMessagesContainer.style.display = 'none';
     fileIndicator.style.display = 'none';
+    // One thing to do: fill in the form. A live composer underneath it
+    // invites typing into a chat that has not started, and the message
+    // would go nowhere useful.
+    chatInputArea.hidden = true;
+    preChatShowing = true;
+    updateHumanButton();
 
+    // The preview fills the form in, so the admin sees what a completed
+    // one looks like as well as which fields it asks for.
+    const sample = { name: 'Alex Morgan', email: 'alex@example.com', phone: '+1 555 0100' };
     preChatFields().forEach(field => {
       const input = root.getElementById(field.id);
       if (input) {
-        input.value = details[field.key] || '';
+        input.value = config.preview ? sample[field.key] : (details[field.key] || '');
       }
     });
 
@@ -1190,7 +2272,28 @@
     userDetailsForm.style.display = 'none';
     chatMessagesContainer.style.display = 'block';
     fileIndicator.style.display = 'block';
+    chatInputArea.hidden = false;
+    preChatShowing = false;
+    updateHumanButton();
     scrollToBottom();
+  }
+
+  /** The conversation has begun; "talk to a person" becomes an option. */
+  function markChatStarted() {
+    if (!chatStarted) {
+      chatStarted = true;
+      updateHumanButton();
+    }
+  }
+
+  /**
+   * "Talk to a person" is shown only once there is a conversation to hand
+   * over, never over the pre-chat form, and not once somebody has joined.
+   */
+  function updateHumanButton() {
+    if (humanButton) {
+      humanButton.hidden = !chatStarted || preChatShowing || operatorConnected;
+    }
   }
 
   // Handle user details form submission
@@ -1209,17 +2312,22 @@
       values[field.key] = value;
 
       if (field.required && !value) {
-        errorBox.textContent = `Please enter your ${field.label.toLowerCase()}.`;
+        errorBox.textContent = field.missing;
         input.focus();
         return;
       }
       if (value && field.type === 'email' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) {
-        errorBox.textContent = 'Please enter a valid email address.';
+        errorBox.textContent = t('errorEmailInvalid');
         input.focus();
         return;
       }
     }
     errorBox.textContent = '';
+
+    if (config.preview) {
+      showChatInterface();
+      return;
+    }
 
     // Save to localStorage, dated so it can be forgotten again.
     writeStorage(STORAGE_KEYS.userName, values.name);
@@ -1261,7 +2369,7 @@
     chatWindow.setAttribute('aria-hidden', open ? 'false' : 'true');
     chatIconButton.setAttribute('aria-expanded', open ? 'true' : 'false');
     chatIconButton.setAttribute('aria-label',
-      `${open ? 'Close' : 'Open'} chat with ${config.chatbotName}`);
+      t(open ? 'closeChatWith' : 'openChat', { name: config.chatbotName }));
 
     if (broadcast && broadcastChannel) {
       broadcastChannel.postMessage({
@@ -1278,7 +2386,7 @@
 
     if (opening) {
       // Check if user details exist
-      if (!preChatFormNeeded() || userDetailsExist()) {
+      if (!preChatFormNeeded() || (!config.preview && userDetailsExist())) {
         // Show chat interface
         showChatInterface();
         chatInput.focus();
@@ -1311,15 +2419,24 @@
       return;
     }
 
+    if (config.preview) {
+      addUserMessage(message, false);
+      chatInput.value = '';
+      previewReply();
+      return;
+    }
+
     // Nothing is queued while disconnected: see setConnectionState.
     if (!socket || !socket.connected) {
-      addSystemNotice('You are offline. Your message was not sent.');
+      addSystemNotice(t('offlineNotSent'));
       return;
     }
     if (chatUnavailable) {
-      addSystemNotice('Chat is unavailable at the moment. Your message was not sent.');
+      addSystemNotice(t('unavailableNotSent'));
       return;
     }
+
+    markChatStarted();
 
     // Generate a local message ID for tracking read status
     const messageId = generateMessageId();
@@ -1373,7 +2490,7 @@
 
     if (file.size > MAX_UPLOAD_BYTES) {
       fileUploadInput.value = '';
-      fileIndicator.textContent = 'That file is too large. The limit is 10 MB.';
+      fileIndicator.textContent = t('fileTooLarge', { size: MAX_UPLOAD_BYTES / 1024 / 1024 });
       fileIndicator.classList.add('active', 'error');
       setTimeout(() => fileIndicator.classList.remove('active', 'error'), 5000);
       return;
@@ -1381,12 +2498,12 @@
 
     if (!socket || !socket.connected) {
       fileUploadInput.value = '';
-      addSystemNotice('You are offline. The file was not sent.');
+      addSystemNotice(t('offlineFileNotSent'));
       return;
     }
 
     // Show file indicator
-    fileIndicator.textContent = `Uploading ${file.name}…`;
+    fileIndicator.textContent = t('uploading', { file: file.name });
     fileIndicator.classList.remove('error');
     fileIndicator.classList.add('active');
     setUploading(true);
@@ -1424,7 +2541,7 @@
 
     const fail = (reason) => {
       logger.error('File upload failed:', reason);
-      fileIndicator.textContent = reason || 'Sorry, there was a problem uploading your file. Please try again.';
+      fileIndicator.textContent = reason || t('uploadFailed');
       fileIndicator.classList.add('error');
       setTimeout(() => {
         fileIndicator.classList.remove('error');
@@ -1442,16 +2559,17 @@
       .then(({ ok, status, data }) => {
         if (!ok || !data.success) {
           const reason = status === 413
-            ? 'That file is too large. The limit is 10 MB.'
-            : (data.error || 'Sorry, there was a problem uploading your file. Please try again.');
+            ? t('fileTooLarge', { size: MAX_UPLOAD_BYTES / 1024 / 1024 })
+            : (data.error || t('uploadFailed'));
           fail(reason);
           return;
         }
 
         // Add message about file upload
-        addUserMessage(`I've uploaded a file: ${file.name}`, true);
+        markChatStarted();
+        addUserMessage(t('uploadedFile', { file: file.name }), true);
 
-        fileIndicator.textContent = `Sent ${file.name}`;
+        fileIndicator.textContent = t('sentFile', { file: file.name });
         setTimeout(clearIndicator, 3000);
 
         // Notify server about uploaded file
@@ -1491,7 +2609,7 @@
     trackRendered(messageId);
 
     // Get user name from localStorage, default to "You" if not available
-    const userName = storedUserDetails().name || 'You';
+    const userName = storedUserDetails().name || t('you');
 
     const messageElement = document.createElement('div');
     messageElement.className = 'message user';
@@ -1549,7 +2667,8 @@
   }
 
   // Add a bot message to the chat
-  function addBotMessage(message, broadcast = true, sender = 'AI Assistant', id = null, when = null) {
+  function addBotMessage(message, broadcast = true, sender = null, id = null, when = null, extras = {}) {
+    sender = sender || t('assistant');
     trackRendered(id);
 
     const messageElement = document.createElement('div');
@@ -1570,6 +2689,11 @@
 
     contentElement.innerHTML = formatMessage(message);
     messageElement.appendChild(contentElement);
+
+    const sources = renderSources(extras && extras.sources);
+    if (sources) {
+      messageElement.appendChild(sources);
+    }
 
     // Add timestamp element
     const timestamp = when || new Date();
@@ -1596,45 +2720,170 @@
     }
   }
 
-  // Add file response message
-  function addFileResponse(fileUrl, fileName, sender = 'AI Assistant') {
-    const messageElement = document.createElement('div');
-    messageElement.className = 'message bot';
+  /**
+   * Where the answer came from, under the answer.
+   *
+   * A link only for an absolute http(s) URL: a relative path would resolve
+   * against the tenant's page, not against anything we know, and every other
+   * scheme is refused. Anything that is not a link is still worth naming, so
+   * the title is shown as text. Built from nodes, never innerHTML: titles come
+   * from imported documents, which are not ours.
+   *
+   * @returns {HTMLElement|null}
+   */
+  function renderSources(sources) {
+    if (!Array.isArray(sources)) {
+      return null;
+    }
 
-    // Create sender name element
+    const usable = sources
+      .filter(source => source && (source.title || source.url))
+      .slice(0, 5);
+    if (usable.length === 0) {
+      return null;
+    }
+
+    const line = document.createElement('div');
+    line.className = 'message-sources';
+
+    const label = document.createElement('span');
+    label.className = 'message-sources-label';
+    label.textContent = `${t('sources')}:`;
+    line.appendChild(label);
+
+    usable.forEach((source, index) => {
+      if (index > 0) {
+        line.appendChild(document.createTextNode(' · '));
+      } else {
+        line.appendChild(document.createTextNode(' '));
+      }
+
+      const url = typeof source.url === 'string' ? source.url.trim() : '';
+      const title = String(source.title || url).trim().slice(0, 120);
+
+      if (/^https?:\/\//i.test(url) && safeUrl(url) !== '#') {
+        const link = document.createElement('a');
+        link.href = url;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer nofollow';
+        link.textContent = title;
+        line.appendChild(link);
+      } else {
+        const text = document.createElement('span');
+        text.textContent = title;
+        line.appendChild(text);
+      }
+    });
+
+    return line;
+  }
+
+  /**
+   * An absolute URL for a file on our server, carrying this visitor's
+   * session credentials.
+   *
+   * The server answers `/api/upload/<id>` for whoever proves the session;
+   * the cookie it used to rely on is third-party here and often dropped, so
+   * the id and token go on the URL (a link cannot set headers). A relative
+   * path is resolved against our server, never against the tenant's page.
+   */
+  function fileHref(fileUrl, inline) {
+    const raw = String(fileUrl || '').trim();
+    const base = config.serverUrl.replace(/\/+$/, '');
+    let absolute;
+
+    if (raw.startsWith('/') && !raw.startsWith('//')) {
+      absolute = base + raw;
+    } else if (/^https?:\/\//i.test(raw)) {
+      absolute = raw;
+    } else {
+      return '#';
+    }
+
+    try {
+      const url = new URL(absolute);
+      if (url.origin === new URL(base).origin) {
+        url.searchParams.set('sessionId', sessionId);
+        if (sessionToken) {
+          url.searchParams.set('sessionToken', sessionToken);
+        }
+        if (inline) {
+          url.searchParams.set('inline', '1');
+        }
+      }
+      return url.toString();
+    } catch (error) {
+      return '#';
+    }
+  }
+
+  /** Raster images the server will serve inline for a thumbnail. */
+  function isImageName(name) {
+    return /\.(png|jpe?g|gif|webp)$/i.test(String(name || ''));
+  }
+
+  /**
+   * A file someone sent the visitor, as one bubble: who sent it, a thumbnail
+   * when it is an image, and a chip to download it.
+   */
+  function addAttachmentMessage(message, sender, id = null, when = null) {
+    trackRendered(id);
+
+    const fileName = String(message.fileName || messageText(message) || 'file');
+    const fileUrl = message.fileUrl || (message.fileId ? `/api/upload/${message.fileId}` : '');
+    const href = fileHref(fileUrl, false);
+
+    const messageElement = document.createElement('div');
+    messageElement.className = 'message bot message-attachment';
+    if (id) {
+      messageElement.dataset.messageId = id;
+    }
+
     const senderElement = document.createElement('div');
     senderElement.className = 'message-sender';
-    senderElement.textContent = sender;
+    senderElement.textContent = sender || t('operator');
     messageElement.appendChild(senderElement);
 
-    // Create message content element
     const contentElement = document.createElement('div');
     contentElement.className = 'message-content';
-    const intro = document.createElement('p');
-    intro.textContent = 'Here\'s the file you requested:';
-    contentElement.appendChild(intro);
 
-    // Built as nodes rather than as a template string: the name comes from
-    // whoever uploaded the file and the URL is only ever ours, so neither
-    // belongs in innerHTML. `safeUrl` also stops a `javascript:` href, which
-    // escaping alone would happily preserve.
-    const link = document.createElement('a');
-    link.href = safeUrl(fileUrl);
-    link.target = '_blank';
-    link.rel = 'noopener noreferrer';
-    link.download = String(fileName || 'file');
-    link.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" ' +
+    if (href !== '#' && isImageName(fileName)) {
+      const thumbLink = document.createElement('a');
+      thumbLink.className = 'chat-attachment-thumb';
+      thumbLink.href = href;
+      thumbLink.target = '_blank';
+      thumbLink.rel = 'noopener noreferrer';
+      const image = document.createElement('img');
+      image.src = fileHref(fileUrl, true);
+      image.alt = fileName;
+      image.loading = 'lazy';
+      // A thumbnail the host page's policy blocks leaves the chip, which
+      // still works.
+      image.addEventListener('error', () => thumbLink.remove());
+      thumbLink.appendChild(image);
+      contentElement.appendChild(thumbLink);
+    }
+
+    const chip = document.createElement('a');
+    chip.className = 'chat-attachment';
+    chip.href = href;
+    chip.target = '_blank';
+    chip.rel = 'noopener noreferrer';
+    chip.setAttribute('aria-label', t('downloadFile', { file: fileName }));
+    chip.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" ' +
       'viewBox="0 0 24 24" aria-hidden="true" focusable="false">' +
-      '<path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg> ';
-    link.appendChild(document.createTextNode(String(fileName || 'file')));
-    contentElement.appendChild(link);
+      '<path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>';
+    const nameElement = document.createElement('span');
+    nameElement.className = 'chat-attachment-name';
+    nameElement.textContent = fileName;
+    chip.appendChild(nameElement);
+    contentElement.appendChild(chip);
+
     messageElement.appendChild(contentElement);
 
-    // Add timestamp element
-    const timestamp = new Date();
     const timestampElement = document.createElement('div');
     timestampElement.className = 'message-timestamp';
-    timestampElement.textContent = formatTime(timestamp);
+    timestampElement.textContent = formatTime(when || message.timestamp || new Date());
     messageElement.appendChild(timestampElement);
 
     chatMessages.appendChild(messageElement);
@@ -1708,7 +2957,7 @@
           link.href = linkUrl;
           link.target = '_blank';
           link.rel = 'noopener noreferrer';
-          link.textContent = 'View';
+          link.textContent = t('view');
           card.appendChild(link);
         }
       }
@@ -1728,7 +2977,7 @@
       return String(value);
     }
 
-    return date.toLocaleString(undefined, {
+    return date.toLocaleString(language, {
       weekday: 'short', day: 'numeric', month: 'short',
       hour: 'numeric', minute: '2-digit'
     });
@@ -1754,7 +3003,7 @@
     const group = document.createElement('div');
     group.className = 'quick-replies';
     group.setAttribute('role', 'group');
-    group.setAttribute('aria-label', 'Suggested replies');
+    group.setAttribute('aria-label', t('suggestedReplies'));
 
     choices.slice(0, 8).forEach(choice => {
       const button = document.createElement('button');
@@ -1798,16 +3047,16 @@
     const panel = document.createElement('div');
     panel.className = 'chat-rating';
     panel.innerHTML = `
-      <div class="chat-rating-question">How did we do?</div>
-      <div class="chat-rating-scores" role="group" aria-label="Rate this conversation">
+      <div class="chat-rating-question">${escapeHtml(t('ratingQuestion'))}</div>
+      <div class="chat-rating-scores" role="group" aria-label="${escapeHtml(t('rateConversation'))}">
         ${[1, 2, 3, 4, 5].map(score => `
           <button type="button" class="chat-rating-score" data-score="${score}"
-                  aria-label="${score} out of 5">${score}</button>`).join('')}
+                  aria-label="${escapeHtml(t('scoreLabel', { score }))}">${score}</button>`).join('')}
       </div>
       <div class="chat-rating-scale" aria-hidden="true">
-        <span>Not helpful</span><span>Very helpful</span>
+        <span>${escapeHtml(t('notHelpful'))}</span><span>${escapeHtml(t('veryHelpful'))}</span>
       </div>
-      <button type="button" class="chat-rating-dismiss">No thanks</button>`;
+      <button type="button" class="chat-rating-dismiss">${escapeHtml(t('noThanks'))}</button>`;
 
     chatMessages.appendChild(panel);
     scrollToBottom();
@@ -1842,16 +3091,16 @@
       socket.emit('submit-rating', { score });
     }
 
-    panel.querySelector('.chat-rating-question').textContent = 'Thank you.';
+    panel.querySelector('.chat-rating-question').textContent = t('thankYou');
     panel.querySelector('.chat-rating-dismiss').remove();
 
     const follow = document.createElement('div');
     follow.className = 'chat-rating-comment';
     follow.innerHTML = `
-      <label for="chatbot-rating-comment">Anything you would like to add?</label>
+      <label for="chatbot-rating-comment">${escapeHtml(t('addComment'))}</label>
       <textarea id="chatbot-rating-comment" rows="2" maxlength="1000"
-                placeholder="Optional"></textarea>
-      <button type="button" class="chat-rating-send">Send</button>`;
+                placeholder="${escapeHtml(t('optionalPlaceholder'))}"></textarea>
+      <button type="button" class="chat-rating-send">${escapeHtml(t('send'))}</button>`;
 
     panel.appendChild(follow);
     scrollToBottom();
@@ -1866,7 +3115,7 @@
         socket.emit('submit-rating', { score, comment });
       }
 
-      follow.innerHTML = '<div class="chat-rating-done">Thanks for the feedback.</div>';
+      follow.innerHTML = `<div class="chat-rating-done">${escapeHtml(t('thanksFeedback'))}</div>`;
       scrollToBottom();
     });
   }
@@ -1921,7 +3170,7 @@
     if (isNaN(value.getTime())) {
       return '';
     }
-    return value.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    return value.toLocaleTimeString(language, { hour: '2-digit', minute: '2-digit' });
   }
 
   /**
@@ -1955,6 +3204,12 @@
       return raw;
     }
     return '#';
+  }
+
+  /** A logo URL we will draw: https only, never `javascript:` or `data:`. */
+  function safeLogoUrl(value) {
+    const raw = typeof value === 'string' ? value.trim() : '';
+    return /^https:\/\/[^\s]+$/i.test(raw) ? raw : null;
   }
 
   /**
@@ -2015,8 +3270,31 @@
     });
   }
 
-  // Expose public API
+  // Expose public API. `preview` re-renders the dashboard's appearance
+  // preview with new settings and does nothing on a live widget.
   window.ChatbotWidget = {
-    init
+    init,
+    preview: rerenderPreview,
+    languages: Object.keys(STRINGS)
   };
+
+  // The pure pieces, for the test suite only; nothing sets this in a page.
+  if (window.__CHATBOT_WIDGET_TEST__) {
+    const inLanguage = (lang, fn) => {
+      const previous = language;
+      language = lang;
+      try {
+        return fn();
+      } finally {
+        language = previous;
+      }
+    };
+    window.ChatbotWidget._internals = {
+      STRINGS,
+      resolveLanguage,
+      safeLogoUrl,
+      t: (lang, key, values) => inLanguage(lang, () => t(key, values)),
+      translateOpening: (lang, value) => inLanguage(lang, () => translateOpening(value))
+    };
+  }
 })();

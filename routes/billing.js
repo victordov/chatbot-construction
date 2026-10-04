@@ -68,10 +68,128 @@ router.get('/me', auth, admin, async (req, res) => {
       return res.status(400).json({ error: 'Your account is not linked to a company' });
     }
 
-    res.json(await summaryFor(req.user.company.id));
+    const companyId = req.user.company.id;
+    const summary = await summaryFor(companyId);
+    const subscription = await usageService.getSubscription(companyId);
+
+    // What the dashboard may offer: a plan is buyable only when Stripe has a
+    // key and a price for it, and the portal only for a tenant Stripe knows.
+    summary.checkout = {
+      available: stripe.checkoutPlans().length > 0,
+      plans: stripe.checkoutPlans()
+    };
+    summary.portalAvailable = Boolean(process.env.STRIPE_SECRET_KEY && subscription.externalCustomerId);
+
+    res.json(summary);
   } catch (error) {
     logger.error('Failed to build usage summary', { error: error.message });
     res.status(500).json({ error: 'Failed to load plan and usage' });
+  }
+});
+
+/** Where Stripe sends the customer back to. */
+function publicBase(req) {
+  return (process.env.PUBLIC_URL || `${req.protocol}://${req.get('host')}`).replace(/\/+$/, '');
+}
+
+/**
+ * Start paying for a plan.
+ *
+ * Answers with Stripe's hosted Checkout URL; the browser goes there, the card
+ * is taken there, and the plan changes only when Stripe's webhook says the
+ * payment went through. Nothing here grants anything, which is why a company
+ * admin may call it: the worst a forged request does is open a payment page.
+ */
+router.post('/checkout', auth, admin, async (req, res) => {
+  try {
+    if (!req.user.company) {
+      return res.status(400).json({ error: 'Your account is not linked to a company' });
+    }
+
+    const planId = req.body && req.body.plan;
+    if (!stripe.PURCHASABLE_PLANS.includes(planId)) {
+      return res.status(400).json({ error: `plan must be one of ${stripe.PURCHASABLE_PLANS.join(', ')}` });
+    }
+
+    if (!process.env.STRIPE_SECRET_KEY || !stripe.priceFor(planId)) {
+      return res.status(503).json({ error: 'Online payment is not available for this plan', configured: false });
+    }
+
+    const companyId = req.user.company.id;
+    const subscription = await usageService.getSubscription(companyId);
+
+    // A second Checkout for a tenant who already pays creates a second
+    // subscription and two charges a month. Changing plan is the portal's job.
+    if (subscription.externalSubscriptionId && ['active', 'past_due'].includes(subscription.status)) {
+      return res.status(409).json({
+        error: 'This company already has a paid subscription; change it from the billing portal',
+        portalAvailable: Boolean(subscription.externalCustomerId)
+      });
+    }
+
+    const session = await stripe.createCheckoutSession({
+      companyId,
+      planId,
+      customerId: subscription.externalCustomerId || null,
+      email: req.user.email,
+      baseUrl: publicBase(req)
+    });
+
+    audit.record({
+      req,
+      action: 'billing.checkout_started',
+      company: companyId,
+      target: { type: 'company', id: String(companyId), label: req.user.company.name },
+      details: { planId, sessionId: session.id }
+    });
+
+    res.json({ url: session.url });
+  } catch (error) {
+    if (error instanceof stripe.StripeNotConfiguredError) {
+      return res.status(503).json({ error: 'Online payment is not available for this plan', configured: false });
+    }
+    if (error instanceof stripe.StripeRequestError) {
+      return res.status(502).json({ error: error.message });
+    }
+    logger.error('Failed to start checkout', { error: error.message });
+    res.status(500).json({ error: 'Failed to start checkout' });
+  }
+});
+
+/**
+ * Manage an existing subscription on Stripe's Billing Portal: card, invoices,
+ * plan change, cancellation. Only for a tenant Stripe already knows.
+ */
+router.post('/portal', auth, admin, async (req, res) => {
+  try {
+    if (!req.user.company) {
+      return res.status(400).json({ error: 'Your account is not linked to a company' });
+    }
+
+    if (!process.env.STRIPE_SECRET_KEY) {
+      return res.status(503).json({ error: 'Online payment is not configured', configured: false });
+    }
+
+    const subscription = await usageService.getSubscription(req.user.company.id);
+    if (!subscription.externalCustomerId) {
+      return res.status(409).json({ error: 'This company has no Stripe customer yet; start a checkout first' });
+    }
+
+    const session = await stripe.createPortalSession({
+      customerId: subscription.externalCustomerId,
+      baseUrl: publicBase(req)
+    });
+
+    res.json({ url: session.url });
+  } catch (error) {
+    if (error instanceof stripe.StripeNotConfiguredError) {
+      return res.status(503).json({ error: 'Online payment is not configured', configured: false });
+    }
+    if (error instanceof stripe.StripeRequestError) {
+      return res.status(502).json({ error: error.message });
+    }
+    logger.error('Failed to open the billing portal', { error: error.message });
+    res.status(500).json({ error: 'Failed to open the billing portal' });
   }
 });
 

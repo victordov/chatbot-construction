@@ -7,12 +7,17 @@
  * enters them on Stripe's own page - so the PCI surface stays where it belongs
  * and there is no dependency to keep current.
  *
+ * Starting a payment is two REST calls - create a Checkout Session, or a
+ * Billing Portal session for a customer who already pays - made with axios
+ * and `STRIPE_SECRET_KEY`. Two endpoints do not justify a vendor SDK.
+ *
  * The mapping from a Stripe price to one of our plans is configuration, not
  * code: `STRIPE_PRICE_<PLAN>` per plan, or a `planId` in the subscription's
  * metadata, which is what a manually created subscription will carry.
  */
 
 const crypto = require('crypto');
+const axios = require('axios');
 const mongoose = require('mongoose');
 const { PLANS } = require('../config/plans');
 const { logger } = require('./logging');
@@ -344,6 +349,153 @@ function translate(event) {
   }
 }
 
+const STRIPE_API = 'https://api.stripe.com/v1';
+
+/** Plans a tenant can buy through Checkout, in catalogue order. Never the trial. */
+const PURCHASABLE_PLANS = ['basic', 'professional', 'enterprise'];
+
+/** Raised when Stripe is not configured well enough to take this payment. */
+class StripeNotConfiguredError extends Error {}
+
+/** Raised when Stripe answered, but with an error. */
+class StripeRequestError extends Error {
+  constructor(message, status) {
+    super(message);
+    this.status = status;
+  }
+}
+
+function secretKey() {
+  return process.env.STRIPE_SECRET_KEY || '';
+}
+
+/** The Stripe price configured for one of our plans, or null. */
+function priceFor(planId) {
+  if (!PURCHASABLE_PLANS.includes(planId)) {
+    return null;
+  }
+  return process.env[`STRIPE_PRICE_${planId.toUpperCase()}`] || null;
+}
+
+/**
+ * The plans a tenant could buy right now. Empty without a secret key, so the
+ * dashboard does not offer a button that can only fail.
+ */
+function checkoutPlans() {
+  if (!secretKey()) {
+    return [];
+  }
+  return PURCHASABLE_PLANS.filter(planId => Boolean(priceFor(planId)));
+}
+
+/**
+ * Flatten a nested object into Stripe's form encoding:
+ * `{ line_items: [{ price: 'p' }] }` becomes `line_items[0][price]=p`.
+ * Stripe's API takes form bodies, not JSON.
+ */
+function formEncode(value, prefix, pairs = []) {
+  if (value === undefined || value === null) {
+    return pairs;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => formEncode(item, `${prefix}[${index}]`, pairs));
+  } else if (typeof value === 'object') {
+    Object.keys(value).forEach(key => {
+      formEncode(value[key], prefix ? `${prefix}[${key}]` : key, pairs);
+    });
+  } else {
+    pairs.push(`${encodeURIComponent(prefix)}=${encodeURIComponent(String(value))}`);
+  }
+  return pairs;
+}
+
+async function stripePost(path, params, { idempotencyKey } = {}) {
+  const headers = {
+    Authorization: `Bearer ${secretKey()}`,
+    'Content-Type': 'application/x-www-form-urlencoded'
+  };
+  if (idempotencyKey) {
+    headers['Idempotency-Key'] = idempotencyKey;
+  }
+
+  try {
+    const response = await axios.post(`${STRIPE_API}${path}`, formEncode(params).join('&'), {
+      headers,
+      timeout: 15000
+    });
+    return response.data;
+  } catch (error) {
+    // Stripe's own message is useful in the log and useless (or revealing) to
+    // a tenant, so only the log gets it.
+    const status = error.response ? error.response.status : null;
+    const detail = error.response && error.response.data && error.response.data.error
+      ? error.response.data.error.message
+      : error.message;
+    logger.error('Stripe request failed', { path, status, error: detail });
+    throw new StripeRequestError('Stripe could not start the payment', status);
+  }
+}
+
+/**
+ * Start a Checkout Session for a tenant buying a plan.
+ *
+ * The company id goes in three places on purpose: the session's metadata
+ * (what `checkout.session.completed` reads), `client_reference_id` (what the
+ * Stripe dashboard shows a person), and the subscription's metadata, so every
+ * later `customer.subscription.*` event names the tenant even if the customer
+ * id were ever lost. `planId` rides along so the completion event can place
+ * the tenant before the subscription event with the price arrives.
+ *
+ * @returns {Promise<{id: string, url: string}>}
+ */
+async function createCheckoutSession({ companyId, planId, customerId, email, baseUrl }) {
+  const price = priceFor(planId);
+  if (!secretKey() || !price) {
+    throw new StripeNotConfiguredError(`Checkout is not configured for the ${planId} plan`);
+  }
+
+  const metadata = { companyId: String(companyId), planId };
+  const params = {
+    mode: 'subscription',
+    line_items: [{ price, quantity: 1 }],
+    client_reference_id: String(companyId),
+    metadata,
+    subscription_data: { metadata },
+    success_url: `${baseUrl}/admin/#billing?checkout=success`,
+    cancel_url: `${baseUrl}/admin/#billing?checkout=cancelled`,
+    allow_promotion_codes: 'true'
+  };
+
+  // Reusing the customer keeps one Stripe customer per tenant, with one card
+  // and one invoice history, rather than a new one per upgrade attempt.
+  if (customerId) {
+    params.customer = customerId;
+  } else if (email) {
+    params.customer_email = email;
+  }
+
+  const session = await stripePost('/checkout/sessions', params);
+  return { id: session.id, url: session.url };
+}
+
+/**
+ * A Billing Portal session, where an existing customer changes card, plan or
+ * cancels on Stripe's page rather than ours.
+ *
+ * @returns {Promise<{url: string}>}
+ */
+async function createPortalSession({ customerId, baseUrl }) {
+  if (!secretKey()) {
+    throw new StripeNotConfiguredError('Stripe is not configured');
+  }
+
+  const session = await stripePost('/billing_portal/sessions', {
+    customer: customerId,
+    return_url: `${baseUrl}/admin/#billing`
+  });
+  return { url: session.url };
+}
+
 module.exports = {
   verifyEvent,
   translate,
@@ -352,6 +504,14 @@ module.exports = {
   releaseEvent,
   clientReferenceAllowed,
   StripeEvent,
+  priceFor,
+  checkoutPlans,
+  createCheckoutSession,
+  createPortalSession,
+  formEncode,
+  StripeNotConfiguredError,
+  StripeRequestError,
+  PURCHASABLE_PLANS,
   TOLERANCE_SECONDS,
   EVENT_MEMORY_DAYS
 };

@@ -87,6 +87,11 @@ router.get('/history', async (req, res) => {
         operatorName: msg.operatorName || undefined,
         // Citations on a grounded bot reply, so a reload shows them again.
         sources: msg.sources && msg.sources.length ? msg.sources : undefined,
+        // Attachments either side sent, so a REST client can link them the
+        // same way the socket history does.
+        fileId: msg.fileId || undefined,
+        fileName: msg.fileId ? msg.fileName : undefined,
+        fileUrl: msg.fileId ? `/api/upload/${msg.fileId}` : undefined,
         timestamp: msg.timestamp
       }))
     });

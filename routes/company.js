@@ -14,6 +14,7 @@ const secrets = require('../services/secrets');
 const audit = require('../services/audit');
 const DataRetentionService = require('../services/dataRetention');
 const crypto = require('crypto');
+const { WIDGET_LANGUAGE_SETTINGS, isWidgetLanguage, isSafeLogoUrl } = require('../config/widget-languages');
 
 const router = express.Router();
 
@@ -116,6 +117,9 @@ router.get('/me/widget', requireOwnCompany, async (req, res) => {
       widgetKey: company.widgetKey,
       allowedDomains: company.allowedDomains || [],
       widgetSettings: company.widgetSettings || {},
+      // What the language picker may offer, so the dashboard does not keep
+      // its own copy of the list.
+      languages: WIDGET_LANGUAGE_SETTINGS,
       companyName: company.name
     });
   } catch (error) {
@@ -154,7 +158,26 @@ router.put('/me/widget', requireOwnCompany, async (req, res) => {
     }
 
     if (widgetSettings && typeof widgetSettings === 'object') {
-      const allowed = ['chatbotName', 'primaryColor', 'position', 'welcomeMessage', 'logoUrl', 'privacyPolicyUrl'];
+      // Checked before anything is assigned, so a bad value refuses the whole
+      // save rather than half-applying it.
+      if (widgetSettings.language !== undefined && !isWidgetLanguage(widgetSettings.language)) {
+        return res.status(400).json({
+          error: `language must be one of ${WIDGET_LANGUAGE_SETTINGS.join(', ')}`
+        });
+      }
+
+      // The logo is drawn on the tenant's own website, so it has to be an
+      // https image URL; an empty value removes it.
+      const logoGiven = widgetSettings.logoUrl !== undefined;
+      const logoUrl = typeof widgetSettings.logoUrl === 'string'
+        ? widgetSettings.logoUrl.trim()
+        : widgetSettings.logoUrl;
+      const clearLogo = logoGiven && (logoUrl === '' || logoUrl === null);
+      if (logoGiven && !clearLogo && !isSafeLogoUrl(logoUrl)) {
+        return res.status(400).json({ error: 'logoUrl must be an https:// URL' });
+      }
+
+      const allowed = ['chatbotName', 'primaryColor', 'position', 'welcomeMessage', 'privacyPolicyUrl', 'language'];
       const booleans = ['requireName', 'requireEmail', 'requirePhone'];
       company.widgetSettings = company.widgetSettings || {};
       allowed.forEach(key => {
@@ -167,6 +190,9 @@ router.put('/me/widget', requireOwnCompany, async (req, res) => {
           company.widgetSettings[key] = widgetSettings[key] === true || widgetSettings[key] === 'true';
         }
       });
+      if (logoGiven) {
+        company.widgetSettings.logoUrl = clearLogo ? undefined : logoUrl;
+      }
     }
 
     await company.save();

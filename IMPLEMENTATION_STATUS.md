@@ -398,7 +398,29 @@ unreachable the store counts in memory rather than failing the request or
 opening the door.
 
 **File uploads.** MIME allowlist, size cap, random storage ids, tenant-scoped
-downloads served as attachments with `nosniff`.
+downloads served as attachments with `nosniff`. Files travel both ways: an
+operator sends one with `POST /api/admin/conversations/:sessionId/files`
+(same allowlist and cap, delivered as an `operator-message` carrying
+`fileId`/`fileName`/`fileUrl`), and the visitor downloads it with their
+session id and token on the URL, since the session cookie is third-party on
+the tenant's site. Raster images can be fetched inline (`?inline=1`) for a
+thumbnail.
+
+**Taking payment.** A company admin starts a Stripe Checkout Session for any
+plan with a configured price (`POST /api/billing/checkout`) or opens the
+Billing Portal (`POST /api/billing/portal`); the webhook still decides what
+the tenant is entitled to. Two REST calls through axios, no Stripe library.
+
+**Widget languages and branding.** Every visitor-facing string, aria labels
+included, is translated into English, Spanish, French, German, Italian,
+Portuguese, Romanian, Russian, Ukrainian, Polish and Dutch. The language is
+the snippet's `data-language`, else the tenant's `widgetSettings.language`,
+else the browser's, else English (`auto` means the browser). An optional
+https `logoUrl` appears in the header. Bot replies show a "Sources" line when
+the message carries `sources`. The pre-chat form hides the composer, and
+"Talk to a person" appears only once the conversation has started. The
+dashboard's appearance preview loads `/widget/preview.html`, which runs the
+widget with no socket, session, config fetch or usage.
 
 **Operations.** `/health` and `/ready`, Prometheus metrics at `/metrics`,
 graceful shutdown, MongoDB-backed sessions, helmet + CSP, rate limiting,
@@ -411,9 +433,8 @@ image build on every push. The first superadmin is created through
 
 ## Known gaps
 
-- **Nothing starts a checkout from inside the product.** Stripe tells us what
-  happened once somebody has paid, but the tenant reaches Stripe by a Payment
-  Link somebody sent them rather than by an upgrade button here.
+- **Checkout and operator attachments have no dashboard buttons yet.** The
+  server routes exist; the dashboard rewrite will call them.
 - **Nothing bills for overage.** `overageAllowed` lets a tenant exceed their
   plan and nothing charges for what it let through.
 - **A crawl follows no robots.txt and reads no JavaScript.** It reads the HTML

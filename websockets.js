@@ -1151,12 +1151,22 @@ function setupWebSockets(server) {
         // "I've received your file" from the bot, which was a placeholder for
         // file analysis that does not exist - and it fired even when a human
         // operator was already handling the conversation.
+        // `fileId`/`fileName`/`fileUrl` at the top level match what an
+        // operator-sent file carries, so the dashboard renders both the same
+        // way; `fileInfo` stays for anything still reading the older shape.
+        const recorded = conversation.messages.find(message => message.fileId === fileId);
+        const storedName = (recorded && recorded.fileName) || fileName;
+        const fileUrl = `/api/upload/${fileId}`;
         toOperators(clientCompanyId, 'new-message', {
           sessionId,
-          message: `[File uploaded: ${fileName}]`,
+          message: `[File uploaded: ${storedName}]`,
           sender: 'user',
+          messageId: recorded && recorded._id ? recorded._id.toString() : undefined,
           timestamp: new Date(),
-          fileInfo: { fileName, fileId, url: `/api/upload/${fileId}` }
+          fileId,
+          fileName: storedName,
+          fileUrl,
+          fileInfo: { fileName: storedName, fileId, url: fileUrl }
         });
 
         socket.emit('message-read', { messageId: fileId, timestamp: new Date() });

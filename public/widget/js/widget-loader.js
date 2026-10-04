@@ -106,7 +106,11 @@
       'data-primary-color': 'primaryColor',
       'data-position': 'position',
       'data-initial-message': 'initialMessage',
-      'data-privacy-policy-url': 'privacyPolicyUrl'
+      'data-privacy-policy-url': 'privacyPolicyUrl',
+      // A language code, or `auto` for the visitor's browser. Wins over the
+      // tenant's own setting.
+      'data-language': 'language',
+      'data-logo-url': 'logoUrl'
     };
 
     Object.keys(map).forEach(function(attribute) {
@@ -129,6 +133,12 @@
         overrides[flags[attribute]] = parsed;
       }
     });
+
+    // The dashboard's appearance preview: draw the widget from these
+    // attributes alone, and never talk to the server about it.
+    if (parseBoolean(attr('data-preview')) === true) {
+      overrides.preview = true;
+    }
 
     return { overrides, serverUrl, widgetKey };
   }
@@ -172,6 +182,12 @@
         if (s.privacyPolicyUrl) {
           settings.privacyPolicyUrl = s.privacyPolicyUrl;
         }
+        if (s.language) {
+          settings.language = s.language;
+        }
+        if (s.logoUrl) {
+          settings.logoUrl = s.logoUrl;
+        }
         ['requireName', 'requireEmail', 'requirePhone'].forEach(function(key) {
           if (typeof s[key] === 'boolean') {
             settings[key] = s[key];
@@ -200,7 +216,12 @@
    * view of every customer site.
    */
   function loadWidgetScript(parsed) {
-    fetchTenantSettings(parsed.serverUrl, parsed.widgetKey).then(function(remote) {
+    // A preview has no tenant to ask about and must not look like traffic.
+    const settingsReady = parsed.overrides.preview
+      ? Promise.resolve({ settings: {}, assets: {} })
+      : fetchTenantSettings(parsed.serverUrl, parsed.widgetKey);
+
+    settingsReady.then(function(remote) {
       const assets = remote.assets || {};
       const widgetSrc = parsed.serverUrl +
         (assets['widget/js/widget.js'] || '/widget/js/widget.js');
@@ -227,7 +248,10 @@
             // Passed through so the widget loads its own dependencies from
             // hashed URLs too.
             assets: assets,
-            availability: remote.availability || null
+            availability: remote.availability || null,
+            // The tenant's language on its own, so a `data-language` the
+            // widget does not speak falls back to it rather than to English.
+            languageFallback: (remote.settings || {}).language || null
           }
         );
 
