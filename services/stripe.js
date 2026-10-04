@@ -86,6 +86,11 @@ async function claimEvent(eventId, type) {
   }
 
   try {
+    // The unique index is what makes this a claim. Mongoose builds indexes
+    // in the background, so on a fresh database the first deliveries could
+    // otherwise race it and a retry would be applied twice; `init()` resolves
+    // once the index exists, and is cached after the first call.
+    await StripeEvent.init();
     await StripeEvent.create({ eventId: String(eventId), type });
     return true;
   } catch (error) {

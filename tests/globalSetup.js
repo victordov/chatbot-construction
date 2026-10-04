@@ -13,7 +13,14 @@ module.exports = async function globalSetup() {
   }
 
   try {
-    const mongo = await MongoMemoryServer.create();
+    // MongoDB 7 publishes native builds for Apple Silicon and Linux on ARM;
+    // the library's older default needs Rosetta on a Mac. 7.x has no
+    // ephemeralForTest engine, so the in-memory instance uses wiredTiger in a
+    // throwaway directory instead.
+    const mongo = await MongoMemoryServer.create({
+      binary: { version: process.env.MONGOMS_VERSION || '7.0.14' },
+      instance: { storageEngine: 'wiredTiger' }
+    });
     // Stash the instance so globalTeardown can stop it.
     global.__MONGO_SERVER__ = mongo;
     process.env.MONGODB_TEST_URI = mongo.getUri();

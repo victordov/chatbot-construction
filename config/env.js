@@ -115,7 +115,9 @@ function openaiClientOptions() {
 const config = {
   env: process.env.NODE_ENV || 'development',
   isProduction: process.env.NODE_ENV === 'production',
-  port: parseInt(process.env.PORT, 10) || 3000,
+  // `|| 3000` would turn PORT=0 - "any free port", which the test suite
+  // asks for - into 3000, and collide with whatever already holds it.
+  port: Number.isInteger(parseInt(process.env.PORT, 10)) ? parseInt(process.env.PORT, 10) : 3000,
   mongoUri: process.env.MONGODB_URI || 'mongodb://localhost:27017/chatbot',
   jwtSecret: process.env.JWT_SECRET || DEV_FALLBACKS.JWT_SECRET,
   sessionSecret: process.env.SESSION_SECRET || DEV_FALLBACKS.SESSION_SECRET,
