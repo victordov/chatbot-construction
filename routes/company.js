@@ -1,4 +1,5 @@
 const express = require('express');
+const mongoose = require('mongoose');
 const Company = require('../models/company');
 const User = require('../models/user');
 const tenantService = require('../services/tenant');
@@ -179,6 +180,90 @@ router.put('/me/widget', requireOwnCompany, async (req, res) => {
   } catch (error) {
     console.error('Error updating widget config:', error);
     res.status(500).json({ error: 'Failed to update widget configuration' });
+  }
+});
+
+/**
+ * How far this company has got with setting up, for the dashboard's checklist.
+ *
+ * A new tenant lands on an empty dashboard and has to discover for
+ * themselves that the bot knows nothing until they import something, says
+ * nothing in their voice until they write a persona, and talks to nobody until
+ * the snippet is on their site. Each of those is one cheap count or flag, so
+ * the dashboard can say what is left instead.
+ *
+ * Company admins read their own; a superadmin names the company with
+ * `?companyId=`, as on the knowledge routes.
+ */
+router.get('/me/setup', async (req, res) => {
+  try {
+    let companyId;
+
+    if (req.user.role === 'superadmin') {
+      companyId = req.query.companyId || (req.user.company && req.user.company.id) || null;
+      if (!companyId) {
+        return res.status(400).json({ error: 'Name a company with ?companyId=' });
+      }
+      if (!mongoose.isValidObjectId(companyId)) {
+        return res.status(400).json({ error: 'That is not a company id' });
+      }
+    } else if (req.user.role === 'company_admin') {
+      if (!req.user.company) {
+        return res.status(400).json({ error: 'Your account is not linked to a company' });
+      }
+      companyId = req.user.company.id;
+    } else {
+      return res.status(403).json({ error: 'Admin privileges required' });
+    }
+
+    const company = await Company.findById(companyId)
+      .select('assistant.persona allowedDomains emailChannel.enabled businessHours.enabled')
+      .lean();
+
+    if (!company) {
+      return res.status(404).json({ error: 'Company not found' });
+    }
+
+    // Required here rather than at the top: this is the only route in the
+    // file that reads them.
+    const KnowledgeChunk = require('../models/knowledge-chunk');
+    const Conversation = require('../models/conversation');
+    const Workflow = require('../models/workflow');
+
+    const [knowledgeSources, knowledgeChunks, conversations, operators, published] = await Promise.all([
+      KnowledgeChunk.distinct('sourceId', { company: companyId }).then(ids => ids.length),
+      KnowledgeChunk.countDocuments({ company: companyId }),
+      Conversation.countDocuments({ company: companyId }),
+      // Everyone who can answer a chat: admins handle conversations too.
+      User.countDocuments({
+        company: companyId,
+        role: { $in: ['operator', 'company_admin'] },
+        isActive: { $ne: false }
+      }),
+      Workflow.findOne({ company: companyId, status: 'published' }).select('nodes').lean()
+    ]);
+
+    res.json({
+      knowledgeSources,
+      knowledgeChunks,
+      // A persona written under Assistant, or a Persona node in the live
+      // workflow: either way the bot speaks for the business.
+      persona: Boolean(String(company.assistant?.persona || '').trim()) ||
+        Boolean(published && (published.nodes || []).some(node =>
+          node && (node.type === 'persona' || node.data?.type === 'persona') &&
+          String(node.data?.prompt || '').trim())),
+      allowedDomains: company.allowedDomains || [],
+      conversations,
+      // The widget has been installed somewhere that reached us at least once.
+      widgetSeen: conversations > 0,
+      operators,
+      workflowPublished: Boolean(published),
+      emailChannel: Boolean(company.emailChannel?.enabled),
+      businessHours: Boolean(company.businessHours?.enabled)
+    });
+  } catch (error) {
+    logger.error('Could not read setup status', { error: error.message });
+    res.status(500).json({ error: 'Failed to read setup status' });
   }
 });
 

@@ -363,6 +363,33 @@ describe('WebSockets', () => {
       expect(conversation.messages.map(m => m.sender)).toEqual(['user', 'bot']);
     });
 
+    it('carries the sources the answer drew on, and keeps them on the message', async () => {
+      const sources = [
+        { title: 'Returns policy', url: 'https://acme-sockets.test/returns' },
+        { title: 'price-list.csv', url: null }
+      ];
+      replyService.generate.mockResolvedValueOnce({ text: 'Thirty days.', source: 'assistant', sources });
+
+      const { socket, sessionId } = await startVisitor('sources');
+      say(socket, 'how long do I have to return something?');
+
+      const reply = await waitFor(socket, 'bot-message');
+      expect(reply.text).toBe('Thirty days.');
+      expect(reply.sources).toEqual(sources);
+
+      const conversation = await Conversation.findOne({ sessionId }).lean();
+      expect(conversation.messages.at(-1).sources).toEqual(sources);
+      // Only a grounded bot reply carries the field at all.
+      expect(conversation.messages[0].sources).toBeUndefined();
+    });
+
+    it('sends an empty sources list when the answer drew on nothing', async () => {
+      const { socket } = await startVisitor('no-sources');
+      say(socket, 'hello');
+
+      expect((await waitFor(socket, 'bot-message')).sources).toEqual([]);
+    });
+
     it('shows the bot typing while the reply is being produced, and stops when it lands', async () => {
       const { socket } = await startVisitor('typing');
       const seen = [];

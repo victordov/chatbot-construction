@@ -135,6 +135,7 @@ class KnowledgeConnectorService {
 
       let content = '';
       let filename = '';
+      let title = null;
 
       if (pdf) {
         content = await this.parsePdf(response.body, url);
@@ -143,7 +144,11 @@ class KnowledgeConnectorService {
         if (response.body.length > MAX_PAGE_BYTES) {
           throw new Error(`Failed to fetch web content: page is larger than ${Math.round(MAX_PAGE_BYTES / 1024 / 1024)}MB`);
         }
-        content = this.htmlToText(response.body.toString('utf8'));
+        const html = response.body.toString('utf8');
+        // Kept so the dashboard and the assistant's citations can name the
+        // page rather than show a bare address.
+        title = this.htmlTitle(html);
+        content = this.htmlToText(html);
         filename = new URL(url).hostname;
       }
 
@@ -157,6 +162,7 @@ class KnowledgeConnectorService {
           source: pdf ? 'pdf' : 'web_url',
           url,
           filename,
+          ...(title ? { title } : {}),
           chunkIndex: index,
           tenantId
         }
@@ -274,6 +280,28 @@ class KnowledgeConnectorService {
       .replace(/<[^>]*>/g, ' ')
       .replace(/\s+/g, ' ')
       .trim();
+  }
+
+  /** The text inside an HTML document's <title>, or null. */
+  htmlTitle(html) {
+    const match = String(html).match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+    if (!match) {
+      return null;
+    }
+    const title = this.decodeEntities(this.htmlToText(match[1])).slice(0, 200);
+    return title || null;
+  }
+
+  /** The handful of entities that turn up in titles and ordinary prose. */
+  decodeEntities(text) {
+    const named = { amp: '&', lt: '<', gt: '>', quot: '"', apos: '\'', nbsp: ' ' };
+    // A code point past Unicode's range makes fromCodePoint throw; a page
+    // with a typo in its title must not fail the import.
+    const char = (match, code) => (code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : match);
+    return String(text)
+      .replace(/&#(\d+);/g, (match, code) => char(match, Number(code)))
+      .replace(/&#x([0-9a-f]+);/gi, (match, code) => char(match, parseInt(code, 16)))
+      .replace(/&([a-z]+);/gi, (match, name) => named[name.toLowerCase()] ?? match);
   }
 
   /**

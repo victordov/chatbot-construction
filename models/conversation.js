@@ -46,6 +46,16 @@ const MessageSchema = new mongoose.Schema({
     url: String,
     mimeType: String
   }],
+  /**
+   * Which knowledge sources a bot reply drew on, so the visitor can check the
+   * answer and an operator reading the transcript can see where it came from.
+   * `url` is null for pasted text and uploaded files. Left unset (rather than
+   * an empty array) on every message that is not a grounded bot reply.
+   */
+  sources: {
+    type: [{ _id: false, title: String, url: String }],
+    default: undefined
+  },
   timestamp: {
     type: Date,
     default: Date.now

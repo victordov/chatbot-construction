@@ -66,6 +66,28 @@ describe('REST chat', () => {
     expect(conversation.sessionTokenHash).toBe(sessionTokenService.hash(response.body.sessionToken));
   });
 
+  test('a reply carries its sources, stores them, and history returns them', async () => {
+    const sources = [{ title: 'Delivery', url: 'https://example.com/delivery' }];
+    replyService.generate.mockResolvedValueOnce({ text: 'Three days.', source: 'assistant', sources });
+
+    const sessionId = fresh();
+    const app = buildApp(sessionId);
+    const response = await request(app)
+      .post('/api/chat/message')
+      .send({ message: 'how long is delivery?', widgetKey: acme.widgetKey });
+
+    expect(response.body.message.sources).toEqual(sources);
+
+    const conversation = await Conversation.findOne({ sessionId }).lean();
+    expect(conversation.messages.at(-1).sources).toEqual(sources);
+
+    const history = await request(app)
+      .get('/api/chat/history')
+      .query({ sessionToken: response.body.sessionToken });
+    expect(history.body.messages.at(-1).sources).toEqual(sources);
+    expect(history.body.messages[0].sources).toBeUndefined();
+  });
+
   test('a later message without the token is refused', async () => {
     const sessionId = fresh();
     const app = buildApp(sessionId);

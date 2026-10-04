@@ -167,6 +167,47 @@ async function isOnTopic(message, openaiClient = openai, scope = null) {
 }
 
 
+/** How many sources a reply cites at most; past three it is a bibliography. */
+const MAX_CITATIONS = 3;
+
+/**
+ * The sources behind a set of retrieved chunks, best first, one per source.
+ *
+ * `url` is only ever an http(s) address the source was fetched from; pasted
+ * notes and uploaded files have none, and get null rather than something a
+ * widget would render as a broken link.
+ *
+ * @returns {Array<{title: string, url: string|null}>}
+ */
+function citationsFrom(results = []) {
+  const seen = new Set();
+  const citations = [];
+
+  for (const result of results) {
+    const metadata = result.metadata instanceof Map
+      ? Object.fromEntries(result.metadata)
+      : (result.metadata || {});
+    const key = result.sourceId || metadata.url || metadata.title || result.content;
+
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+
+    const url = /^https?:\/\//i.test(String(metadata.url || '')) ? metadata.url : null;
+    citations.push({
+      title: metadata.title || metadata.filename || url || 'Knowledge base',
+      url
+    });
+
+    if (citations.length >= MAX_CITATIONS) {
+      break;
+    }
+  }
+
+  return citations;
+}
+
 /**
  * Service for AI integration with OpenAI
  */
@@ -225,6 +266,13 @@ class AIService {
    * @returns {Promise<string>} - The AI-generated response
    */
   async generateResponse(message, messageHistory = []) {
+    // How this reply was produced and what it drew on, for the caller to read
+    // afterwards (`services/reply.js` turns it into citations). Kept on the
+    // instance rather than in the return value so every existing caller that
+    // expects a plain string keeps working.
+    this.lastPath = 'assistant';
+    this.lastSources = [];
+
     try {
       // Only enforced when the tenant configured a scope; otherwise every
       // question is in scope and this costs nothing.
@@ -232,18 +280,23 @@ class AIService {
 
       if (!onTopic) {
         const offTopic = await this.templateService.getByRole(this.companyId, 'offTopic');
+        this.lastPath = offTopic ? 'canned' : 'fallback';
         return offTopic ||
           'That is outside what I can help with here. Would you like me to pass you to a colleague?';
       }
 
       const templateResponse = await this.checkForTemplateMatch(message);
       if (templateResponse) {
+        this.lastPath = 'canned';
         return templateResponse;
       }
 
       return await this.generateEngineeredResponse(message, messageHistory);
     } catch (error) {
       logger.error('Error generating AI response:', { error });
+      // The apology cites nothing, whatever was retrieved before the failure.
+      this.lastPath = 'fallback';
+      this.lastSources = [];
       return 'I\'m sorry, I encountered an error processing your request. Please try again later.';
     }
   }
@@ -342,9 +395,13 @@ class AIService {
         limit: this.knowledgeLimit
       });
 
-      return (results || [])
-        .map(result => String(result.content || '').trim())
-        .filter(Boolean)
+      // Exactly the chunks that go into the prompt, so a citation never names
+      // a source the model was not shown.
+      const used = (results || []).filter(result => String(result.content || '').trim());
+      this.lastSources = citationsFrom(used);
+
+      return used
+        .map(result => String(result.content).trim())
         .join('\n\n');
     } catch (error) {
       // A knowledge base that is down should cost the answer its context, not
@@ -475,3 +532,4 @@ AIService.forCompany = async function forCompany(companyId, options = {}) {
 module.exports = AIService;
 module.exports.buildClient = buildClient;
 module.exports.getChatGPTResponse = getChatGPTResponse;
+module.exports.citationsFrom = citationsFrom;

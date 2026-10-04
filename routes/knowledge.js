@@ -11,11 +11,14 @@
  * silently, forever.
  *
  * These are the four things somebody needs: put something in, see what is in,
- * try a question against it, and take something out again.
+ * try a question against it, and take something out again. "Put something
+ * in" is a URL, pasted text, an uploaded file, or a whole site crawled.
  */
 
 const express = require('express');
 const crypto = require('crypto');
+const path = require('path');
+const multer = require('multer');
 const router = express.Router();
 
 const { auth, admin } = require('../middleware/auth');
@@ -27,8 +30,47 @@ const KnowledgeChunk = require('../models/knowledge-chunk');
 const usageService = require('../services/usage');
 const { logger } = require('../services/logging');
 const audit = require('../services/audit');
+const knowledgeFiles = require('../services/knowledge-files');
+const knowledgeCrawler = require('../services/knowledge-crawler');
 
 const connector = new KnowledgeConnectorService();
+
+/**
+ * The largest file a tenant may upload into the knowledge base. Separate from
+ * the chat attachment cap (MAX_UPLOAD_BYTES): a visitor's photo and a
+ * company's product manual are different things with different limits.
+ */
+const MAX_KNOWLEDGE_FILE_BYTES =
+  parseInt(process.env.KNOWLEDGE_UPLOAD_MAX_BYTES, 10) || 10 * 1024 * 1024;
+
+/**
+ * Held in memory, never written to disk: the file is read once into text and
+ * chunks and the bytes are dropped. Keeping the original would be a second
+ * copy of the tenant's document to secure, back up and erase.
+ */
+const knowledgeUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_KNOWLEDGE_FILE_BYTES, files: 1 }
+}).single('file');
+
+/** Run multer, translating its errors into answers a person can act on. */
+function receiveFile(req, res) {
+  return new Promise(resolve => {
+    knowledgeUpload(req, res, error => {
+      if (!error) {
+        return resolve(true);
+      }
+      if (error.code === 'LIMIT_FILE_SIZE') {
+        res.status(413).json({
+          error: `Files must be under ${Math.round(MAX_KNOWLEDGE_FILE_BYTES / 1024 / 1024)} MB`
+        });
+      } else {
+        res.status(400).json({ error: error.message });
+      }
+      resolve(false);
+    });
+  });
+}
 
 /**
  * The tenant this request belongs to.
@@ -227,6 +269,164 @@ router.post(
       res.status(201).json({ sourceId, sourceType: 'manual', chunks: stored.stored });
     } catch (error) {
       logger.error('Could not import a knowledge source', { error: error.message });
+      importFailed(res, error);
+    }
+  }
+);
+
+/**
+ * Upload a document into the knowledge base.
+ *
+ * Multipart, field `file`, optional `title`. PDF, text, Markdown, CSV and HTML
+ * are read; anything else is a 415 that says what is accepted. The source is
+ * keyed by file name, so uploading a new version of `prices.csv` replaces the
+ * old one - which is what somebody updating their price list expects - rather
+ * than leaving the bot two contradictory price lists.
+ */
+router.post(
+  '/upload',
+  auth,
+  admin,
+  requireFeature('knowledgeBase'),
+  enforceLimit('knowledgeChunks'),
+  async (req, res) => {
+    try {
+      if (!(await receiveFile(req, res))) {
+        return;
+      }
+
+      const companyId = requireCompany(req, res);
+      if (!companyId) {
+        return;
+      }
+
+      if (!req.file) {
+        return res.status(400).json({ error: 'Choose a file to upload (form field "file")' });
+      }
+
+      // The original name is a label only, never a path.
+      const filename = path.basename(String(req.file.originalname || 'upload')).slice(0, 255);
+      const parsed = await knowledgeFiles.parseFile(req.file);
+      const title = String(req.body.title || '').trim().slice(0, 200) || parsed.title || filename;
+      const sourceId = `file:${filename}`;
+
+      await assertRoomFor(req, companyId, sourceId, parsed.chunks.length);
+
+      const stored = await getVectorStore().store(
+        parsed.chunks.map((chunk, index) => ({
+          content: chunk.content,
+          chunkIndex: index,
+          metadata: { ...(chunk.metadata || {}), title, filename, format: parsed.format, source: 'file' }
+        })),
+        { companyId, sourceId, sourceType: 'file' }
+      );
+
+      await audit.record({
+        req,
+        action: 'knowledge.imported',
+        details: { sourceId, filename, format: parsed.format, bytes: req.file.size }
+      });
+
+      res.status(201).json({
+        sourceId,
+        sourceType: 'file',
+        title,
+        filename,
+        format: parsed.format,
+        chunks: stored.stored
+      });
+    } catch (error) {
+      if (error.status === 415) {
+        return res.status(415).json({ error: error.message, code: error.code });
+      }
+      logger.error('Could not import an uploaded file', { error: error.message });
+      importFailed(res, error);
+    }
+  }
+);
+
+/**
+ * Crawl a website into the knowledge base.
+ *
+ * `{ url, maxPages }`. Every page becomes its own `url:` source, exactly as if
+ * it had been imported by hand, so each can be refreshed or removed on its own
+ * and a second crawl replaces the pages rather than doubling them. Pages that
+ * were imported and then pushed the tenant over their plan are reported as
+ * skipped with the reason, not silently dropped.
+ */
+router.post(
+  '/crawl',
+  auth,
+  admin,
+  requireFeature('knowledgeBase'),
+  enforceLimit('knowledgeChunks'),
+  async (req, res) => {
+    try {
+      const companyId = requireCompany(req, res);
+      if (!companyId) {
+        return;
+      }
+
+      const { url, maxPages } = req.body;
+      if (!url || typeof url !== 'string') {
+        return res.status(400).json({ error: 'Provide the address of the site to read' });
+      }
+
+      const { pages, skipped } = await knowledgeCrawler.crawl(url, { maxPages });
+      const store = getVectorStore();
+      const imported = [];
+      let quotaError = null;
+
+      for (const page of pages) {
+        if (quotaError) {
+          skipped.push({ url: page.url, reason: quotaError.message });
+          continue;
+        }
+
+        const sourceId = `url:${page.url}`;
+        const chunks = connector.splitIntoChunks(page.text, 1000);
+        const filename = new URL(page.url).hostname;
+
+        try {
+          await assertRoomFor(req, companyId, sourceId, chunks.length);
+
+          const stored = await store.store(
+            chunks.map((content, index) => ({
+              content,
+              chunkIndex: index,
+              metadata: {
+                source: 'web_url',
+                url: page.url,
+                filename,
+                ...(page.title ? { title: page.title } : {})
+              }
+            })),
+            { companyId, sourceId, sourceType: 'url' }
+          );
+
+          imported.push({ sourceId, title: page.title || page.url, url: page.url, chunks: stored.stored });
+        } catch (error) {
+          if (error.status === 402) {
+            // Everything after this would be refused too; say so for each.
+            quotaError = error;
+          }
+          skipped.push({ url: page.url, reason: error.message });
+        }
+      }
+
+      if (imported.length === 0 && quotaError) {
+        return importFailed(res, quotaError);
+      }
+
+      await audit.record({
+        req,
+        action: 'knowledge.imported',
+        details: { crawl: url, pages: imported.length, skipped: skipped.length }
+      });
+
+      res.json({ imported, skipped });
+    } catch (error) {
+      logger.error('Could not crawl a site', { error: error.message });
       importFailed(res, error);
     }
   }
