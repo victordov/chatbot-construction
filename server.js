@@ -409,6 +409,7 @@ app.use('/api/bot', require('./routes/bot'));
 app.use('/api/contacts', contactRoutes);
 app.use('/api/email', emailRoutes);
 app.use('/api/api-keys', require('./routes/api-keys'));
+app.use('/api/actions', require('./routes/actions'));
 
 app.get('/', (req, res) => {
   res.redirect('/admin/');

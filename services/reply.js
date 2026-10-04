@@ -19,6 +19,7 @@
 
 const runtimeRegistry = require('./runtime-registry');
 const AIService = require('./ai');
+const assistantTools = require('./assistant-tools');
 const { logger } = require('./logging');
 
 /**
@@ -36,7 +37,8 @@ const { logger } = require('./logging');
  *        caller that does not record usage has none.
  * @param {boolean} [options.useWorkflow=true] false skips the published
  *        workflow and asks the assistant directly
- * @returns {Promise<{text: string, choices?: Array, escalate?: object,
+ * @returns {Promise<{text: string, choices?: Array, cards?: object,
+ *                    escalate?: object, toolCalls?: Array<{name, status}>,
  *                    source: 'workflow'|'assistant',
  *                    path: 'workflow'|'assistant'|'canned'|'fallback',
  *                    sources: Array<{title: string, url: string|null}>}>}
@@ -64,13 +66,24 @@ async function generate({ conversation, message, history = [], simulate = false,
   }
 
   const aiService = await AIService.forCompany(companyId, options);
-  const text = await aiService.generateResponse(message, history);
+
+  // The tenant's actions and connector capabilities, offered to the model as
+  // tools. Null without a model client or with nothing to offer, in which case
+  // this is the plain assistant it always was. A simulated run may read but
+  // never write, the same promise the workflow preview makes.
+  const toolSession = await assistantTools.prepare({
+    conversation, companyId, client: aiService.openai, message, simulate
+  });
+
+  const text = await aiService.generateResponse(message, history, { toolSession });
 
   return {
     text,
     source: 'assistant',
     path: aiService.lastPath || 'assistant',
-    sources: Array.isArray(aiService.lastSources) ? aiService.lastSources : []
+    sources: Array.isArray(aiService.lastSources) ? aiService.lastSources : [],
+    // `cards`, `choices` and `toolCalls` only when a tool produced them.
+    ...(toolSession ? toolSession.outcome() : {})
   };
 }
 

@@ -91,6 +91,9 @@ async function currentValue(companyId, meter) {
     return Workflow.countDocuments({ company: companyId, status: { $ne: 'archived' } });
   case 'knowledgeChunks':
     return KnowledgeChunk.countDocuments({ company: companyId });
+  case 'actions':
+    // Required lazily so this file's import graph stays what it was.
+    return require('../models/action').countDocuments({ company: companyId });
   default: {
     const usageKey = METERS[meter] ? METERS[meter].usageKey : meter;
     const usage = await Usage.findOne({ company: companyId, period: Usage.currentPeriod() }).lean();

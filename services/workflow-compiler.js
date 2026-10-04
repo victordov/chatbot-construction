@@ -235,7 +235,14 @@ class WorkflowCompilerService {
     const data = node.data || {};
     const name = data.label || node.id;
 
-    if (!data.url) {
+    if (data.actionId) {
+      // A saved Action was validated when it was saved; only the reference
+      // can be checked here, because validation has no tenant to look it up
+      // against. A missing one fails down the error branch at run time.
+      if (!/^[a-f0-9]{24}$/i.test(String(data.actionId))) {
+        errors.push(`"${name}" has an invalid saved action reference`);
+      }
+    } else if (!data.url) {
       errors.push(`"${name}" needs the URL of the API to call`);
     } else {
       const probe = String(data.url).replace(/\{\{\s*[\w.]+\s*\}\}/g, 'x');
@@ -872,9 +879,18 @@ class WorkflowCompilerService {
         // The call the whole node exists for. Its result becomes variables the
         // rest of the walk can use, so a downstream reply can say "your order
         // shipped on Tuesday" rather than "let me look into that".
-        const result = await workflowActions.execute(step.data, variables, {
-          simulate: context.simulate
-        });
+        //
+        // A node may reference a saved Action (`actionId`) instead of carrying
+        // its own request. It is resolved here, at run time and scoped to this
+        // tenant, so editing the Action changes every flow that uses it and a
+        // deleted one fails down the error branch rather than at publish.
+        const result = step.data.actionId
+          ? await require('./actions').runForWorkflow(tenantId, step.data.actionId, variables, {
+            simulate: context.simulate
+          })
+          : await workflowActions.execute(step.data, variables, {
+            simulate: context.simulate
+          });
 
         if (result.simulated) {
           simulated.push(...result.simulated);
@@ -886,7 +902,7 @@ class WorkflowCompilerService {
 
         actionRuns.push({
           node: currentId,
-          label: step.data.label || 'Action',
+          label: step.data.label || result.label || 'Action',
           ok: result.ok,
           status: result.status,
           durationMs: result.durationMs

@@ -263,9 +263,11 @@ class AIService {
    * Generate a response to a user message
    * @param {string} message - The user's message
    * @param {Array} messageHistory - Array of previous messages for context
+   * @param {object} [options] `toolSession` from services/assistant-tools.js,
+   *        when the model may call the tenant's actions this turn
    * @returns {Promise<string>} - The AI-generated response
    */
-  async generateResponse(message, messageHistory = []) {
+  async generateResponse(message, messageHistory = [], options = {}) {
     // How this reply was produced and what it drew on, for the caller to read
     // afterwards (`services/reply.js` turns it into citations). Kept on the
     // instance rather than in the return value so every existing caller that
@@ -291,7 +293,7 @@ class AIService {
         return templateResponse;
       }
 
-      return await this.generateEngineeredResponse(message, messageHistory);
+      return await this.generateEngineeredResponse(message, messageHistory, options);
     } catch (error) {
       logger.error('Error generating AI response:', { error });
       // The apology cites nothing, whatever was retrieved before the failure.
@@ -337,7 +339,7 @@ class AIService {
    * @param {Array} messageHistory - Array of previous messages for context
    * @returns {Promise<string>} - The AI-generated response
    */
-  async generateEngineeredResponse(message, messageHistory = []) {
+  async generateEngineeredResponse(message, messageHistory = [], options = {}) {
     // Detect the appropriate prompt type for the message
     const promptType = this.promptService.detectPromptType(message);
 
@@ -362,6 +364,18 @@ class AIService {
     // complex query" in front of real visitors whenever the key was missing.
     if (!this.openai) {
       throw noClientError();
+    }
+
+    // The one seam for tool calling. Everything about which tools, their caps
+    // and the confirmation rule lives in services/assistant-tools.js; this
+    // only hands it the prompt the assistant would otherwise have sent.
+    if (options.toolSession && options.toolSession.hasTools()) {
+      return await options.toolSession.run(promptMessages, {
+        client: this.openai,
+        model: this.defaultModel,
+        temperature: 0.7,
+        maxTokens: 500
+      });
     }
 
     return await getChatGPTResponse(promptMessages, {

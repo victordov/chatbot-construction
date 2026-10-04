@@ -209,6 +209,36 @@ const ConversationSchema = new mongoose.Schema({
     updatedAt: { type: Date }
   },
   /**
+   * A change the assistant proposed and the visitor has not yet confirmed.
+   *
+   * Writes (a booking, a ticket, anything not a GET) are never run on the
+   * model's first request: it is told to ask, and this records exactly what
+   * it asked about. Only an identical call in a later turn, after an
+   * affirmative reply, runs it — see services/assistant-tools.js. `args` are
+   * the visitor-supplied values only; never a credential or a verified id.
+   */
+  pendingAction: {
+    tool: { type: String },
+    args: { type: mongoose.Schema.Types.Mixed },
+    argsHash: { type: String },
+    summary: { type: String },
+    requestedAt: { type: Date },
+    expiresAt: { type: Date }
+  },
+  /**
+   * What the assistant's tools returned in recent turns, trimmed.
+   *
+   * The model only sees text history, so without this a slot id or an order
+   * status read one turn is gone the next, and "book the second one" cannot
+   * be answered. Short-lived and capped; cleared with the transcript.
+   */
+  recentToolResults: [{
+    _id: false,
+    tool: { type: String },
+    content: { type: String },
+    at: { type: Date }
+  }],
+  /**
    * What the customer thought of it.
    *
    * The operator is copied in at rating time rather than looked up later,
@@ -354,6 +384,11 @@ ConversationSchema.methods.anonymize = async function() {
     this.workflowState.awaiting = undefined;
     this.markModified('workflowState');
   }
+
+  // What the assistant's tools read back is third-party data about this
+  // person — an order, a booking — so it goes with the messages.
+  this.pendingAction = undefined;
+  this.recentToolResults = [];
 
   if (this.rating && this.rating.comment) {
     // A free-text comment is as likely to name somebody as a message is.
