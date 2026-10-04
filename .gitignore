@@ -27,3 +27,7 @@ Thumbs.db
 
 # Test artefacts
 .mongodb-memory-server/
+
+# Built by scripts/build-client.js from client/
+public/dist/
+.claude/worktrees/

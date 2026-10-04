@@ -1,6 +1,13 @@
 
+import Chart from 'chart.js/auto';
+import { openContactById } from './contacts.js';
+import { applyChatFilter, setConversationNotes } from './operator-tools.js';
+import { applyTagFilter, renderConversationTags } from './routing.js';
+import { saveJoinedChats, state } from './state.js';
+import { authToken, errorMessage, escapeHtml, formatRelativeTime, logger, parseJsonResponse, setAuthToken, setStoredUser, showToast, updateUrlWithParams } from './utils.js';
+
 // Send operator message
-function sendOperatorMessage(socket, messageInput) {
+export function sendOperatorMessage(socket, messageInput) {
   const message = messageInput.value.trim();
   if (message) {
     const joinChatBtn = document.getElementById('join-chat-btn');
@@ -30,10 +37,10 @@ function sendOperatorMessage(socket, messageInput) {
 }
 
 // Initialize charts
-let chatActivityChart;
-let chatVolumeChart;
-let responseTimeChart;
-let topSourcesChart;
+export let chatActivityChart;
+export let chatVolumeChart;
+export let responseTimeChart;
+export let topSourcesChart;
 
 /**
  * Chart.js infers its scale from the data, so an all-zero series produced a
@@ -46,7 +53,7 @@ let topSourcesChart;
  * object corrupt each other's scale state and silently stop drawing their
  * datasets.
  */
-function chartBaseOptions() {
+export function chartBaseOptions() {
   return {
     responsive: true,
     maintainAspectRatio: true,
@@ -69,7 +76,7 @@ function chartBaseOptions() {
  * The most recent analytics payload, kept so charts built later (when their
  * section is first opened) can be populated without another request.
  */
-let lastAnalyticsData = null;
+export let lastAnalyticsData = null;
 
 /**
  * Build the charts that live in the Analytics section.
@@ -80,7 +87,7 @@ let lastAnalyticsData = null;
  * axes render but the data never appears. Building on first view side-steps
  * the whole problem rather than trying to repair it afterwards.
  */
-function initializeAnalyticsCharts() {
+export function initializeAnalyticsCharts() {
   if (chatVolumeChart) {
     return;
   }
@@ -123,7 +130,7 @@ function initializeAnalyticsCharts() {
   }
 }
 
-function initializeCharts() {
+export function initializeCharts() {
   // Chat Activity Chart
   const activityCtx = document.getElementById('chat-activity-chart').getContext('2d');
   chatActivityChart = new Chart(activityCtx, {
@@ -166,7 +173,7 @@ function initializeCharts() {
 }
 
 // Update the Response Time chart using analytics data
-function updateResponseTimeChart(rtData) {
+export function updateResponseTimeChart(rtData) {
   if (!responseTimeChart) {
     return;
   }
@@ -192,7 +199,7 @@ function updateResponseTimeChart(rtData) {
 }
 
 // Update the Chat Activity chart using analytics data
-function updateChatActivityChart(volumeData) {
+export function updateChatActivityChart(volumeData) {
   if (!chatActivityChart) {
     return;
   }
@@ -223,7 +230,7 @@ function updateChatActivityChart(volumeData) {
 }
 
 // Update the Chat Volume chart using analytics data
-function updateChatVolumeChart(volumeData) {
+export function updateChatVolumeChart(volumeData) {
   if (!chatVolumeChart) {
     return;
   }
@@ -246,7 +253,7 @@ function updateChatVolumeChart(volumeData) {
 }
 
 // Update the traffic-sources doughnut
-function updateTopSourcesChart(sources) {
+export function updateTopSourcesChart(sources) {
   if (!topSourcesChart) {
     return;
   }
@@ -278,7 +285,7 @@ function updateTopSourcesChart(sources) {
 }
 
 // Update conversation metrics table
-function updateConversationMetrics(metrics) {
+export function updateConversationMetrics(metrics) {
   if (!metrics) {
     return;
   }
@@ -312,7 +319,7 @@ function updateConversationMetrics(metrics) {
 }
 
 // Load dashboard data
-function loadDashboardData(token) {
+export function loadDashboardData(token) {
   // In a real app, this would fetch data from the server
   fetch('/api/admin/analytics', {
     headers: {
@@ -349,7 +356,7 @@ function loadDashboardData(token) {
 }
 
 // Load active chats
-function loadActiveChats(socket, token) {
+export function loadActiveChats(socket, token) {
   // In a real app, this would fetch data from the server
   fetch('/api/admin/active-chats', {
     headers: {
@@ -369,7 +376,7 @@ function loadActiveChats(socket, token) {
           addChatToList(chat);
 
           // If this chat was previously joined, automatically rejoin it
-          if (window.joinedChats.has(chat.sessionId)) {
+          if (state.joinedChats.has(chat.sessionId)) {
             logger.info('Automatically rejoining chat:', chat.sessionId);
             socket.emit('operator-takeover', { sessionId: chat.sessionId });
           }
@@ -390,9 +397,9 @@ function loadActiveChats(socket, token) {
 // The endpoint returns a page at a time; previously the dashboard requested an
 // unpaginated list and the server capped it at 100 rows, so anything older was
 // simply unreachable.
-let chatHistoryState = { page: 1, search: '' };
+export let chatHistoryState = { page: 1, search: '' };
 
-function loadChatHistory(token, search = chatHistoryState.search, page = 1) {
+export function loadChatHistory(token, search = chatHistoryState.search, page = 1) {
   chatHistoryState = { page, search };
 
   const params = new URLSearchParams({ page: String(page), limit: '25' });
@@ -483,7 +490,7 @@ function loadChatHistory(token, search = chatHistoryState.search, page = 1) {
     });
 }
 
-function renderChatHistoryPagination(pagination) {
+export function renderChatHistoryPagination(pagination) {
   const nav = document.getElementById('chat-history-pagination');
   const summary = document.getElementById('chat-history-summary');
   if (!nav || !summary || !pagination) {
@@ -537,7 +544,7 @@ function renderChatHistoryPagination(pagination) {
 }
 
 // Add chat to list
-function addChatToList(chat) {
+export function addChatToList(chat) {
   const chatList = document.getElementById('active-chat-list');
 
   // Remove empty state if present
@@ -557,7 +564,7 @@ function addChatToList(chat) {
   const startTime = new Date(chat.startedAt || Date.now()).toLocaleTimeString();
 
   // Determine if the chat has an operator
-  const hasOperator = chat.hasOperator || window.joinedChats.has(chat.sessionId);
+  const hasOperator = chat.hasOperator || state.joinedChats.has(chat.sessionId);
   const statusClass = hasOperator ? 'has-operator' : 'no-operator';
 
   const userName =
@@ -631,7 +638,7 @@ function addChatToList(chat) {
     joinBtn.setAttribute('data-session-id', chat.sessionId);
 
     // Check if this chat has already been joined by the current operator
-    const isJoined = window.joinedChats.has(chat.sessionId);
+    const isJoined = state.joinedChats.has(chat.sessionId);
     if (isJoined) {
       joinBtn.textContent = 'Joined';
       joinBtn.classList.remove('btn-primary');
@@ -688,7 +695,7 @@ function addChatToList(chat) {
 }
 
 // Load chat messages
-function loadChatMessages(sessionId) {
+export function loadChatMessages(sessionId) {
   const token = authToken();
   // In a real app, this would fetch data from the server
   fetch(`/api/admin/chat/${sessionId}`, {
@@ -702,7 +709,7 @@ function loadChatMessages(sessionId) {
       chatMessages.innerHTML = '';
 
       // Store the conversation data globally for access in other functions
-      window.currentConversation = data;
+      state.currentConversation = data;
 
       // Display user contact information if available
       displayUserContactInfo(data);
@@ -755,7 +762,7 @@ function loadChatMessages(sessionId) {
  * An operator finding out how a chat landed from a monthly report is too late
  * to do anything about it. Here it sits with the transcript that earned it.
  */
-function displayRating(rating) {
+export function displayRating(rating) {
   const existing = document.getElementById('conversation-rating');
   if (existing) {
     existing.remove();
@@ -789,7 +796,7 @@ function displayRating(rating) {
 // lands in `metadata`, while an email thread has only the sender address. This
 // used to read `metadata` alone, so every email conversation showed "Not
 // provided" for a customer whose address we plainly knew.
-function displayUserContactInfo(conversation) {
+export function displayUserContactInfo(conversation) {
   const contactInfoDiv = document.getElementById('user-contact-info');
   const nameSpan = document.getElementById('user-name');
   const emailSpan = document.getElementById('user-email');
@@ -843,7 +850,7 @@ function displayUserContactInfo(conversation) {
 }
 
 // Add message to chat
-function addMessageToChat(data) {
+export function addMessageToChat(data) {
   const chatMessages = document.getElementById('chat-messages');
 
   // Remove empty state if present
@@ -910,7 +917,7 @@ function addMessageToChat(data) {
           const messageId = data._id;
 
           // Request suggestion
-          const socket = window.adminSocket;
+          const socket = state.socket;
           socket.emit('request-suggestions', {
             sessionId,
             messageId
@@ -940,7 +947,7 @@ function addMessageToChat(data) {
 }
 
 // Remove chat from list
-function removeChatFromList(sessionId) {
+export function removeChatFromList(sessionId) {
   const chatItem = document.querySelector(`#active-chat-list a[data-session-id="${sessionId}"]`);
   if (chatItem) {
     chatItem.remove();
@@ -960,7 +967,7 @@ function removeChatFromList(sessionId) {
 }
 
 // Reset chat view
-function resetChatView() {
+export function resetChatView() {
   document.getElementById('selected-chat-title').textContent = 'Select a conversation';
   document.getElementById('chat-messages').innerHTML = '<div class="empty-state"><p>Select a conversation to view messages</p></div>';
   document.getElementById('operator-input').style.display = 'none';
@@ -977,7 +984,7 @@ function resetChatView() {
 }
 
 // Update active chat count
-function updateActiveChatCount(change) {
+export function updateActiveChatCount(change) {
   const countElement = document.getElementById('active-chats-count');
   let count = parseInt(countElement.textContent);
   count += change;
@@ -985,7 +992,7 @@ function updateActiveChatCount(change) {
 }
 
 // Notify new chat
-function notifyNewChat(chat) {
+export function notifyNewChat(chat) {
   // Check if sound notifications are enabled
   const soundEnabled = localStorage.getItem('sound-notifications') === 'true';
 
@@ -1015,7 +1022,7 @@ function notifyNewChat(chat) {
 // Load column configuration
 
 // Save settings
-function saveSettings() {
+export function saveSettings() {
   const notificationSetting = document.getElementById('notification-setting').value;
   const soundNotifications = document.getElementById('sound-notifications').checked;
   // Save settings to localStorage
@@ -1031,7 +1038,7 @@ function saveSettings() {
 }
 
 // Set up connection event handlers
-function setupConnectionHandlers(socket) {
+export function setupConnectionHandlers(socket) {
   socket.on('connect', () => {
     logger.info('Socket connected');
     // Join operator room when connected
@@ -1082,7 +1089,7 @@ function setupConnectionHandlers(socket) {
  * network being down. socket.io puts the server's middleware error message
  * on `error.message`, and the server's auth middleware says so in words.
  */
-function isAuthFailure(error) {
+export function isAuthFailure(error) {
   const message = String((error && error.message) || '').toLowerCase();
   const data = error && error.data;
   return message.includes('authentication') ||
@@ -1094,7 +1101,7 @@ function isAuthFailure(error) {
 }
 
 // Start heartbeat to keep socket connection alive
-function startHeartbeat(socket) {
+export function startHeartbeat(socket) {
   // Send a heartbeat every 30 seconds
   const heartbeatInterval = setInterval(() => {
     if (socket && socket.connected) {
@@ -1121,7 +1128,7 @@ function startHeartbeat(socket) {
 }
 
 // Update connection status in UI
-function updateConnectionStatus(isConnected, errorMessage = null) {
+export function updateConnectionStatus(isConnected, errorMessage = null) {
   // This used to look for `.navbar-nav`, which this dashboard does not have,
   // so the indicator was never rendered and operators had no way to tell that
   // their realtime connection had dropped.
@@ -1138,7 +1145,7 @@ function updateConnectionStatus(isConnected, errorMessage = null) {
 }
 
 // Calculate duration between two timestamps
-function calculateDuration(start, end) {
+export function calculateDuration(start, end) {
   const startTime = new Date(start).getTime();
   const endTime = end ? new Date(end).getTime() : Date.now();
 
@@ -1149,7 +1156,7 @@ function calculateDuration(start, end) {
 }
 
 // Update chat operator status
-function updateChatOperatorStatus(sessionId, hasOperator, operatorName = '') {
+export function updateChatOperatorStatus(sessionId, hasOperator, operatorName = '') {
   // Find the chat item
   const chatItem = document.querySelector(`#active-chat-list a[data-session-id="${sessionId}"]`);
   if (!chatItem) {
@@ -1174,9 +1181,9 @@ function updateChatOperatorStatus(sessionId, hasOperator, operatorName = '') {
 
   // If this operator joined the chat, add it to the joined chats set
   if (hasOperator) {
-    window.joinedChats.add(sessionId);
+    state.joinedChats.add(sessionId);
     // Save joined chats to localStorage
-    window.saveJoinedChats();
+    saveJoinedChats();
   }
 
   if (typeof applyChatFilter === 'function') {
@@ -1185,7 +1192,7 @@ function updateChatOperatorStatus(sessionId, hasOperator, operatorName = '') {
 }
 
 // Update chat user name display
-function updateChatUserName(sessionId, userName) {
+export function updateChatUserName(sessionId, userName) {
   const chatItem = document.querySelector(`#active-chat-list a[data-session-id="${sessionId}"]`);
   if (!chatItem) {
     return;
@@ -1197,7 +1204,7 @@ function updateChatUserName(sessionId, userName) {
 }
 
 // View chat history
-function viewChatHistory(sessionId) {
+export function viewChatHistory(sessionId) {
   const token = authToken();
 
   // Fetch the chat details
@@ -1263,7 +1270,7 @@ function viewChatHistory(sessionId) {
 
       // Check if this chat is active and not already joined
       if (chat.status === 'active') {
-        if (window.joinedChats.has(chat.sessionId)) {
+        if (state.joinedChats.has(chat.sessionId)) {
           joinBtn.textContent = 'Joined';
           joinBtn.classList.remove('btn-primary');
           joinBtn.classList.add('btn-success');
@@ -1296,7 +1303,7 @@ function viewChatHistory(sessionId) {
       endBtn.setAttribute('data-session-id', chat.sessionId);
 
       const leaveBtn = document.getElementById('leave-chat-btn');
-      leaveBtn.disabled = !window.joinedChats.has(chat.sessionId);
+      leaveBtn.disabled = !state.joinedChats.has(chat.sessionId);
       leaveBtn.setAttribute('data-session-id', chat.sessionId);
 
       // Update URL with chat parameter
@@ -1312,7 +1319,7 @@ function viewChatHistory(sessionId) {
 }
 
 // Delete chat history
-function deleteChatHistory(sessionId) {
+export function deleteChatHistory(sessionId) {
   const token = authToken();
   if (confirm('Are you sure you want to delete this chat history? This action cannot be undone.')) {
     fetch(`/api/admin/chat/${sessionId}`, {
@@ -1345,7 +1352,7 @@ function deleteChatHistory(sessionId) {
 }
 
 // Add styles for suggestions
-const suggestionStyles = document.createElement('style');
+export const suggestionStyles = document.createElement('style');
 suggestionStyles.textContent = `
   /* Suggestion styles */
   .suggestions-container {
@@ -1429,12 +1436,12 @@ suggestionStyles.textContent = `
 document.head.appendChild(suggestionStyles);
 
 // Function to display suggestions to operators
-let suggestionCounter = 0;
+export let suggestionCounter = 0;
 
 /** Longest reply the server accepts from a suggestion. */
-const MAX_SUGGESTION_LENGTH = 4000;
+export const MAX_SUGGESTION_LENGTH = 4000;
 
-function displaySuggestion(data) {
+export function displaySuggestion(data) {
   const { sessionId, userMessage, suggestion } = data;
 
   // The server no longer keeps suggestions, so there is no id to refer back
@@ -1478,7 +1485,7 @@ function displaySuggestion(data) {
       const sessionId = joinChatBtn.getAttribute('data-session-id');
 
       // Emit event to toggle suggestions
-      const socket = window.adminSocket;
+      const socket = state.socket;
       socket.emit('toggle-suggestions', {
         sessionId,
         enabled
@@ -1538,9 +1545,9 @@ function displaySuggestion(data) {
 }
 
 // Function to use a suggestion
-function useSuggestion(suggestionId) {
+export function useSuggestion(suggestionId) {
   // Use the global socket connection with authentication
-  const socket = window.adminSocket;
+  const socket = state.socket;
   const sessionId = document.getElementById('join-chat-btn').getAttribute('data-session-id');
 
   // Mark suggestion as used
@@ -1571,7 +1578,7 @@ function useSuggestion(suggestionId) {
 }
 
 // Function to edit a suggestion
-function editSuggestion(suggestionItem, suggestion, suggestionId) {
+export function editSuggestion(suggestionItem, suggestion, suggestionId) {
   // Create edit container
   const editContainer = document.createElement('div');
   editContainer.className = 'suggestion-edit-container';
@@ -1618,7 +1625,7 @@ function editSuggestion(suggestionItem, suggestion, suggestionId) {
 
     // Use the edited suggestion. Both the original and the edit go up, so
     // the server can tell how much the operator changed.
-    const socket = window.adminSocket;
+    const socket = state.socket;
     socket.emit('use-suggestion', {
       sessionId: sessionId,
       suggestion: suggestion.slice(0, MAX_SUGGESTION_LENGTH),
@@ -1649,7 +1656,7 @@ function editSuggestion(suggestionItem, suggestion, suggestionId) {
 }
 
 // Add socket event listeners for suggestions
-function setupSuggestionEventHandlers(socket) {
+export function setupSuggestionEventHandlers(socket) {
   // Listen for operator suggestions
   socket.on('operator-suggestion', function(data) {
     displaySuggestion(data);

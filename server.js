@@ -90,22 +90,23 @@ mongoose.connection.on('reconnected', () => logger.info('MongoDB reconnected'));
 // ---------------------------------------------------------------------------
 
 app.use(helmet({
-  // The admin dashboard loads Bootstrap, Chart.js, feather and marked from
-  // jsdelivr (each pinned to a version and checked with an SRI hash), and
-  // Bootstrap relies on inline styles. Script is never inline: every page's
-  // script lives in a file under /js, so 'unsafe-inline' is not in scriptSrc
-  // and an injected <script> tag has nowhere to run.
+  // Every script and stylesheet is served from here: the dashboard's
+  // libraries are bundled into public/dist by scripts/build-client.js rather
+  // than fetched from a CDN, so no third-party origin is allowed at all.
+  // Bootstrap relies on inline styles. Script is never inline, so
+  // 'unsafe-inline' is not in scriptSrc and an injected <script> tag has
+  // nowhere to run.
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ['\'self\''],
-      scriptSrc: ['\'self\'', 'https://cdn.jsdelivr.net'],
+      scriptSrc: ['\'self\''],
       // Inline handler attributes are covered separately so they stay
       // blocked even though inline <style> is allowed.
       scriptSrcAttr: ['\'none\''],
-      styleSrc: ['\'self\'', '\'unsafe-inline\'', 'https://cdn.jsdelivr.net'],
+      styleSrc: ['\'self\'', '\'unsafe-inline\''],
       imgSrc: ['\'self\'', 'data:', 'https:'],
       connectSrc: ['\'self\'', 'ws:', 'wss:'],
-      fontSrc: ['\'self\'', 'data:', 'https://cdn.jsdelivr.net'],
+      fontSrc: ['\'self\'', 'data:'],
       objectSrc: ['\'none\''],
       frameAncestors: ['\'self\'']
     }

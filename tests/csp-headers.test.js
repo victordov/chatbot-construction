@@ -68,9 +68,12 @@ describe('Content-Security-Policy', () => {
     expect(csp).not.toContain('unpkg.com');
   });
 
-  test('the pinned CDN is still allowed for scripts and styles', () => {
-    expect(directive(csp, 'script-src')).toContain('https://cdn.jsdelivr.net');
-    expect(directive(csp, 'style-src')).toContain('https://cdn.jsdelivr.net');
+  test('no third-party origin may serve script, style or fonts', () => {
+    // The dashboard's libraries are bundled into /dist, so nothing is fetched
+    // from a CDN and no CDN needs to be trusted.
+    expect(directive(csp, 'script-src')).toEqual(["'self'"]);
+    expect(directive(csp, 'style-src')).not.toContain('https://cdn.jsdelivr.net');
+    expect(directive(csp, 'font-src')).not.toContain('https://cdn.jsdelivr.net');
   });
 
   test('inline styles remain allowed, because Bootstrap needs them', () => {

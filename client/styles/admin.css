@@ -1,3 +1,5 @@
+@import "bootstrap/dist/css/bootstrap.min.css";
+
 /* Admin Dashboard Styles */
 .sidebar {
   position: fixed;
@@ -785,4 +787,115 @@ th .col-resizer {
 .list-group-item.active .tag-chip {
   background: rgba(255, 255, 255, 0.25);
   color: #fff;
+}
+
+/* ------------------------------------------------------------------
+   Queue and transcript states. These used to be injected as a <style>
+   element from JavaScript at boot.
+   ------------------------------------------------------------------ */
+
+.has-new-message {
+  background-color: #f8f9fa;
+  font-weight: bold;
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0% { background-color: #f8f9fa; }
+  50% { background-color: #e2f0ff; }
+  100% { background-color: #f8f9fa; }
+}
+
+.unread-badge {
+  margin-left: 5px;
+  padding: 3px 6px;
+  border-radius: 10px;
+  font-size: 0.7em;
+}
+
+.status-indicator {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  margin-right: 5px;
+}
+
+.status-indicator.no-operator {
+  background-color: #ffc107; /* Amber color */
+}
+
+.status-indicator.has-operator {
+  background-color: #28a745; /* Green color */
+}
+
+.user-disconnected {
+  position: relative;
+  opacity: 0.8;
+}
+
+.user-disconnected::after {
+  content: "Disconnected";
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 0.8em;
+  color: #dc3545;
+  font-style: italic;
+}
+
+.message.system {
+  text-align: center;
+  margin: 10px 0;
+}
+
+.message.system .message-content {
+  display: inline-block;
+  padding: 5px 10px;
+  background-color: #f8f9fa;
+  border-radius: 10px;
+  font-style: italic;
+  color: #6c757d;
+}
+
+.typing-indicator {
+  margin-bottom: 10px;
+}
+
+.message.typing {
+  opacity: 0.7;
+}
+
+.message.typing .message-content {
+  display: flex;
+  align-items: center;
+  padding: 5px 10px;
+}
+
+.message.typing .dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: #777;
+  margin-right: 4px;
+  animation: typing-animation 1.4s infinite ease-in-out both;
+}
+
+.message.typing .dot:nth-child(1) {
+  animation-delay: 0s;
+}
+
+.message.typing .dot:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.message.typing .dot:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+@keyframes typing-animation {
+  0%, 80%, 100% { transform: scale(0.7); }
+  40% { transform: scale(1); }
 }

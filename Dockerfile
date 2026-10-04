@@ -19,7 +19,24 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 
 # ---------------------------------------------------------------------------
-# Stage 2: runtime.
+# Stage 2: bundle the dashboard.
+#
+# esbuild and the front-end libraries are dev dependencies: they are needed to
+# produce public/dist and never at runtime, so they stay in this stage.
+# ---------------------------------------------------------------------------
+FROM node:20-alpine AS client
+
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN npm ci && npm cache clean --force
+
+COPY scripts/build-client.js scripts/build-client.js
+COPY client client
+RUN npm run build
+
+# ---------------------------------------------------------------------------
+# Stage 3: runtime.
 # ---------------------------------------------------------------------------
 FROM node:20-alpine AS runtime
 
@@ -35,6 +52,7 @@ WORKDIR /app
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
+COPY --from=client /app/public/dist ./public/dist
 
 # Everything the process writes at runtime lives under these three
 # directories. They are created here so the non-root user owns them; mount a

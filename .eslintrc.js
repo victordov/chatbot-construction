@@ -32,96 +32,43 @@ module.exports = {
     'node_modules/',
     'coverage/',
     'dist/',
+    '.claude/',
     '*.min.js'
   ],
   overrides: [
     {
-      files: [
-        'public/**/*.js',
-        'widget-versions/**/*.js'
-      ],
+      // The widget: plain browser scripts with no build step, because it is
+      // embedded on other people's sites.
+      files: ['public/**/*.js'],
       env: {
         browser: true,
         node: false
       },
       globals: {
-        io: 'readonly',
-        Chart: 'readonly',
-        feather: 'readonly',
-        bootstrap: 'readonly',
-        marked: 'readonly',
-        logger: 'readonly',
-        escapeHtml: 'readonly',
-        renderMarkdown: 'readonly',
-        formatRelativeTime: 'readonly',
-        debounce: 'readonly',
-        showToast: 'readonly',
-        showNotification: 'readonly',
-        setLoading: 'readonly',
-        // Cross-file helpers: the dashboard loads admin_parts/*.js as plain
-        // scripts sharing one global scope rather than as modules.
-        viewChatHistory: 'readonly',
-        loadOperators: 'readonly',
-        loadTaskDetails: 'readonly',
-        loadAllOperators: 'readonly',
-        showTaskList: 'readonly',
-        setupNotifications: 'readonly',
-        setupWidgetSection: 'readonly',
-        setupBillingSection: 'readonly',
-        setupAnalytics: 'readonly',
-        setupAssistantSection: 'readonly',
-        setupOperatorTools: 'readonly',
-        setupContacts: 'readonly',
-        openContactById: 'readonly',
-        displayRating: 'readonly',
-        renderConversationTags: 'readonly',
-        setupRouting: 'readonly',
-        applyTagFilter: 'readonly',
-        setupAudit: 'readonly',
-        setupWebhooks: 'readonly',
-        setupConnector: 'readonly',
-        setupKnowledge: 'readonly',
-        setupDataControls: 'readonly',
-        lastAnalyticsData: 'readonly',
-        setConversationNotes: 'readonly',
-        applyChatFilter: 'readonly',
-        resizeChartsIn: 'readonly',
-        initializeAnalyticsCharts: 'readonly',
-        updateChatVolumeChart: 'readonly',
-        updateResponseTimeChart: 'readonly',
-        removeChatFromList: 'readonly',
-        updateActiveChatCount: 'readonly',
-        displayUserContactInfo: 'readonly',
-        loadChatMessages: 'readonly',
-        addChatToList: 'readonly',
-        addMessageToChat: 'readonly',
-        resetChatView: 'readonly',
-        updateChatOperatorStatus: 'readonly',
-        updateChatUserName: 'readonly',
-        notifyNewChat: 'readonly',
-        calculateDuration: 'readonly',
-        sendOperatorMessage: 'readonly',
-        saveSettings: 'readonly',
-        loadChatHistory: 'readonly',
-        loadTasks: 'readonly',
-        getUrlParams: 'readonly',
-        updateUrlWithParams: 'readonly',
-        setupSuggestionEventHandlers: 'readonly',
-        setupTaskManagement: 'readonly',
-        setupContactInfoManagement: 'readonly',
-        setupEventHandlers: 'readonly',
-        setupConnectionHandlers: 'readonly',
-        startHeartbeat: 'readonly',
-        initializeCharts: 'readonly',
-        loadDashboardData: 'readonly',
-        loadActiveChats: 'readonly',
-        displaySuggestion: 'readonly',
-        loadTasksForConversation: 'readonly',
-        getActivityIcon: 'readonly',
-        editTaskFromDetails: 'readonly',
-        saveTask: 'readonly',
-        openTaskModal: 'readonly',
-        updateConnectionStatus: 'readonly'
+        io: 'readonly'
+      }
+    },
+    {
+      // The dashboard, login page and workflow editor: ES modules bundled by
+      // scripts/build-client.js. Every cross-file name is an import, so
+      // no-undef catches a reference to something that no longer exists.
+      files: ['client/**/*.js'],
+      env: {
+        browser: true,
+        node: false,
+        es2022: true
+      },
+      parserOptions: {
+        ecmaVersion: 2022,
+        sourceType: 'module'
+      },
+      globals: {
+        // Served by the socket.io server itself, so its version always
+        // matches; loaded as a classic script before the bundle.
+        io: 'readonly'
+      },
+      rules: {
+        'no-undef': 'error'
       }
     }
   ]

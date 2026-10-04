@@ -12,6 +12,14 @@
  *
  * Output is sanitised by renderMarkdown() in admin-utils.js.
  */
+
+import * as bootstrap from 'bootstrap';
+import feather from 'feather-icons';
+import { marked } from 'marked';
+import { viewChatHistory } from './chats.js';
+import { loadOperators } from './operators.js';
+import { state } from './state.js';
+import { authToken, errorMessage, escapeHtml, formatRelativeTime, getUrlParams, logger, parseJsonResponse, renderMarkdown, showNotification, updateUrlWithParams } from './utils.js';
 // Configure marked.js for Markdown rendering
 if (typeof marked !== 'undefined') {
   // `sanitize` was removed from marked in v5 and this call has been a silent
@@ -23,7 +31,7 @@ if (typeof marked !== 'undefined') {
 }
 
 // Task Management Functions
-function setupTaskManagement(token) {
+export function setupTaskManagement(token) {
   // Set up event listeners for task-related buttons
   document.getElementById('create-task-btn').addEventListener('click', function() {
     const selectedChatId = document.querySelector('#active-chat-list .active')?.dataset.sessionId;
@@ -43,7 +51,7 @@ function setupTaskManagement(token) {
         // Small delay to ensure the section is loaded
         setTimeout(() => {
           // Get the conversation object from MongoDB
-          const conversation = window.currentConversation;
+          const conversation = state.currentConversation;
           if (conversation && conversation._id) {
             // Set the conversation ID filter
             document.getElementById('task-search').value = `Conversation: ${selectedChatId.substring(0, 8)}...`;
@@ -170,8 +178,8 @@ function setupTaskManagement(token) {
   setupTaskSocketListeners();
 }
 
-function setupTaskSocketListeners() {
-  const socket = window.adminSocket;
+export function setupTaskSocketListeners() {
+  const socket = state.socket;
 
   socket.on('task-created', function(data) {
     // Reload tasks if we're on the tasks page
@@ -203,7 +211,7 @@ function setupTaskSocketListeners() {
     const assignee = data.task.assignee && typeof data.task.assignee === 'object'
       ? data.task.assignee._id
       : data.task.assignee;
-    const me = window.currentUser && (window.currentUser.id || window.currentUser._id);
+    const me = state.currentUser && (state.currentUser.id || state.currentUser._id);
     if (assignee && me && String(assignee) === String(me)) {
       showNotification('Task assigned to you', `Task "${data.task.title}" has been assigned to you`);
     }
@@ -253,7 +261,7 @@ function setupTaskSocketListeners() {
 }
 
 // Task utility functions moved from admin-operators.js
-function loadTasksForConversation(conversationId) {
+export function loadTasksForConversation(conversationId) {
   // Reset filters
   document.getElementById('task-status-filter').value = '';
   document.getElementById('task-priority-filter').value = '';
@@ -291,7 +299,7 @@ function loadTasksForConversation(conversationId) {
     });
 }
 
-function loadTasks(token) {
+export function loadTasks(token) {
   // Get filter values
   const status = document.getElementById('task-status-filter').value;
   const priority = document.getElementById('task-priority-filter').value;
@@ -338,7 +346,7 @@ function loadTasks(token) {
     });
 }
 
-function displayTasks(tasks) {
+export function displayTasks(tasks) {
   const taskList = document.getElementById('task-list');
 
   // Clear existing tasks
@@ -497,7 +505,7 @@ function displayTasks(tasks) {
   feather.replace();
 }
 
-function loadTaskDetails(taskId) {
+export function loadTaskDetails(taskId) {
   // Update URL with task ID
   updateUrlWithParams({ section: 'tasks', taskId: taskId });
 
@@ -525,7 +533,7 @@ function loadTaskDetails(taskId) {
     });
 }
 
-function displayTaskDetails(task) {
+export function displayTaskDetails(task) {
   // Hide task list and show task details
   document.getElementById('task-detail-container').style.display = 'block';
   document.getElementById('task-detail-container').dataset.taskId = task._id;
@@ -642,7 +650,7 @@ function displayTaskDetails(task) {
   }
 }
 
-function loadTaskComments(taskId) {
+export function loadTaskComments(taskId) {
   fetch(`/api/tasks/${taskId}/comments`, {
     method: 'GET',
     headers: {
@@ -665,7 +673,7 @@ function loadTaskComments(taskId) {
     });
 }
 
-function loadTaskActivities(taskId) {
+export function loadTaskActivities(taskId) {
   fetch(`/api/tasks/${taskId}/activities`, {
     method: 'GET',
     headers: {
@@ -691,7 +699,7 @@ function loadTaskActivities(taskId) {
 }
 
 // Display task activities
-function displayTaskActivities(activities) {
+export function displayTaskActivities(activities) {
   const activityList = document.getElementById('task-activity-list');
 
   // Clear existing activities
@@ -735,7 +743,7 @@ function displayTaskActivities(activities) {
 }
 
 // Get appropriate icon for activity type
-function getActivityIcon(activityType) {
+export function getActivityIcon(activityType) {
   const iconMap = {
     'task_created': 'plus',
     'task_updated': 'edit',
@@ -755,7 +763,7 @@ function getActivityIcon(activityType) {
   return iconMap[activityType] || 'activity';
 }
 
-function loadFollowUpTasks(taskId) {
+export function loadFollowUpTasks(taskId) {
   fetch(`/api/tasks/${taskId}/follow-ups`, {
     method: 'GET',
     headers: {
@@ -778,7 +786,7 @@ function loadFollowUpTasks(taskId) {
     });
 }
 
-function displayFollowUpTasks(tasks) {
+export function displayFollowUpTasks(tasks) {
   const followUpsList = document.getElementById('follow-ups-list');
   const followUpsSection = document.getElementById('follow-ups-section');
 
@@ -855,7 +863,7 @@ function displayFollowUpTasks(tasks) {
   });
 }
 
-function displayComments(comments) {
+export function displayComments(comments) {
   const commentsList = document.getElementById('comments-list');
 
   // Clear existing comments
@@ -887,12 +895,12 @@ function displayComments(comments) {
   });
 }
 
-function showTaskList() {
+export function showTaskList() {
   document.getElementById('task-detail-container').style.display = 'none';
   document.getElementById('task-list-container').style.display = 'block';
 }
 
-function openTaskModal(conversationId = null, task = null) {
+export function openTaskModal(conversationId = null, task = null) {
   document.getElementById('task-form').reset();
 
   loadOperators(authToken())
@@ -907,8 +915,8 @@ function openTaskModal(conversationId = null, task = null) {
   if (conversationId) {
     document.getElementById('conversation-id').value = conversationId;
 
-    if (window.currentConversation && window.currentConversation.sessionId === conversationId) {
-      const metadata = window.currentConversation.metadata;
+    if (state.currentConversation && state.currentConversation.sessionId === conversationId) {
+      const metadata = state.currentConversation.metadata;
       if (metadata) {
         if (metadata instanceof Map) {
           document.getElementById('contact-name-input').value = metadata.get('name') || '';
@@ -1017,7 +1025,7 @@ function openTaskModal(conversationId = null, task = null) {
   }
 }
 
-function saveTask(token) {
+export function saveTask(token) {
   const taskId = document.getElementById('task-form').dataset.taskId;
   const conversationId = document.getElementById('conversation-id').value;
   const titleInput = document.getElementById('task-title-input');
@@ -1122,7 +1130,7 @@ function saveTask(token) {
     });
 }
 
-function updateTaskStatus(token, status) {
+export function updateTaskStatus(token, status) {
   const taskId = document.getElementById('task-detail-container').dataset.taskId;
 
   fetch(`/api/tasks/${taskId}`, {
@@ -1151,7 +1159,7 @@ function updateTaskStatus(token, status) {
     });
 }
 
-function addComment(token) {
+export function addComment(token) {
   const taskId = document.getElementById('task-detail-container').dataset.taskId;
   const content = document.getElementById('comment-input').value.trim();
 
@@ -1186,7 +1194,7 @@ function addComment(token) {
     });
 }
 
-function openFollowUpTaskModal(parentTaskId) {
+export function openFollowUpTaskModal(parentTaskId) {
   document.getElementById('task-form').reset();
 
   // Get the parent task details
@@ -1254,7 +1262,7 @@ function openFollowUpTaskModal(parentTaskId) {
     });
 }
 
-function editTaskFromDetails(taskId) {
+export function editTaskFromDetails(taskId) {
   fetch(`/api/tasks/${taskId}`, {
     method: 'GET',
     headers: {
@@ -1277,7 +1285,7 @@ function editTaskFromDetails(taskId) {
     });
 }
 
-function deleteTask(taskId) {
+export function deleteTask(taskId) {
   fetch(`/api/tasks/${taskId}`, {
     method: 'DELETE',
     headers: {

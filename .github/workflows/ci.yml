@@ -41,6 +41,7 @@ jobs:
           restore-keys: |
             mongodb-binaries-${{ runner.os }}-
       - run: npm ci
+      - run: npm run build
       - run: npm test
 
   audit:

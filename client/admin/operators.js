@@ -1,5 +1,10 @@
 
-function loadOperators(token) {
+import * as bootstrap from 'bootstrap';
+import { displayUserContactInfo, loadChatMessages } from './chats.js';
+import { state } from './state.js';
+import { authToken, errorMessage, escapeHtml, getStoredUser, logger, parseJsonResponse, setLoading, showNotification, showToast } from './utils.js';
+
+export function loadOperators(token) {
   return fetch('/api/admin/operators', {
     method: 'GET',
     headers: {
@@ -50,7 +55,7 @@ function loadOperators(token) {
 }
 
 // Set up contact information management
-function setupContactInfoManagement(token) {
+export function setupContactInfoManagement(token) {
   // Set up event listener for edit button
   document.getElementById('edit-contact-info-btn').addEventListener('click', function() {
     openContactInfoModal();
@@ -71,9 +76,9 @@ function setupContactInfoManagement(token) {
 }
 
 // Open contact info modal
-function openContactInfoModal() {
+export function openContactInfoModal() {
   // Get current conversation
-  const conversation = window.currentConversation;
+  const conversation = state.currentConversation;
   if (!conversation) {
     return;
   }
@@ -106,7 +111,7 @@ function openContactInfoModal() {
 }
 
 // Save contact info
-function saveContactInfo(token) {
+export function saveContactInfo(token) {
   // Get form data
   const sessionId = document.getElementById('contact-info-session-id').value;
   const name = document.getElementById('edit-name-input').value;
@@ -142,24 +147,24 @@ function saveContactInfo(token) {
         bootstrap.Modal.getInstance(document.getElementById('contactInfoModal')).hide();
 
         // Update the conversation data
-        if (window.currentConversation) {
-          if (!window.currentConversation.metadata) {
-            window.currentConversation.metadata = {};
+        if (state.currentConversation) {
+          if (!state.currentConversation.metadata) {
+            state.currentConversation.metadata = {};
           }
 
           // Check if metadata is a Map or a plain object
-          if (window.currentConversation.metadata instanceof Map) {
-            window.currentConversation.metadata.set('name', name);
-            window.currentConversation.metadata.set('email', email);
-            window.currentConversation.metadata.set('phone', phone);
+          if (state.currentConversation.metadata instanceof Map) {
+            state.currentConversation.metadata.set('name', name);
+            state.currentConversation.metadata.set('email', email);
+            state.currentConversation.metadata.set('phone', phone);
           } else {
-            window.currentConversation.metadata.name = name;
-            window.currentConversation.metadata.email = email;
-            window.currentConversation.metadata.phone = phone;
+            state.currentConversation.metadata.name = name;
+            state.currentConversation.metadata.email = email;
+            state.currentConversation.metadata.phone = phone;
           }
 
           // Update the display
-          displayUserContactInfo(window.currentConversation);
+          displayUserContactInfo(state.currentConversation);
 
           // Reload messages to update user names
           loadChatMessages(sessionId);
@@ -175,12 +180,12 @@ function saveContactInfo(token) {
 }
 
 // Request user to provide contact information via widget
-function requestUserInfo() {
-  const conversation = window.currentConversation;
+export function requestUserInfo() {
+  const conversation = state.currentConversation;
   if (!conversation) {
     return;
   }
-  const socket = window.adminSocket;
+  const socket = state.socket;
   if (socket) {
     socket.emit('request-user-details', { sessionId: conversation.sessionId });
     showNotification('Info Request', 'User has been asked to provide contact info', 'info');
@@ -188,7 +193,7 @@ function requestUserInfo() {
 }
 
 // Load all operators (including inactive)
-function loadAllOperators() {
+export function loadAllOperators() {
   const token = authToken();
 
   fetch('/api/admin/all-operators', {
@@ -261,7 +266,7 @@ function loadAllOperators() {
 }
 
 // Toggle operator active status
-function toggleOperatorStatus(event) {
+export function toggleOperatorStatus(event) {
   const button = event.currentTarget;
   const operatorId = button.dataset.id;
   const currentStatus = button.dataset.status === 'true';
@@ -292,7 +297,7 @@ function toggleOperatorStatus(event) {
 }
 
 // Load companies for dropdowns
-function loadCompaniesForDropdown(selectElement, selectedCompanyId = null) {
+export function loadCompaniesForDropdown(selectElement, selectedCompanyId = null) {
   const token = authToken();
   const currentUser = getStoredUser() || {};
 
@@ -344,7 +349,7 @@ function loadCompaniesForDropdown(selectElement, selectedCompanyId = null) {
 }
 
 // Handle role selection changes
-function handleRoleChange(roleSelect, companySelect, companyContainer) {
+export function handleRoleChange(roleSelect, companySelect, companyContainer) {
   const currentUser = getStoredUser() || {};
 
   // Hide superadmin option for non-superadmins
@@ -422,7 +427,7 @@ document.addEventListener('DOMContentLoaded', function() {
   }
 });
 
-function createOperator() {
+export function createOperator() {
   const username = document.getElementById('operator-username').value;
   const displayName = document.getElementById('operator-display-name').value;
   const name = document.getElementById('operator-name').value;
@@ -490,7 +495,7 @@ function createOperator() {
 // showToast and setLoading live in admin-utils.js.
 
 // Open edit operator modal
-function openEditOperatorModal(event) {
+export function openEditOperatorModal(event) {
   const operatorId = event.currentTarget.dataset.id;
   const token = authToken();
 
@@ -562,7 +567,7 @@ document.addEventListener('DOMContentLoaded', function() {
   }
 });
 
-function editOperator() {
+export function editOperator() {
   const operatorId = document.getElementById('edit-operator-id').value;
   const username = document.getElementById('edit-operator-username').value;
   const displayName = document.getElementById('edit-operator-display-name').value;
@@ -625,7 +630,7 @@ function editOperator() {
     });
 }
 
-function resetPassword() {
+export function resetPassword() {
   const operatorId = document.getElementById('reset-password-operator-id').value;
   const password = document.getElementById('reset-password-new').value;
   const confirmPassword = document.getElementById('reset-password-confirm').value;
@@ -676,7 +681,7 @@ function resetPassword() {
 }
 
 // Start Google OAuth flow
-function connectGoogleAccount(event) {
+export function connectGoogleAccount(event) {
   const btn = event?.currentTarget;
   setLoading(btn, true);
   const token = authToken();
@@ -695,7 +700,7 @@ function connectGoogleAccount(event) {
     .finally(() => setLoading(btn, false));
 }
 
-function checkGoogleStatus() {
+export function checkGoogleStatus() {
   const token = authToken();
   fetch('/api/google/status', { headers: { 'x-auth-token': token } })
     .then(parseJsonResponse)
@@ -713,9 +718,9 @@ function checkGoogleStatus() {
 }
 
 // Load spreadsheet data and display in table
-let currentDocId = null;
+export let currentDocId = null;
 
-function loadSpreadsheet(event) {
+export function loadSpreadsheet(event) {
   const btn = event?.currentTarget;
   setLoading(btn, true);
   const token = authToken();
@@ -743,7 +748,7 @@ function loadSpreadsheet(event) {
 }
 
 // Search Google Drive for spreadsheets
-function searchDrive(event) {
+export function searchDrive(event) {
   const btn = event?.currentTarget;
   setLoading(btn, true);
   const token = authToken();
@@ -769,7 +774,7 @@ function searchDrive(event) {
     .finally(() => setLoading(btn, false));
 }
 
-function openLoadModal(id, name) {
+export function openLoadModal(id, name) {
   document.getElementById('spreadsheet-id').value = id;
   if (name) {
     const span = document.getElementById('selected-spreadsheet-name');
@@ -782,7 +787,7 @@ function openLoadModal(id, name) {
   });
 }
 
-function fetchSheetNames(id) {
+export function fetchSheetNames(id) {
   const token = authToken();
   return fetch(`/api/google/sheets/${id}/names`, { headers: { 'x-auth-token': token } })
     .then(parseJsonResponse)
@@ -799,7 +804,7 @@ function fetchSheetNames(id) {
     .catch(() => showToast('Failed to fetch sheet names', 'danger'));
 }
 
-function refreshKnowledge(query = '', event) {
+export function refreshKnowledge(query = '', event) {
   const btn = event?.currentTarget;
   if (btn) {
     setLoading(btn, true);
@@ -843,7 +848,7 @@ function refreshKnowledge(query = '', event) {
     });
 }
 
-function refreshDocument(id, event) {
+export function refreshDocument(id, event) {
   const btn = event?.currentTarget;
   setLoading(btn, true);
   const token = authToken();
@@ -854,7 +859,7 @@ function refreshDocument(id, event) {
     .finally(() => setLoading(btn, false));
 }
 
-function expandKnowledge(id) {
+export function expandKnowledge(id) {
   const token = authToken();
   fetch(`/api/google/knowledge/${id}`, { headers: { 'x-auth-token': token } })
     .then(parseJsonResponse)
@@ -912,7 +917,7 @@ function expandKnowledge(id) {
     .catch(() => showToast('Failed to load document', 'danger'));
 }
 
-function updateColumns(id) {
+export function updateColumns(id) {
   const table = document.getElementById('spreadsheet-table');
   const excluded = [];
   table.querySelectorAll('thead th').forEach(th => {
@@ -946,7 +951,7 @@ function updateColumns(id) {
 
 // Make each spreadsheet row sticky so short cells stay in view while long cells scroll
 // and adjust z-index on scroll so the active row isn't hidden by others
-function applyStickySpreadsheetRows() {
+export function applyStickySpreadsheetRows() {
   const table = document.getElementById('spreadsheet-table');
   if (!table) {
     return;
@@ -992,7 +997,7 @@ function applyStickySpreadsheetRows() {
   enableSpreadsheetColumnResizing(table);
 }
 
-function enableSpreadsheetColumnResizing(table) {
+export function enableSpreadsheetColumnResizing(table) {
   if (!table) {
     return;
   }
@@ -1028,7 +1033,7 @@ function enableSpreadsheetColumnResizing(table) {
   table.style.width = `${initialWidth}px`;
 }
 
-function saveKnowledgeConfig(event) {
+export function saveKnowledgeConfig(event) {
   if (!currentDocId) {
     return;
   }
@@ -1054,7 +1059,7 @@ function saveKnowledgeConfig(event) {
     .finally(() => setLoading(btn, false));
 }
 
-function showSummary(id) {
+export function showSummary(id) {
   const token = authToken();
   fetch(`/api/google/knowledge/${id}`, { headers: { 'x-auth-token': token } })
     .then(parseJsonResponse)
@@ -1081,7 +1086,7 @@ function showSummary(id) {
     .catch(() => showToast('Failed to load configuration', 'danger'));
 }
 
-function deleteKnowledge(id, event) {
+export function deleteKnowledge(id, event) {
   const btn = event?.currentTarget;
   setLoading(btn, true);
   const token = authToken();
@@ -1098,7 +1103,7 @@ function deleteKnowledge(id, event) {
     .finally(() => setLoading(btn, false));
 }
 
-function showStep(id) {
+export function showStep(id) {
   document.querySelectorAll('.kb-step').forEach(el => el.classList.add('d-none'));
   const step = document.getElementById(id);
   if (step) {

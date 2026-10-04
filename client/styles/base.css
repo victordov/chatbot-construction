@@ -1,0 +1,3 @@
+/* Bootstrap alone, for the pages that need nothing else: the login page and
+   the privacy policy. */
+@import "bootstrap/dist/css/bootstrap.min.css";

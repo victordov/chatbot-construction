@@ -1,7 +1,10 @@
 // Company Management JavaScript
 
+import * as bootstrap from 'bootstrap';
+import { authToken, errorMessage, escapeHtml, getStoredUser, parseJsonResponse, showToast } from './utils.js';
+
 // Load all companies
-function loadAllCompanies() {
+export function loadAllCompanies() {
   const token = authToken();
   const currentUser = getStoredUser() || {};
 
@@ -90,7 +93,7 @@ function loadAllCompanies() {
 }
 
 // Load a specific company
-function loadCompany(companyId) {
+export function loadCompany(companyId) {
   const token = authToken();
 
   fetch(`/api/companies/${escapeHtml(companyId)}`, {
@@ -157,7 +160,7 @@ function loadCompany(companyId) {
 }
 
 // View company details and users
-function viewCompany(event) {
+export function viewCompany(event) {
   const companyId = event.currentTarget.dataset.id;
   loadCompanyUsers(companyId);
 
@@ -197,7 +200,7 @@ function viewCompany(event) {
 }
 
 // Load company users
-function loadCompanyUsers(companyId) {
+export function loadCompanyUsers(companyId) {
   const token = authToken();
   const currentUser = getStoredUser() || {};
 
@@ -301,13 +304,13 @@ function loadCompanyUsers(companyId) {
 }
 
 // Back to companies list
-function backToCompaniesList() {
+export function backToCompaniesList() {
   document.getElementById('companies-list-section').style.display = 'block';
   document.getElementById('company-detail-section').style.display = 'none';
 }
 
 // Create new company
-function createCompany() {
+export function createCompany() {
   const name = document.getElementById('company-name').value;
   const description = document.getElementById('company-description').value;
   const website = document.getElementById('company-website').value;
@@ -348,7 +351,7 @@ function createCompany() {
 }
 
 // Toggle company active status
-function toggleCompanyStatus(event) {
+export function toggleCompanyStatus(event) {
   const button = event.currentTarget;
   const companyId = button.dataset.id;
   const currentStatus = button.dataset.status === 'true';
@@ -379,7 +382,7 @@ function toggleCompanyStatus(event) {
 }
 
 // Open edit company modal
-function openEditCompanyModal(event) {
+export function openEditCompanyModal(event) {
   const companyId = event.currentTarget.dataset.id;
   const token = authToken();
 
@@ -416,7 +419,7 @@ function openEditCompanyModal(event) {
 }
 
 // Save edited company details
-function editCompany() {
+export function editCompany() {
   const companyId = document.getElementById('edit-company-id').value;
   const name = document.getElementById('edit-company-name').value;
   const description = document.getElementById('edit-company-description').value;
@@ -462,7 +465,7 @@ function editCompany() {
 }
 
 // Open edit company user modal
-function openEditCompanyUserModal(event) {
+export function openEditCompanyUserModal(event) {
   const userId = event.currentTarget.dataset.id;
   const companyId = event.currentTarget.dataset.companyId;
   const token = authToken();
@@ -512,7 +515,7 @@ function openEditCompanyUserModal(event) {
 }
 
 // Toggle company user status
-function toggleCompanyUserStatus(event) {
+export function toggleCompanyUserStatus(event) {
   const button = event.currentTarget;
   const userId = button.dataset.id;
   const companyId = button.dataset.companyId;
@@ -544,7 +547,7 @@ function toggleCompanyUserStatus(event) {
 }
 
 // Open reset company user password modal
-function openResetCompanyUserPasswordModal(event) {
+export function openResetCompanyUserPasswordModal(event) {
   const userId = event.currentTarget.dataset.id;
   const companyId = event.currentTarget.dataset.companyId;
 
@@ -563,7 +566,7 @@ function openResetCompanyUserPasswordModal(event) {
 }
 
 // Reset company user password
-function resetCompanyUserPassword() {
+export function resetCompanyUserPassword() {
   const userId = document.getElementById('reset-company-user-id').value;
   const companyId = document.getElementById('reset-company-id').value;
   const generateRandom = document.getElementById('generate-random-password').checked;
@@ -618,7 +621,7 @@ function resetCompanyUserPassword() {
 }
 
 // Open create company user modal
-function openCreateCompanyUserModal() {
+export function openCreateCompanyUserModal() {
   // Get company ID from the hidden input
   const companyId = document.getElementById('company-detail-id').value;
 
@@ -641,7 +644,7 @@ function openCreateCompanyUserModal() {
 }
 
 // Save company user (create or edit)
-function saveCompanyUser() {
+export function saveCompanyUser() {
   const userId = document.getElementById('company-user-id').value;
   const companyId = document.getElementById('company-user-company-id').value;
   const username = document.getElementById('company-user-username').value;

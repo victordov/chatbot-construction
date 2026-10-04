@@ -1,147 +1,29 @@
-// Admin Dashboard JavaScript
-// Add CSS for unread message indicators and operator status
+/**
+ * Dashboard boot: verify the session, open the socket, wire every section.
+ */
 
-// Client-side logger
-const logger = {
-  info: function(message, data) {
-    if (data) {
-      console.info(message, data);
-    } else {
-      console.info(message);
-    }
-  },
-  error: function(message, error) {
-    if (error) {
-      console.error(message, error);
-    } else {
-      console.error(message);
-    }
-  },
-  warn: function(message, data) {
-    if (data) {
-      console.warn(message, data);
-    } else {
-      console.warn(message);
-    }
-  },
-  debug: function(message, data) {
-    // Use console.info instead of console.debug to avoid ESLint warnings
-    if (data) {
-      console.info('[DEBUG]', message, data);
-    } else {
-      console.info('[DEBUG]', message);
-    }
-  }
-};
-const style = document.createElement('style');
-style.textContent = `
-  .has-new-message {
-    background-color: #f8f9fa;
-    font-weight: bold;
-    animation: pulse 2s infinite;
-  }
+import Chart from 'chart.js/auto';
+import feather from 'feather-icons';
+import { setupAnalytics } from './analytics.js';
+import { setupAssistantSection } from './assistant.js';
+import { setupAudit } from './audit.js';
+import { setupBillingSection } from './billing.js';
+import { initializeAnalyticsCharts, initializeCharts, loadActiveChats, loadChatHistory, loadDashboardData, setupConnectionHandlers, startHeartbeat, viewChatHistory } from './chats.js';
+import { setupConnector } from './connector.js';
+import { setupContacts } from './contacts.js';
+import { setupDataControls } from './data-controls.js';
+import { setupEventHandlers } from './events.js';
+import { setupKnowledge } from './knowledge.js';
+import { setupNotifications } from './notifications.js';
+import { setupOperatorTools } from './operator-tools.js';
+import { loadAllOperators, loadOperators, setupContactInfoManagement } from './operators.js';
+import { setupRouting } from './routing.js';
+import { restoreJoinedChats, state } from './state.js';
+import { setupTaskManagement, showTaskList } from './tasks.js';
+import { api, authHeaders, authToken, errorMessage, getUrlParams, logger, setAuthToken, setLoading, setStoredUser, showToast, updateUrlWithParams } from './utils.js';
+import { setupWebhooks } from './webhooks.js';
+import { setupWidgetSection } from './widget.js';
 
-  @keyframes pulse {
-    0% { background-color: #f8f9fa; }
-    50% { background-color: #e2f0ff; }
-    100% { background-color: #f8f9fa; }
-  }
-
-  .unread-badge {
-    margin-left: 5px;
-    padding: 3px 6px;
-    border-radius: 10px;
-    font-size: 0.7em;
-  }
-
-  .status-indicator {
-    display: inline-block;
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-    margin-right: 5px;
-  }
-
-  .status-indicator.no-operator {
-    background-color: #ffc107; /* Amber color */
-  }
-
-  .status-indicator.has-operator {
-    background-color: #28a745; /* Green color */
-  }
-
-  .user-disconnected {
-    position: relative;
-    opacity: 0.8;
-  }
-
-  .user-disconnected::after {
-    content: "Disconnected";
-    position: absolute;
-    right: 10px;
-    top: 50%;
-    transform: translateY(-50%);
-    font-size: 0.8em;
-    color: #dc3545;
-    font-style: italic;
-  }
-
-  .message.system {
-    text-align: center;
-    margin: 10px 0;
-  }
-
-  .message.system .message-content {
-    display: inline-block;
-    padding: 5px 10px;
-    background-color: #f8f9fa;
-    border-radius: 10px;
-    font-style: italic;
-    color: #6c757d;
-  }
-
-  .typing-indicator {
-    margin-bottom: 10px;
-  }
-
-  .message.typing {
-    opacity: 0.7;
-  }
-
-  .message.typing .message-content {
-    display: flex;
-    align-items: center;
-    padding: 5px 10px;
-  }
-
-  .message.typing .dot {
-    display: inline-block;
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background-color: #777;
-    margin-right: 4px;
-    animation: typing-animation 1.4s infinite ease-in-out both;
-  }
-
-  .message.typing .dot:nth-child(1) {
-    animation-delay: 0s;
-  }
-
-  .message.typing .dot:nth-child(2) {
-    animation-delay: 0.2s;
-  }
-
-  .message.typing .dot:nth-child(3) {
-    animation-delay: 0.4s;
-  }
-
-  @keyframes typing-animation {
-    0%, 80%, 100% { transform: scale(0.7); }
-    40% { transform: scale(1); }
-  }
-`;
-document.head.appendChild(style);
 
 /**
  * Notice when the session has expired, wherever it happens.
@@ -216,26 +98,14 @@ document.addEventListener('DOMContentLoaded', function() {
     });
 });
 
-function initializeDashboard(token, user) {
+export function initializeDashboard(token, user) {
   // Initialize Feather icons
   feather.replace();
 
-  // Track joined chats
-  // Load joined chats from localStorage if available
-  window.joinedChats = new Set();
-  const savedJoinedChats = localStorage.getItem('joined-chats');
-  if (savedJoinedChats) {
-    try {
-      const chatIds = JSON.parse(savedJoinedChats);
-      chatIds.forEach(id => window.joinedChats.add(id));
-      logger.info('Restored joined chats from localStorage:', chatIds);
-    } catch (error) {
-      logger.error('Error parsing joined chats from localStorage:', error);
-    }
-  }
+  restoreJoinedChats();
 
   // Store current user
-  window.currentUser = user;
+  state.currentUser = user;
 
   // Hide navigation the user cannot act on. Showing an operator a "Companies"
   // tab that always 403s is worse than not showing it at all.
@@ -263,20 +133,9 @@ function initializeDashboard(token, user) {
 
   setupAccountSettings();
 
-  // Helper function to save joined chats to localStorage
-  window.saveJoinedChats = function() {
-    try {
-      const chatIds = Array.from(window.joinedChats);
-      localStorage.setItem('joined-chats', JSON.stringify(chatIds));
-      logger.info('Saved joined chats to localStorage:', chatIds);
-    } catch (error) {
-      logger.error('Error saving joined chats to localStorage:', error);
-    }
-  };
-
   // Initialize Socket.IO connection with reconnection options
   // Store socket in window object to make it globally available
-  window.adminSocket = io({
+  state.socket = io({
     auth: {
       token: token
     },
@@ -288,7 +147,7 @@ function initializeDashboard(token, user) {
   });
 
   // For backward compatibility
-  const socket = window.adminSocket;
+  const socket = state.socket;
 
   // Set up event handlers
   setupEventHandlers(socket);
@@ -381,7 +240,7 @@ function initializeDashboard(token, user) {
  * it; the local clean-up happens whether or not that call succeeds, so a
  * dead server cannot keep somebody signed in.
  */
-async function logout() {
+export async function logout() {
   const token = authToken();
 
   try {
@@ -408,7 +267,7 @@ async function logout() {
  * using. Storing the new one keeps this session alive while every other one
  * ends.
  */
-function setupAccountSettings() {
+export function setupAccountSettings() {
   const form = document.getElementById('change-password-form');
   if (!form) {
     return;
@@ -444,10 +303,10 @@ function setupAccountSettings() {
 
       if (result && result.token) {
         setAuthToken(result.token);
-        if (window.adminSocket) {
+        if (state.socket) {
           // The socket authenticated with the old token; give it the new one
           // so its next reconnect is not refused.
-          window.adminSocket.auth = { token: result.token };
+          state.socket.auth = { token: result.token };
         }
       }
 
@@ -470,7 +329,7 @@ function setupAccountSettings() {
  * datasets are invisible. Chart.js does not re-measure on its own when the
  * element later becomes visible, so we ask it to.
  */
-function resizeChartsIn(sectionId) {
+export function resizeChartsIn(sectionId) {
   if (typeof Chart === 'undefined') {
     return;
   }
@@ -503,7 +362,7 @@ function resizeChartsIn(sectionId) {
 /**
  * Show only the navigation entries this role can use.
  */
-function applyRoleVisibility(user) {
+export function applyRoleVisibility(user) {
   document.querySelectorAll('#sidebar [data-roles]').forEach(link => {
     const allowed = link.getAttribute('data-roles').split(',').map(r => r.trim());
     if (!allowed.includes(user.role)) {
@@ -522,7 +381,7 @@ function applyRoleVisibility(user) {
  * Download the conversation history as CSV. The Export button in the header
  * previously had no handler at all.
  */
-function setupExport() {
+export function setupExport() {
   const button = document.getElementById('export-btn');
   if (!button) {
     return;
@@ -559,48 +418,8 @@ function setupExport() {
   });
 }
 
-// Helper function to update URL with query parameters
-window.updateUrlWithParams = function(params) {
-  const url = new URL(window.location.href);
-
-  // Clear existing parameters
-  url.search = '';
-
-  // Add new parameters
-  Object.keys(params).forEach(key => {
-    if (params[key]) {
-      url.searchParams.set(key, params[key]);
-    }
-  });
-
-  // Update URL without reloading the page
-  window.history.pushState({}, '', url);
-};
-
-// Helper function to get query parameters from URL and fragment
-window.getUrlParams = function() {
-  const params = {};
-
-  // Parse query parameters
-  const searchParams = new URLSearchParams(window.location.search);
-  for (const [key, value] of searchParams.entries()) {
-    params[key] = value;
-  }
-
-  // Parse fragment parameters if present
-  const hashParts = window.location.hash.split('?');
-  if (hashParts.length > 1) {
-    const fragmentParams = new URLSearchParams(hashParts[1]);
-    for (const [key, value] of fragmentParams.entries()) {
-      params[key] = value;
-    }
-  }
-
-  return params;
-};
-
 // Navigation setup
-function setupNavigation() {
+export function setupNavigation() {
   // Only grab sidebar navigation links that switch top-level sections
   const navLinks = document.querySelectorAll('#sidebar .nav-link[data-section]');
   const sections = document.querySelectorAll('.content-section');

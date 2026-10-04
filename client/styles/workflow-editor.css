@@ -1,3 +1,5 @@
+@import "bootstrap/dist/css/bootstrap.min.css";
+
 /* Visual Workflow Editor
    A three-pane layout: palette, canvas, properties. The canvas fills the
    remaining height exactly so the page itself never scrolls. */

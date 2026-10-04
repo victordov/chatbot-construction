@@ -4,6 +4,20 @@
  * Loaded before every other admin_parts script.
  */
 
+import * as bootstrap from 'bootstrap';
+import { marked } from 'marked';
+
+
+/**
+ * Console logging behind one name, so a module can say `logger.info` without
+ * caring whether the console is there.
+ */
+export const logger = {
+  info: (message, data) => (data === undefined ? console.info(message) : console.info(message, data)),
+  warn: (message, data) => (data === undefined ? console.warn(message) : console.warn(message, data)),
+  error: (message, error) => (error === undefined ? console.error(message) : console.error(message, error)),
+  debug: (message, data) => (data === undefined ? console.info('[DEBUG]', message) : console.info('[DEBUG]', message, data))
+};
 
 /**
  * Escape a value for interpolation into an HTML template string.
@@ -13,7 +27,7 @@
  * a visitor who types `<img src=x onerror=...>` into the chat widget executes
  * script in the operator's authenticated session.
  */
-function escapeHtml(value) {
+export function escapeHtml(value) {
   if (value === null || value === undefined) {
     return '';
   }
@@ -33,7 +47,7 @@ function escapeHtml(value) {
  * task descriptions were rendering raw HTML. Rather than trust the renderer,
  * parse into a detached document and strip anything dangerous.
  */
-function renderMarkdown(text) {
+export function renderMarkdown(text) {
   if (!text) {
     return '';
   }
@@ -83,7 +97,7 @@ function renderMarkdown(text) {
  * "3 minutes ago" style timestamps - operators scan these constantly, and a
  * relative time answers "is this stale?" faster than a clock time does.
  */
-function formatRelativeTime(value) {
+export function formatRelativeTime(value) {
   if (!value) {
     return '';
   }
@@ -120,7 +134,7 @@ function formatRelativeTime(value) {
  * Delay a call until the user stops firing it. Used for search-as-you-type so
  * each keystroke does not become a database query.
  */
-function debounce(fn, wait = 300) {
+export function debounce(fn, wait = 300) {
   let timer;
   return function debounced(...args) {
     clearTimeout(timer);
@@ -139,7 +153,7 @@ function debounce(fn, wait = 300) {
  * @param {string} [message]
  * @param {'success'|'error'|'warning'|'info'} [type]
  */
-function showNotification(title, message = '', type = 'info') {
+export function showNotification(title, message = '', type = 'info') {
   const text = message ? `${title}: ${message}` : title;
   showToast(text, type);
 }
@@ -149,9 +163,9 @@ function showNotification(title, message = '', type = 'info') {
  * half the call sites say and `text-bg-error` is not a class Bootstrap has,
  * so those toasts rendered as unstyled white boxes.
  */
-const TOAST_VARIANTS = new Set(['primary', 'secondary', 'success', 'danger', 'warning', 'info', 'light', 'dark']);
+export const TOAST_VARIANTS = new Set(['primary', 'secondary', 'success', 'danger', 'warning', 'info', 'light', 'dark']);
 
-function toastVariant(type) {
+export function toastVariant(type) {
   const aliases = { error: 'danger', warn: 'warning', notice: 'info' };
   const variant = aliases[type] || type;
   return TOAST_VARIANTS.has(variant) ? variant : 'info';
@@ -163,7 +177,7 @@ function toastVariant(type) {
  * @param {string} message
  * @param {string} [type] a Bootstrap colour name, or `error`
  */
-function showToast(message, type = 'info') {
+export function showToast(message, type = 'info') {
   const container = document.querySelector('.toast-container');
   if (!container) {
     logger.info(message);
@@ -192,7 +206,7 @@ function showToast(message, type = 'info') {
 }
 
 // Toggle loading state for buttons
-function setLoading(button, isLoading) {
+export function setLoading(button, isLoading) {
   if (!button) {
     return;
   }
@@ -211,15 +225,15 @@ function setLoading(button, isLoading) {
 
 // ---------------------------------------------------------------- auth + API
 
-const AUTH_TOKEN_KEY = 'chatbot-auth-token';
-const STORED_USER_KEY = 'chatbot-user';
+export const AUTH_TOKEN_KEY = 'chatbot-auth-token';
+export const STORED_USER_KEY = 'chatbot-user';
 
 /**
  * The signed-in operator's token. One accessor rather than eighty-four
  * `localStorage.getItem('chatbot-auth-token')` calls, so the key lives in
  * exactly one place and a blocked localStorage cannot throw mid-render.
  */
-function authToken() {
+export function authToken() {
   try {
     return localStorage.getItem(AUTH_TOKEN_KEY);
   } catch (error) {
@@ -227,7 +241,7 @@ function authToken() {
   }
 }
 
-function setAuthToken(token) {
+export function setAuthToken(token) {
   try {
     if (token) {
       localStorage.setItem(AUTH_TOKEN_KEY, token);
@@ -246,7 +260,7 @@ function setAuthToken(token) {
  * or missing value, and a throw at the top of a module means the whole
  * module never loads.
  */
-function getStoredUser() {
+export function getStoredUser() {
   try {
     const raw = localStorage.getItem(STORED_USER_KEY);
     return raw ? JSON.parse(raw) : null;
@@ -255,7 +269,7 @@ function getStoredUser() {
   }
 }
 
-function setStoredUser(user) {
+export function setStoredUser(user) {
   try {
     if (user) {
       localStorage.setItem(STORED_USER_KEY, JSON.stringify(user));
@@ -268,7 +282,7 @@ function setStoredUser(user) {
 }
 
 /** Headers for a JSON request to our own API. */
-function authHeaders(extra = {}) {
+export function authHeaders(extra = {}) {
   return {
     'Content-Type': 'application/json',
     'x-auth-token': authToken(),
@@ -284,7 +298,7 @@ function authHeaders(extra = {}) {
  * nothing to do with the real problem. Throwing here sends every failure to
  * the caller's `.catch`, with the server's own message when it gave one.
  */
-async function parseJsonResponse(response) {
+export async function parseJsonResponse(response) {
   const body = await response.json().catch(() => ({}));
 
   if (!response.ok) {
@@ -305,7 +319,7 @@ async function parseJsonResponse(response) {
  * What to tell the operator: the server's message if there is one, else the
  * caller's fallback.
  */
-function errorMessage(error, fallback) {
+export function errorMessage(error, fallback) {
   return (error && error.apiMessage) || fallback;
 }
 
@@ -316,11 +330,51 @@ function errorMessage(error, fallback) {
  * @param {RequestInit} [options]
  * @returns {Promise<any>} the parsed body; rejects with the server's error
  */
-async function api(path, options = {}) {
+export async function api(path, options = {}) {
   const response = await fetch(path, {
     ...options,
     headers: authHeaders(options.headers)
   });
 
   return parseJsonResponse(response);
+}
+
+// ------------------------------------------------------------------ the URL
+
+/**
+ * Replace the query string without reloading, so a section or a conversation
+ * can be bookmarked and survives a refresh.
+ */
+export function updateUrlWithParams(params) {
+  const url = new URL(window.location.href);
+  url.search = '';
+
+  Object.keys(params).forEach(key => {
+    if (params[key]) {
+      url.searchParams.set(key, params[key]);
+    }
+  });
+
+  window.history.pushState({}, '', url);
+}
+
+/**
+ * Parameters from the query string and from a `#...?key=value` fragment.
+ * Notification links use the fragment form, so both are read.
+ */
+export function getUrlParams() {
+  const params = {};
+
+  for (const [key, value] of new URLSearchParams(window.location.search).entries()) {
+    params[key] = value;
+  }
+
+  const hashParts = window.location.hash.split('?');
+  if (hashParts.length > 1) {
+    for (const [key, value] of new URLSearchParams(hashParts[1]).entries()) {
+      params[key] = value;
+    }
+  }
+
+  return params;
 }

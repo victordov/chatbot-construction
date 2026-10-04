@@ -57,20 +57,16 @@ describe('Removed static pages', () => {
     });
   });
 
-  test('every CDN script is pinned and integrity-checked', () => {
-    ['admin/index.html', 'admin/login.html', 'admin/workflow-editor.html'].forEach(page => {
+  test('the admin pages load nothing from a third-party origin', () => {
+    // Bootstrap, Chart.js, Feather and marked are bundled into /dist by
+    // scripts/build-client.js, so a compromised or changed CDN file has no way
+    // into an operator's authenticated session.
+    ['admin/index.html', 'admin/login.html', 'admin/workflow-editor.html', 'privacy-policy.html'].forEach(page => {
       const html = fs.readFileSync(path.join(publicDir, page), 'utf8');
-      const tags = html.match(/<(?:script|link)\b[^>]*https:\/\/[^>]*>/gi) || [];
+      const external = html.match(/<(?:script|link)\b[^>]*(?:src|href)="https?:\/\/[^>]*>/gi) || [];
 
-      expect(tags.length).toBeGreaterThan(0);
-      tags.forEach(tag => {
-        expect(tag).toMatch(/integrity="sha384-[A-Za-z0-9+/=]+"/);
-        expect(tag).toMatch(/crossorigin="anonymous"/);
-        // A version in the URL, so the hash has something stable to match.
-        expect(tag).toMatch(/@\d+\.\d+\.\d+\//);
-      });
-
-      expect(html).not.toContain('unpkg.com');
+      expect(external).toEqual([]);
+      expect(html).toMatch(/<link rel="stylesheet" href="\/dist\/[a-z-]+\.css">/);
     });
   });
 });

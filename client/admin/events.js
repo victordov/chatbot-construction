@@ -1,6 +1,11 @@
 
+import { addChatToList, addMessageToChat, displayRating, displayUserContactInfo, loadChatHistory, notifyNewChat, removeChatFromList, resetChatView, saveSettings, sendOperatorMessage, setupSuggestionEventHandlers, updateActiveChatCount, updateChatOperatorStatus, updateChatUserName } from './chats.js';
+import { applyChatFilter } from './operator-tools.js';
+import { saveJoinedChats, state } from './state.js';
+import { authToken, debounce, errorMessage, logger, parseJsonResponse, showToast } from './utils.js';
+
 // Event handlers
-function setupEventHandlers(socket) {
+export function setupEventHandlers(socket) {
   // Set up suggestion event handlers
   setupSuggestionEventHandlers(socket);
 
@@ -31,7 +36,7 @@ function setupEventHandlers(socket) {
             const messageId = messageDiv.dataset.messageId;
 
             // Request suggestion
-            const socket = window.adminSocket;
+            const socket = state.socket;
             socket.emit('request-suggestions', {
               sessionId,
               messageId
@@ -76,7 +81,7 @@ function setupEventHandlers(socket) {
 
     // Notify that operator has joined
     const sessionId = this.getAttribute('data-session-id');
-    const operatorName = window.currentUser ? (window.currentUser.displayName || window.currentUser.username) : 'Admin';
+    const operatorName = state.currentUser ? (state.currentUser.displayName || state.currentUser.username) : 'Admin';
     // The server names the operator from the socket's own identity; sending
     // a name here would be ignored.
     socket.emit('operator-takeover', { sessionId });
@@ -85,9 +90,9 @@ function setupEventHandlers(socket) {
     updateChatOperatorStatus(sessionId, true, operatorName);
 
     // Add this chat to the joined chats set
-    window.joinedChats.add(sessionId);
+    state.joinedChats.add(sessionId);
     // Save joined chats to localStorage
-    window.saveJoinedChats();
+    saveJoinedChats();
 
     // Update suggestion buttons
     updateSuggestionButtons(true);
@@ -110,9 +115,9 @@ function setupEventHandlers(socket) {
       socket.emit('end-chat', { sessionId });
 
       // Remove this chat from the joined chats set
-      window.joinedChats.delete(sessionId);
+      state.joinedChats.delete(sessionId);
       // Save joined chats to localStorage
-      window.saveJoinedChats();
+      saveJoinedChats();
 
       // Update suggestion buttons before resetting the view
       updateSuggestionButtons(false);
@@ -130,8 +135,8 @@ function setupEventHandlers(socket) {
     );
     socket.emit('operator-leave', { sessionId, passToBot });
 
-    window.joinedChats.delete(sessionId);
-    window.saveJoinedChats();
+    state.joinedChats.delete(sessionId);
+    saveJoinedChats();
 
     updateSuggestionButtons(false);
     resetChatView();
@@ -235,12 +240,12 @@ function setupEventHandlers(socket) {
    * still at their desk is something they can act on.
    */
   socket.on('conversation-rated', function(data) {
-    if (window.currentConversation && window.currentConversation.sessionId === data.sessionId) {
-      window.currentConversation.rating = Object.assign(
-        {}, window.currentConversation.rating, data
+    if (state.currentConversation && state.currentConversation.sessionId === data.sessionId) {
+      state.currentConversation.rating = Object.assign(
+        {}, state.currentConversation.rating, data
       );
       if (typeof displayRating === 'function') {
-        displayRating(window.currentConversation.rating);
+        displayRating(state.currentConversation.rating);
       }
     }
 
@@ -288,8 +293,8 @@ function setupEventHandlers(socket) {
       return;
     }
 
-    window.joinedChats.delete(sessionId);
-    window.saveJoinedChats();
+    state.joinedChats.delete(sessionId);
+    saveJoinedChats();
 
     const takenBy = data.takenBy && typeof data.takenBy === 'object'
       ? (data.takenBy.name || data.takenBy.displayName || 'another operator')
@@ -322,13 +327,13 @@ function setupEventHandlers(socket) {
 
     if (payload.heldBy && payload.sessionId) {
       const holder = payload.heldBy.name || 'another operator';
-      const role = window.currentUser && window.currentUser.role;
+      const role = state.currentUser && state.currentUser.role;
       const mayForce = role === 'company_admin' || role === 'superadmin';
 
       // Whatever the join button did optimistically is undone: we are not in.
       if (joinChatBtn.getAttribute('data-session-id') === payload.sessionId) {
-        window.joinedChats.delete(payload.sessionId);
-        window.saveJoinedChats();
+        state.joinedChats.delete(payload.sessionId);
+        saveJoinedChats();
         updateSuggestionButtons(false);
         resetChatView();
         updateChatOperatorStatus(payload.sessionId, true, holder);
@@ -353,14 +358,14 @@ function setupEventHandlers(socket) {
   // Update user name when details change
   socket.on('user-details-updated', function(data) {
     updateChatUserName(data.sessionId, data.name);
-    if (window.currentConversation && window.currentConversation.sessionId === data.sessionId) {
-      if (!window.currentConversation.metadata) {
-        window.currentConversation.metadata = {};
+    if (state.currentConversation && state.currentConversation.sessionId === data.sessionId) {
+      if (!state.currentConversation.metadata) {
+        state.currentConversation.metadata = {};
       }
-      window.currentConversation.metadata.name = data.name;
-      window.currentConversation.metadata.email = data.email;
-      window.currentConversation.metadata.phone = data.phone;
-      displayUserContactInfo(window.currentConversation);
+      state.currentConversation.metadata.name = data.name;
+      state.currentConversation.metadata.email = data.email;
+      state.currentConversation.metadata.phone = data.phone;
+      displayUserContactInfo(state.currentConversation);
     }
   });
 

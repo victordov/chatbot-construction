@@ -16,7 +16,9 @@ module.exports = {
 
   // An array of regexp pattern strings that are matched against all test paths
   testPathIgnorePatterns: [
-    '/node_modules/'
+    '/node_modules/',
+    // Git worktrees made by tooling hold whole copies of the suite.
+    '/\\.claude/'
   ],
   // The test timeout in milliseconds
   testTimeout: 30000,
