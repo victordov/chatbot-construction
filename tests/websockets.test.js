@@ -32,7 +32,6 @@ jest.mock('../services/ai', () => ({
 const setupWebSockets = require('../websockets');
 const socketManager = require('../socketManager');
 const replyService = require('../services/reply');
-const usageService = require('../services/usage');
 const sessionTokenService = require('../services/session-token');
 const Company = require('../models/company');
 const User = require('../models/user');
@@ -158,6 +157,18 @@ describe('WebSockets', () => {
     messageId, message, timestamp: new Date().toISOString()
   });
 
+  /**
+   * A visitor whose conversation exists. A resume alone no longer creates
+   * one - the first message does - so anything that needs a conversation to
+   * act on starts here.
+   */
+  const startEngagedVisitor = async (prefix, widgetKey = acme.widgetKey) => {
+    const visitor = await startVisitor(prefix, widgetKey);
+    say(visitor.socket, 'hello');
+    await waitFor(visitor.socket, 'bot-message');
+    return visitor;
+  };
+
   beforeAll(async () => {
     if (mongoose.connection.readyState === 0) {
       await mongoose.connect(process.env.MONGODB_TEST_URI);
@@ -222,11 +233,16 @@ describe('WebSockets', () => {
   });
 
   describe('establishing a session', () => {
-    it('creates the conversation and hands the visitor a token whose hash is stored', async () => {
-      const { sessionId, sessionToken } = await startVisitor('new');
+    it('hands a new visitor a token, and creates the conversation under it on the first message', async () => {
+      const { socket, sessionId, sessionToken } = await startVisitor('new');
 
       expect(typeof sessionToken).toBe('string');
       expect(sessionToken).toHaveLength(64);
+      // Opening the widget is not a conversation: nothing is written yet.
+      expect(await Conversation.findOne({ sessionId })).toBeNull();
+
+      say(socket, 'hello');
+      await waitFor(socket, 'bot-message');
 
       const conversation = await Conversation.findOne({ sessionId }).select('+sessionTokenHash company');
       expect(conversation).not.toBeNull();
@@ -235,7 +251,7 @@ describe('WebSockets', () => {
     });
 
     it('rejects a resume with the wrong token and binds nothing', async () => {
-      const { sessionId } = await startVisitor('wrong-token');
+      const { sessionId } = await startEngagedVisitor('wrong-token');
 
       const intruder = await connectVisitor(acme.widgetKey);
       const attempt = await resume(intruder, sessionId, 'not-the-token');
@@ -246,11 +262,11 @@ describe('WebSockets', () => {
       expect((await waitFor(intruder, 'error')).message).toMatch(/Session not established/);
 
       const conversation = await Conversation.findOne({ sessionId });
-      expect(conversation.messages).toHaveLength(0);
+      expect(conversation.messages.map(m => m.content)).not.toContain('I am in your conversation');
     });
 
     it('rejects a resume with no token for a conversation that has one', async () => {
-      const { sessionId } = await startVisitor('no-token');
+      const { sessionId } = await startEngagedVisitor('no-token');
 
       const intruder = await connectVisitor(acme.widgetKey);
       expect((await resume(intruder, sessionId)).rejected).toBe(true);
@@ -333,7 +349,7 @@ describe('WebSockets', () => {
     });
 
     it('writes a message into the bound session, whatever the payload names', async () => {
-      const { sessionId: victimSessionId } = await startVisitor('victim-write');
+      const { sessionId: victimSessionId } = await startEngagedVisitor('victim-write');
       const { socket: attacker, sessionId: ownSessionId } = await startVisitor('attacker-write');
 
       attacker.emit('user-message', {
@@ -341,7 +357,8 @@ describe('WebSockets', () => {
       });
       await waitFor(attacker, 'bot-message');
 
-      expect((await Conversation.findOne({ sessionId: victimSessionId })).messages).toHaveLength(0);
+      const victim = await Conversation.findOne({ sessionId: victimSessionId });
+      expect(victim.messages.map(m => m.content)).not.toContain('planted');
       expect((await Conversation.findOne({ sessionId: ownSessionId })).messages[0].content).toBe('planted');
     });
   });
@@ -421,11 +438,14 @@ describe('WebSockets', () => {
     });
 
     it('tells operators about a visitor\'s file with a link they can open', async () => {
+      // POST /api/upload needs a conversation to attach to, so the visitor has
+      // already written.
+      const { socket: visitor, sessionId } = await startEngagedVisitor('file');
+
       const acmeSocket = await connectOperator(acmeOperator);
       acmeSocket.emit('join-operator-room');
       await pause(50);
 
-      const { socket: visitor, sessionId } = await startVisitor('file');
       // What POST /api/upload records before the widget announces the file.
       const fileId = 'a'.repeat(32);
       await Conversation.updateOne({ sessionId }, {
@@ -472,25 +492,36 @@ describe('WebSockets', () => {
       expect(conversation.botEnabled).toBe(true);
     });
 
-    it('apologises in the bot\'s voice, and says why, when the reply cannot be produced', async () => {
+    it('hands over to the team, never with an error, when the reply cannot be produced', async () => {
+      // Behaviour changed on purpose: this used to apologise and emit an
+      // `error` the widget showed as "Failed to generate a reply" - a dead end.
       replyService.generate.mockRejectedValueOnce(new Error('model unavailable'));
 
       const { socket, sessionId } = await startVisitor('failure');
-      const error = waitFor(socket, 'error');
+      const errors = [];
+      socket.on('error', payload => errors.push(payload));
       const typing = [];
       socket.on('bot-typing', payload => typing.push(payload.typing));
+      const status = waitFor(socket, 'operator-requested');
+      const followUp = waitFor(socket, 'followup-request');
 
       say(socket, 'hello');
 
-      const apology = await waitFor(socket, 'bot-message');
-      expect(apology.text).toBe(usageService.REPLY_FAILED_MESSAGE);
-      expect(await error).toMatchObject({ sessionId, message: expect.stringMatching(/Failed to generate/) });
+      const line = await waitFor(socket, 'bot-message');
+      expect(line).toMatchObject({ code: 'reply_failed', path: 'handoff', canRate: false });
+      // Nobody from acme is connected, so the visitor is asked for an email.
+      expect(await status).toMatchObject({ queued: true, offline: true, code: 'queued_offline' });
+      expect(await followUp).toMatchObject({ sessionId, reason: 'model_error' });
       // The typing indicator does not get stuck on.
       expect(typing).toEqual([true, false]);
+      expect(errors).toEqual([]);
 
-      // The visitor's message is still stored, so an operator can pick it up.
+      // The visitor's message is still stored, so an operator can pick it up,
+      // and the conversation says why it is waiting.
       const conversation = await Conversation.findOne({ sessionId });
-      expect(conversation.messages.map(m => m.sender)).toEqual(['user', 'bot']);
+      expect(conversation.messages.map(m => m.sender)).toEqual(['user', 'bot', 'system']);
+      expect(conversation.handoff.reason).toBe('model_error');
+      expect(conversation.awaitingOperatorSince).toBeInstanceOf(Date);
     });
 
     it.each([
@@ -504,7 +535,8 @@ describe('WebSockets', () => {
       socket.emit('user-message', { messageId: 'bad', message, timestamp: new Date().toISOString() });
 
       expect((await waitFor(socket, 'error')).message).toMatch(/Message/);
-      expect((await Conversation.findOne({ sessionId })).messages).toHaveLength(0);
+      // Not even a conversation: a refused message is not engagement.
+      expect(await Conversation.findOne({ sessionId })).toBeNull();
       expect(replyService.generate).not.toHaveBeenCalled();
     });
 
@@ -524,7 +556,7 @@ describe('WebSockets', () => {
 
         const conversation = await eventually(async () => {
           const found = await Conversation.findOne({ sessionId });
-          return found.messages.filter(m => m.sender === 'user').length >= 3 ? found : null;
+          return found && found.messages.filter(m => m.sender === 'user').length >= 3 ? found : null;
         });
         await pause(100);
         const reloaded = await Conversation.findOne({ sessionId });
@@ -559,33 +591,35 @@ describe('WebSockets', () => {
       await Subscription.deleteMany({ company: { $in: [capped._id, lapsed._id] } });
     });
 
-    it('tells the visitor the chat is unavailable, without calling the model, when replies are used up', async () => {
+    it('hands over to the team, without calling the model, when replies are used up', async () => {
+      // Behaviour changed on purpose: this used to say "unavailable" and stop.
       const { socket, sessionId } = await startVisitor('capped', capped.widgetKey);
+      const status = waitFor(socket, 'operator-requested');
 
       say(socket, 'hello');
 
-      const reply = await waitFor(socket, 'bot-message');
-      expect(reply.text).toBe(usageService.UNAVAILABLE_MESSAGE);
+      expect(await status).toMatchObject({ queued: true, code: 'queued_offline' });
       expect(replyService.generate).not.toHaveBeenCalled();
 
-      // Said in the transcript too, so an operator reading it later
-      // understands the gap.
+      // The transcript says why, so an operator reading it later understands
+      // the gap; nothing about quotas is said to the visitor.
       const conversation = await Conversation.findOne({ sessionId });
-      expect(conversation.messages.map(m => m.sender)).toEqual(['user', 'bot']);
+      expect(conversation.messages.map(m => m.sender)).toEqual(['user', 'system']);
+      expect(conversation.handoff.reason).toBe('quota');
     });
 
-    it('starts no conversation for a suspended tenant, and says so', async () => {
+    it('starts no conversation for a suspended tenant, and says so when they write', async () => {
       const socket = await connectVisitor(lapsed.widgetKey);
       const sessionId = `ws-lapsed-${Date.now()}`;
-      const unavailable = waitFor(socket, 'bot-message');
 
+      // Opening the widget writes nothing and refuses nothing.
       const session = await resume(socket, sessionId);
       expect(session.rejected).toBe(false);
-      expect(session.sessionToken).toBeNull();
-      expect((await unavailable).text).toBe(usageService.UNAVAILABLE_MESSAGE);
+      expect(session.pending).toBe(true);
 
       say(socket, 'anyone there?');
-      expect((await waitFor(socket, 'bot-message')).text).toBe(usageService.UNAVAILABLE_MESSAGE);
+      const reply = await waitFor(socket, 'bot-message');
+      expect(reply).toMatchObject({ code: 'unavailable', text: reply.message });
 
       expect(await Conversation.findOne({ sessionId })).toBeNull();
       expect(replyService.generate).not.toHaveBeenCalled();
@@ -634,9 +668,11 @@ describe('WebSockets', () => {
       const operator = await connectOperator(acmeOperator);
       operator.emit('operator-takeover', { sessionId, operatorName: 'Mallory from Head Office' });
 
-      const announcement = await waitFor(visitor, 'operator-message');
-      expect(announcement.text).toMatch(/^Ada has joined/);
-      expect(announcement.senderName).toBe('Ada');
+      // Its own event with a notice code, so the widget can put the person in
+      // its header and say it in the visitor's language.
+      const announcement = await waitFor(visitor, 'operator-joined');
+      expect(announcement).toMatchObject({ operatorName: 'Ada', code: 'operator_joined', params: { operatorName: 'Ada' } });
+      expect(announcement.message).toMatch(/^Ada has joined/);
 
       const conversation = await eventually(async () => {
         const found = await Conversation.findOne({ sessionId });
@@ -647,10 +683,10 @@ describe('WebSockets', () => {
     });
 
     it('cannot take a conversation a colleague is holding, unless an admin forces it', async () => {
-      const { socket: visitor, sessionId } = await startVisitor('held');
+      const { socket: visitor, sessionId } = await startEngagedVisitor('held');
       const ada = await connectOperator(acmeOperator);
       ada.emit('operator-takeover', { sessionId });
-      await waitFor(visitor, 'operator-message');
+      await waitFor(visitor, 'operator-joined');
 
       const bea = await connectOperator(acmeSecondOperator);
       bea.emit('operator-takeover', { sessionId });
@@ -665,7 +701,7 @@ describe('WebSockets', () => {
       const taken = waitFor(ada, 'chat-taken-from-you');
       dana.emit('operator-takeover', { sessionId, force: true });
 
-      expect((await waitFor(visitor, 'operator-message')).text).toMatch(/^Dana has joined/);
+      expect((await waitFor(visitor, 'operator-joined')).operatorName).toBe('Dana');
       expect((await taken).takenBy).toBe('Dana');
       expect((await Conversation.findOne({ sessionId })).operatorName).toBe('Dana');
     });
@@ -677,7 +713,7 @@ describe('WebSockets', () => {
 
       const operator = await connectOperator(acmeOperator);
       operator.emit('operator-takeover', { sessionId });
-      await waitFor(visitor, 'operator-message');
+      await waitFor(visitor, 'operator-joined');
 
       operator.emit('operator-message', { sessionId, message: 'It went out this morning.' });
 
@@ -720,10 +756,10 @@ describe('WebSockets', () => {
     });
 
     it('uses a suggestion from the text in the payload', async () => {
-      const { socket: visitor, sessionId } = await startVisitor('use-suggestion');
+      const { socket: visitor, sessionId } = await startEngagedVisitor('use-suggestion');
       const operator = await connectOperator(acmeOperator);
       operator.emit('operator-takeover', { sessionId });
-      await waitFor(visitor, 'operator-message');
+      await waitFor(visitor, 'operator-joined');
 
       operator.emit('use-suggestion', { sessionId, suggestion: 'Try asking for their order number', edited: '' });
 
@@ -753,15 +789,16 @@ describe('WebSockets', () => {
     });
 
     it('leaving without handing to the bot puts the chat back in the queue rather than nowhere', async () => {
-      const { socket: visitor, sessionId } = await startVisitor('leave');
+      const { socket: visitor, sessionId } = await startEngagedVisitor('leave');
       const operator = await connectOperator(acmeOperator);
       operator.emit('operator-takeover', { sessionId });
-      await waitFor(visitor, 'operator-message');
+      await waitFor(visitor, 'operator-joined');
 
       operator.emit('operator-leave', { sessionId, passToBot: false });
 
-      const farewell = await waitFor(visitor, 'operator-message');
-      expect(farewell.text).toMatch(/Ada has left/);
+      const farewell = await waitFor(visitor, 'operator-left');
+      expect(farewell).toMatchObject({ code: 'operator_left', params: { operatorName: 'Ada' } });
+      expect(farewell.message).toMatch(/Ada has left/);
 
       const conversation = await Conversation.findOne({ sessionId });
       expect(conversation.operatorId).toBeNull();
@@ -776,10 +813,10 @@ describe('WebSockets', () => {
       process.env.OPERATOR_GRACE_MS = '150';
 
       try {
-        const { socket: visitor, sessionId } = await startVisitor('grace');
+        const { socket: visitor, sessionId } = await startEngagedVisitor('grace');
         const operator = await connectOperator(acmeOperator);
         operator.emit('operator-takeover', { sessionId });
-        await waitFor(visitor, 'operator-message');
+        await waitFor(visitor, 'operator-joined');
 
         // A refresh: gone and back inside the grace period.
         operator.close();
@@ -789,10 +826,10 @@ describe('WebSockets', () => {
         expect(String((await Conversation.findOne({ sessionId })).operatorId)).toBe(String(acmeOperator._id));
 
         // Gone for good.
-        const notice = waitFor(visitor, 'operator-message');
+        const notice = waitFor(visitor, 'operator-left');
         again.close();
 
-        expect((await notice).text).toMatch(/disconnected/);
+        expect((await notice).code).toBe('operator_left');
         const released = await Conversation.findOne({ sessionId });
         expect(released.operatorId).toBeNull();
         expect(released.awaitingOperatorSince).toBeInstanceOf(Date);
@@ -829,27 +866,30 @@ describe('WebSockets', () => {
       ada.emit('join-operator-room');
       await pause(50);
 
-      const { socket: visitor, sessionId } = await startVisitor('root');
+      const { socket: visitor, sessionId } = await startEngagedVisitor('root');
       const root = await connectOperator(superadmin);
+      const heardByAda = waitFor(ada, 'operator-joined');
       root.emit('operator-takeover', { sessionId });
 
-      expect((await waitFor(visitor, 'operator-message')).text).toMatch(/^Root has joined/);
+      expect((await waitFor(visitor, 'operator-joined')).operatorName).toBe('Root');
       // Announced to acme's room, resolved from the conversation, rather than
       // to an "unassigned" room nobody is in.
-      expect((await waitFor(ada, 'operator-joined')).operatorName).toBe('Root');
+      expect((await heardByAda).operatorName).toBe('Root');
     });
   });
 
   describe('a visitor asking for a person', () => {
-    it('is queued rather than abandoned when nobody is available', async () => {
-      const { socket: visitor, sessionId } = await startVisitor('queue');
-      say(visitor, 'can I speak to someone');
-      await waitFor(visitor, 'bot-message');
+    it('is queued rather than abandoned when nobody is available, and asked for an email', async () => {
+      const { socket: visitor, sessionId } = await startEngagedVisitor('queue');
+      const followUp = waitFor(visitor, 'followup-request');
 
       visitor.emit('request-operator');
 
       const result = await waitFor(visitor, 'operator-requested');
-      expect(result).toMatchObject({ queued: true, connected: false });
+      // Nobody from acme is connected: promising "someone will be with you"
+      // would be the broken promise; an email address is the way out.
+      expect(result).toMatchObject({ queued: true, connected: false, offline: true, code: 'queued_offline' });
+      expect(await followUp).toMatchObject({ sessionId, reason: 'visitor_request' });
 
       const conversation = await Conversation.findOne({ sessionId });
       expect(conversation.awaitingOperatorSince).toBeInstanceOf(Date);

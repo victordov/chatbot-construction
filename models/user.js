@@ -56,6 +56,34 @@ const UserSchema = new mongoose.Schema({
     type: String,
     select: false
   },
+  /**
+   * Invitations. An invited user exists with an unusable random password and
+   * cannot sign in until they open the link and choose their own. Only the
+   * SHA-256 of the emailed token is stored.
+   */
+  invitePending: {
+    type: Boolean,
+    default: false
+  },
+  inviteTokenHash: {
+    type: String,
+    select: false
+  },
+  inviteExpires: {
+    type: Date
+  },
+  invitedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  },
+  /** Set when the address has been shown to belong to this user. */
+  emailVerifiedAt: {
+    type: Date
+  },
+  emailVerifyTokenHash: {
+    type: String,
+    select: false
+  },
   passwordResetExpires: {
     type: Date,
     select: false
@@ -83,6 +111,22 @@ const UserSchema = new mongoose.Schema({
   acceptingChats: {
     type: Boolean,
     default: true
+  },
+  /**
+   * The person's own timezone, for showing them times as they live them.
+   * Unset means "whatever the browser says".
+   */
+  timezone: {
+    type: String,
+    trim: true
+  },
+  /**
+   * Set when an admin removed this person. The account is kept, deactivated
+   * and with its name replaced, because conversations, notes and the audit
+   * log still point at it; it just stops being anyone.
+   */
+  deletedAt: {
+    type: Date
   },
   lastLogin: {
     type: Date

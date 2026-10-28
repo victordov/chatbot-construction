@@ -31,6 +31,30 @@ const UsageSchema = new mongoose.Schema({
   knowledgeChunksIngested: { type: Number, default: 0 },
   /** Times an action was refused because a limit was reached. */
   limitHits: { type: Number, default: 0 },
+  /**
+   * Conversations started this month that the bot resolved, by the report's
+   * own definition (services/resolutions.js). A recount rather than a
+   * tally - set nightly, never incremented - because a conversation only
+   * counts once it has ended or sat idle for a day.
+   */
+  resolutions: { type: Number, default: 0 },
+  resolutionsCountedAt: { type: Date },
+  /**
+   * What has been told to Stripe's meter for this month, so each daily
+   * report sends only the difference. `day` is the last day a report was
+   * claimed (one per company, month and day, which is also its idempotency
+   * key); `pending` is a report sent but not confirmed, resent unchanged so
+   * a retry can never count twice.
+   */
+  stripeReport: {
+    reported: { type: Number, default: 0 },
+    day: { type: String },
+    pending: {
+      identifier: { type: String },
+      value: { type: Number },
+      timestamp: { type: Number }
+    }
+  },
   updatedAt: { type: Date, default: Date.now }
 });
 

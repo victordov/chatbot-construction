@@ -63,10 +63,18 @@ describe('CSAT', () => {
       expect(csat.shouldRequestRating(await conversation())).toBe(true);
     });
 
-    test('a single message is not', async () => {
-      // Asking after one "hi" annoys people and produces noise.
-      const short = await conversation({ messages: [{ content: 'hi', sender: 'user' }] });
-      expect(csat.shouldRequestRating(short)).toBe(false);
+    test('a single question is', async () => {
+      // Changed on purpose: most support conversations are one question and
+      // one answer, and the old two-message rule never asked about them.
+      const short = await conversation({ messages: [{ content: 'where is my order?', sender: 'user' }] });
+      expect(csat.shouldRequestRating(short)).toBe(true);
+    });
+
+    test('a conversation the visitor never wrote in is not', async () => {
+      const silent = await conversation({
+        messages: [{ content: 'Hi! How can I help?', sender: 'bot' }, { content: 'Ada joined', sender: 'system' }]
+      });
+      expect(csat.shouldRequestRating(silent)).toBe(false);
     });
 
     test('somebody already asked is not asked again', async () => {

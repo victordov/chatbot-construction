@@ -82,6 +82,14 @@ const ActionSchema = new mongoose.Schema({
   /** `auto`: the assistant may call it. `workflow_only`: only from a node. */
   mode: { type: String, enum: ['auto', 'workflow_only'], default: 'auto' },
   requiresVerified: { type: Boolean, default: false },
+  /**
+   * How strongly a verified-only action needs the visitor proven (P2D).
+   * `signed`: only the tenant's own signature (a token or HMAC) will do.
+   * `email`: an email address proven with a code in the chat is enough -
+   * right for "where is my order", where the address is the account key.
+   * Checked with services/visitor-verification.js#isVerifiedEnough.
+   */
+  verification: { type: String, enum: ['signed', 'email'], default: 'signed' },
   enabled: { type: Boolean, default: true },
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
 }, { timestamps: true });

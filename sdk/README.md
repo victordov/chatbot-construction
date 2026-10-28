@@ -52,6 +52,14 @@ app.all('/chatbot-connector', createConnector({
   async bookSlot({ slotId, name, email, phone }) {
     const booking = await diary.reserve(slotId, { name, email, phone });
     return { id: booking.id, startsAt: booking.start, reference: booking.ref };
+  },
+
+  // Optional. Called only after the platform has checked the visitor is in
+  // the conversation the booking was made from, or gave the email it was
+  // booked under.
+  async cancelBooking({ reference, email }) {
+    const booking = await diary.cancel(reference);
+    return { id: booking.id, startsAt: booking.start, reference: booking.ref, status: 'cancelled' };
   }
 }));
 ```
@@ -127,7 +135,7 @@ converted for you.
 - **Reads** (`searchCatalog`, `getProduct`, `listSlots`) may be called whenever
   a conversation needs them, and are cached for a few seconds so a retry does
   not hit you twice.
-- **Writes** (`bookSlot`) are only ever called when a real conversation reaches
+- **Writes** (`bookSlot`, `cancelBooking`) are only ever called when a real conversation reaches
   that step. They are never run when somebody is trying a workflow out in the
   editor — testing a branch six times must not put six appointments in your
   diary.

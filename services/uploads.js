@@ -253,6 +253,20 @@ async function purgeCompanyData(companyId) {
   // removing: nothing here depends on the database rows that go next.
   const files = await deleteCompanyFiles(companyId);
 
+  // Rows that hang off a company-scoped parent go before their parents, while
+  // the parents still say which ones are this company's.
+  const mongoose = require('mongoose');
+  const idsOf = async (modelName) => (mongoose.models[modelName]
+    ? (await mongoose.models[modelName].find(scope).select('_id').lean()).map(row => row._id)
+    : []);
+  const [taskIds, workflowIds] = await Promise.all([idsOf('Task'), idsOf('Workflow')]);
+  await Promise.all([
+    mongoose.models.Comment && taskIds.length ? mongoose.models.Comment.deleteMany({ taskId: { $in: taskIds } }) : null,
+    mongoose.models.WorkflowVersion && workflowIds.length
+      ? mongoose.models.WorkflowVersion.deleteMany({ workflowId: { $in: workflowIds } })
+      : null
+  ]);
+
   const [conversations, contacts, tasks, webhookDeliveries, knowledgeChunks, usage, subscriptions] =
     await Promise.all([
       Conversation.deleteMany(scope),
@@ -264,6 +278,29 @@ async function purgeCompanyData(companyId) {
       Subscription.deleteMany(scope)
     ]);
 
+  // Everything else that carries a company: workflows, actions, webhooks and
+  // their secrets, channel and calendar connections with their tokens,
+  // connected tools, bookings, push devices, saved tests. Found the way the
+  // tenant backup finds them, so a model added later is not left behind.
+  // Kept: the company's people (the caller requires them gone first), and
+  // the audit log, which is the record that this happened.
+  const KEEP = new Set(['Company', 'User', 'AuditLog', 'Conversation', 'Contact', 'Task',
+    'WebhookDelivery', 'KnowledgeChunk', 'Usage', 'Subscription']);
+  fs.readdirSync(path.join(__dirname, '..', 'models'))
+    .filter(file => file.endsWith('.js'))
+    .forEach(file => require(path.join(__dirname, '..', 'models', file)));
+  const other = {};
+  for (const name of Object.keys(mongoose.models)) {
+    const model = mongoose.models[name];
+    if (KEEP.has(name) || !model.schema.path('company')) {
+      continue;
+    }
+    const removed = count(await model.deleteMany(scope));
+    if (removed) {
+      other[name] = removed;
+    }
+  }
+
   const result = {
     companyId: String(companyId),
     files,
@@ -273,7 +310,8 @@ async function purgeCompanyData(companyId) {
     webhookDeliveries: count(webhookDeliveries),
     knowledgeChunks: count(knowledgeChunks),
     usage: count(usage),
-    subscriptions: count(subscriptions)
+    subscriptions: count(subscriptions),
+    other
   };
 
   logger.warn('Purged a company\'s data', result);

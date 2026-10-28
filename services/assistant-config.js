@@ -9,7 +9,13 @@
  *      a workflow yet.
  *
  * The workflow wins when both exist, because it is the more specific and more
- * deliberate statement of intent.
+ * deliberate statement of intent - but only a workflow that answers every
+ * message (trigger `always`). One that runs for "where is my order?" speaks
+ * in its own steps; the assistant answering everything else keeps the
+ * tenant's persona. And only a persona somebody wrote: the blank starter's
+ * Persona step defers to the Persona screen until it is edited
+ * (`inheritPersona`), so publishing the starter no longer replaces what the
+ * tenant typed there with "You are a helpful assistant."
  *
  * Without this, every tenant fell back to a single hardcoded persona describing
  * a property management company.
@@ -18,6 +24,7 @@
 const Company = require('../models/company');
 const Workflow = require('../models/workflow');
 const { DEFAULT_PERSONA } = require('./promptEngineering');
+const { inheritsPersona } = require('./workflow-compiler');
 const { logger } = require('./logging');
 
 // Resolved on every inbound message, changed on publish. Short TTL keeps a
@@ -50,12 +57,14 @@ async function resolve(companyId) {
   let resolved = { persona: DEFAULT_PERSONA, scope: null, source: 'default' };
 
   try {
-    const [workflow, company] = await Promise.all([
-      Workflow.getActiveWorkflow(companyId),
+    const [workflows, company] = await Promise.all([
+      Workflow.getLiveWorkflows(companyId),
       Company.findById(companyId).select('assistant name').lean()
     ]);
 
-    const workflowPersona = personaOf(workflow);
+    // What visitors get is the published version, not a draft being edited.
+    const answering = (workflows || []).find(candidate => Workflow.liveTriggerOf(candidate).type === 'always');
+    const workflowPersona = answering ? personaOf(await liveCopy(answering)) : null;
 
     if (workflowPersona && String(workflowPersona).trim()) {
       resolved = {
@@ -101,6 +110,10 @@ function personaOf(workflow) {
 
   const node = (workflow.nodes || []).find(candidate =>
     candidate && candidate.data && candidate.data.type === 'persona');
+  if (node && inheritsPersona(node.data)) {
+    // Defers to the Persona screen; the compiled chain says nothing else.
+    return null;
+  }
   if (node && node.data.prompt && String(node.data.prompt).trim()) {
     return String(node.data.prompt).trim();
   }
@@ -110,4 +123,16 @@ function personaOf(workflow) {
   return prompts?.persona?.compiled?.systemPrompt || null;
 }
 
-module.exports = { resolve, invalidate, DEFAULT_PERSONA };
+/**
+ * The workflow as visitors get it: its live snapshot when it has unpublished
+ * edits. The stored compiled chain belongs to the draft, so it is only used
+ * when the draft is what is live.
+ */
+async function liveCopy(workflow) {
+  const graph = await Workflow.liveGraph(workflow);
+  return graph.version === workflow.version
+    ? workflow
+    : { nodes: graph.nodes, edges: graph.edges };
+}
+
+module.exports = { resolve, invalidate, personaOf, DEFAULT_PERSONA };

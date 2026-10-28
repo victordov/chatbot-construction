@@ -10,6 +10,8 @@ import { registerSection } from './nav.js';
 import { api, confirmDialog, escapeHtml, formatRelativeTime, showToast } from './utils.js';
 
 let events = [];
+// The endpoints as last loaded, so Edit can fill its form without a request.
+let endpoints = [];
 
 
 const eventLabel = id => (events.find(event => event.id === id) || {}).label || id;
@@ -30,6 +32,7 @@ async function loadWebhooks() {
 
   try {
     const { webhooks } = await api('/api/webhooks');
+    endpoints = webhooks;
 
     if (webhooks.length === 0) {
       container.innerHTML = `
@@ -76,8 +79,11 @@ async function loadWebhooks() {
               from anyone else's. Rotate to generate one.
             </div>` : ''}
 
+          <div class="mt-2" data-edit-area="${escapeHtml(hook._id)}"></div>
+
           <div class="mt-2 d-flex gap-2 flex-wrap">
             <button class="btn btn-sm btn-outline-primary" data-test="${escapeHtml(hook._id)}">Send a test</button>
+            <button class="btn btn-sm btn-outline-secondary" data-edit-hook="${escapeHtml(hook._id)}">Edit</button>
             <button class="btn btn-sm btn-outline-secondary" data-toggle-hook="${escapeHtml(hook._id)}"
                     data-enabled="${hook.enabled}">
               ${hook.enabled ? 'Turn off' : 'Turn on'}
@@ -119,6 +125,10 @@ function bindRowActions(container) {
         loadDeliveries();
       }
     });
+  });
+
+  container.querySelectorAll('[data-edit-hook]').forEach(button => {
+    button.addEventListener('click', () => openEditor(container, button.dataset.editHook));
   });
 
   container.querySelectorAll('[data-toggle-hook]').forEach(button => {
@@ -177,6 +187,69 @@ function bindRowActions(container) {
         showToast(error.message, 'danger');
       }
     });
+  });
+}
+
+/**
+ * Change where an endpoint points, what it is for, and which events it gets,
+ * in place. The API always allowed it; the screen only offered delete and
+ * add again, which threw away the secret and the delivery history with it.
+ */
+function openEditor(container, id) {
+  const hook = endpoints.find(endpoint => String(endpoint._id) === String(id));
+  const area = container.querySelector(`[data-edit-area="${CSS.escape(id)}"]`);
+  if (!hook || !area) {
+    return;
+  }
+
+  const chosen = new Set(hook.events || []);
+  area.innerHTML = `
+    <div class="border rounded p-2 bg-light">
+      <div class="mb-2">
+        <label class="form-label small mb-1" for="wh-edit-url-${escapeHtml(id)}">URL</label>
+        <input class="form-control form-control-sm" id="wh-edit-url-${escapeHtml(id)}" data-edit-url value="${escapeHtml(hook.url)}">
+      </div>
+      <div class="mb-2">
+        <label class="form-label small mb-1" for="wh-edit-desc-${escapeHtml(id)}">What is it for?</label>
+        <input class="form-control form-control-sm" id="wh-edit-desc-${escapeHtml(id)}" data-edit-description value="${escapeHtml(hook.description || '')}">
+      </div>
+      <div class="mb-2 small">
+        ${events.map(event => `
+          <div class="form-check">
+            <input class="form-check-input" type="checkbox" value="${escapeHtml(event.id)}"
+                   id="wh-edit-${escapeHtml(id)}-${escapeHtml(event.id)}" data-edit-event ${chosen.has(event.id) ? 'checked' : ''}>
+            <label class="form-check-label" for="wh-edit-${escapeHtml(id)}-${escapeHtml(event.id)}">${escapeHtml(event.label)}</label>
+          </div>`).join('')}
+      </div>
+      <div class="d-flex gap-2">
+        <button type="button" class="btn btn-sm btn-primary" data-edit-save>Save</button>
+        <button type="button" class="btn btn-sm btn-outline-secondary" data-edit-cancel>Cancel</button>
+      </div>
+    </div>`;
+
+  area.querySelector('[data-edit-cancel]').addEventListener('click', () => {
+    area.innerHTML = '';
+  });
+
+  area.querySelector('[data-edit-save]').addEventListener('click', async event => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      await api(`/api/webhooks/${encodeURIComponent(id)}`, {
+        method: 'PUT',
+        body: {
+          url: area.querySelector('[data-edit-url]').value.trim(),
+          description: area.querySelector('[data-edit-description]').value.trim(),
+          events: [...area.querySelectorAll('[data-edit-event]:checked')].map(input => input.value)
+        }
+      });
+      showToast('Endpoint saved', 'success');
+      loadWebhooks();
+      loadDeliveries();
+    } catch (error) {
+      showToast(error.message, 'danger');
+      button.disabled = false;
+    }
   });
 }
 
@@ -293,7 +366,7 @@ async function loadDeliveries() {
 
     if (deliveries.length === 0) {
       table.innerHTML =
-        '<tr><td colspan="5" class="text-center text-muted py-4">Nothing sent yet.</td></tr>';
+        '<tr><td colspan="7" class="text-center text-muted py-4">Nothing sent yet.</td></tr>';
       return;
     }
 
@@ -303,6 +376,9 @@ async function loadDeliveries() {
       <tr>
         <td class="small text-nowrap">${escapeHtml(new Date(delivery.createdAt).toLocaleString())}</td>
         <td class="small">${escapeHtml(eventLabel(delivery.event))}</td>
+        <td class="small text-break" title="${escapeHtml(delivery.webhookUrl || '')}">
+          ${escapeHtml(delivery.webhookDescription || delivery.webhookUrl || 'A deleted endpoint')}
+        </td>
         <td><span class="badge bg-${tone[delivery.status]}">${escapeHtml(delivery.status)}</span></td>
         <td class="small">${escapeHtml(delivery.responseStatus || '—')}</td>
         <td class="small text-muted text-break">
@@ -311,10 +387,37 @@ async function loadDeliveries() {
     ? `<div>Next try ${escapeHtml(formatRelativeTime(delivery.nextAttemptAt))}</div>` : ''}
           ${delivery.attempts > 1 ? `<div>${delivery.attempts} attempts</div>` : ''}
         </td>
+        <td class="text-end">
+          ${delivery.status === 'failed' && delivery.webhookUrl
+    ? `<button class="btn btn-sm btn-outline-primary" data-redeliver="${escapeHtml(delivery._id)}"
+                       data-webhook="${escapeHtml(delivery.webhook)}">Send again</button>`
+    : ''}
+        </td>
       </tr>`).join('');
   } catch (error) {
     table.innerHTML =
-      `<tr><td colspan="5" class="text-danger text-center py-4">${escapeHtml(error.message)}</td></tr>`;
+      `<tr><td colspan="7" class="text-danger text-center py-4">${escapeHtml(error.message)}</td></tr>`;
+  }
+}
+
+/**
+ * Send a failed delivery again, once the endpoint is fixed. The result shows
+ * as a new row; the failed one stays as the record of what went wrong.
+ */
+async function redeliver(button) {
+  button.disabled = true;
+  try {
+    const { result } = await api(
+      `/api/webhooks/${encodeURIComponent(button.dataset.webhook)}/deliveries/${encodeURIComponent(button.dataset.redeliver)}/redeliver`,
+      { method: 'POST' }
+    );
+    showToast(result.delivered
+      ? `Delivered - your endpoint returned ${result.status}.`
+      : (result.error || 'The endpoint did not accept it.'), result.delivered ? 'success' : 'danger');
+  } catch (error) {
+    showToast(error.message, 'danger');
+  } finally {
+    loadDeliveries();
   }
 }
 
@@ -322,6 +425,12 @@ function setupWebhooks() {
   document.getElementById('webhook-create-btn').addEventListener('click', create);
   document.getElementById('webhook-delivery-filter').addEventListener('change', loadDeliveries);
   document.getElementById('webhook-refresh-deliveries').addEventListener('click', loadDeliveries);
+  document.getElementById('webhook-deliveries').addEventListener('click', event => {
+    const button = event.target.closest('[data-redeliver]');
+    if (button) {
+      redeliver(button);
+    }
+  });
 }
 
 registerSection('webhooks', {

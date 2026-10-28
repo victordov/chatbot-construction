@@ -2,18 +2,22 @@ const socketIO = require('socket.io');
 const jwt = require('jsonwebtoken');
 const Conversation = require('./models/conversation');
 const Company = require('./models/company');
+const Contact = require('./models/contact');
 const User = require('./models/user');
-const AIService = require('./services/ai');
 const tenantService = require('./services/tenant');
 const usageService = require('./services/usage');
 const contactService = require('./services/contacts');
 const emailChannel = require('./services/email-channel');
+const channels = require('./services/channels');
 const csatService = require('./services/csat');
 const assignmentService = require('./services/assignment');
-const replyService = require('./services/reply');
 const webhookService = require('./services/webhooks');
 const sessionToken = require('./services/session-token');
-const { operatorRoom, userRoom, GLOBAL_OPERATOR_ROOM } = require('./socketManager');
+const lifecycle = require('./services/conversation-lifecycle');
+const NotificationService = require('./services/notification');
+const { isRevoked } = require('./middleware/auth');
+const { notice, wantsAPerson } = require('./services/visitor-notices');
+const { operatorRoom, userRoom, visitorRoom, GLOBAL_OPERATOR_ROOM } = require('./socketManager');
 const { logger } = require('./services/logging');
 
 const STAFF_ROLES = ['operator', 'company_admin', 'superadmin'];
@@ -23,7 +27,27 @@ const MAX_SESSION_ID_LENGTH = 128;
 const HISTORY_REPLAY = 50;
 
 /** Rooms a client may never ask to join by name: they are joined by role. */
-const RESERVED_ROOM_PREFIXES = ['operators:', 'user:'];
+const RESERVED_ROOM_PREFIXES = ['operators:', 'user:', 'visitor:'];
+
+/**
+ * The id a widget gives its own message, so it can recognise the message when
+ * history is replayed after a reconnect. Short and plain, because it is
+ * stored and echoed back.
+ */
+const CLIENT_MESSAGE_ID = /^[A-Za-z0-9_-]{1,64}$/;
+
+/** What `services/session-token.js` issues: 32 bytes as hex. */
+const SESSION_TOKEN_FORMAT = /^[0-9a-f]{64}$/;
+
+const EMAIL_ADDRESS = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const MAX_EMAIL_LENGTH = 254;
+
+/** What an operator can record when closing a conversation. */
+const OUTCOMES = ['resolved', 'follow_up', 'unresolved', 'spam'];
+const MAX_OUTCOME_NOTE = 500;
+
+/** A rating at or below this is somebody's bad day, and someone should look. */
+const LOW_RATING = 2;
 
 /**
  * Grace timers for operators who have dropped off, keyed by user id.
@@ -38,14 +62,6 @@ const graceTimers = new Map();
 function envInt(name, fallback) {
   const value = parseInt(process.env[name], 10);
   return Number.isFinite(value) && value > 0 ? value : fallback;
-}
-
-class QuotaRefusedError extends Error {
-  constructor(quota) {
-    super(quota.reason || 'refused by plan');
-    this.name = 'QuotaRefusedError';
-    this.quota = quota;
-  }
 }
 
 /**
@@ -86,7 +102,14 @@ async function attachRedisAdapter(io) {
   }
 }
 
-/** The shape a stored message is replayed in. */
+/**
+ * The shape a stored message is replayed to the visitor in.
+ *
+ * Transcript events (`system`) are filtered out before this is called: they
+ * are for operators. `clientMessageId` is the widget's own id for a message
+ * it sent, so after a reconnect it can recognise its own messages rather than
+ * showing them twice.
+ */
 function toReplayPayload(message) {
   const payload = {
     id: message._id ? message._id.toString() : undefined,
@@ -96,6 +119,19 @@ function toReplayPayload(message) {
     operatorName: message.operatorName || undefined,
     timestamp: message.timestamp || new Date()
   };
+
+  if (message.sender === 'user' && message.messageId && CLIENT_MESSAGE_ID.test(message.messageId)) {
+    payload.clientMessageId = message.messageId;
+  }
+
+  if (message.sender === 'bot') {
+    payload.path = message.path || undefined;
+    payload.sources = message.sources && message.sources.length ? message.sources : [];
+    payload.canRate = lifecycle.canRate(message);
+    if (message.feedback && message.feedback.rating) {
+      payload.feedback = { rating: message.feedback.rating, at: message.feedback.at };
+    }
+  }
 
   if (message.fileId) {
     payload.fileId = message.fileId;
@@ -112,6 +148,201 @@ function lastMessageId(conversation) {
   return last && last._id ? last._id.toString() : 'temp-id';
 }
 
+/** The last message on a conversation, as stored. */
+function lastMessage(conversation) {
+  return conversation.messages[conversation.messages.length - 1];
+}
+
+const { recordConsent } = lifecycle;
+
+/** Whether the bot's most recent message on a conversation was an "I don't know". */
+function lastBotMessageUnanswered(conversation) {
+  const messages = conversation.messages || [];
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    if (messages[i].sender === 'bot') {
+      return Boolean(messages[i].unanswered);
+    }
+    if (messages[i].sender === 'operator') {
+      return false;
+    }
+  }
+  return false;
+}
+
+async function companyIsActive(companyId) {
+  const company = await Company.findById(companyId).select('isActive').lean();
+  return Boolean(company) && company.isActive !== false;
+}
+
+/**
+ * Whether an operator's connection should still be open.
+ *
+ * A socket is authenticated once, when it connects, and a dashboard stays
+ * connected for a whole shift. Without a second look an operator who was
+ * removed from the team, or whose password was reset because it leaked, went
+ * on receiving the tenant's conversations until they closed the tab.
+ *
+ * @param {string} userId
+ * @param {number|undefined} issuedVersion the `tv` the socket's token carried
+ * @returns {Promise<{ok: boolean, reason?: string}>}
+ */
+async function stillAuthorised(userId, issuedVersion, jti) {
+  const user = await User.findById(userId).select('isActive tokenVersion company').lean();
+
+  if (!user || !user.isActive) {
+    return { ok: false, reason: 'deactivated' };
+  }
+
+  // Signed out on this device: the token is revoked by its id while the
+  // person's other sessions carry on.
+  if (await isRevoked(jti)) {
+    return { ok: false, reason: 'signed-out' };
+  }
+
+  const current = user.tokenVersion || 0;
+  const stale = issuedVersion !== undefined ? issuedVersion !== current : current > 0;
+  if (stale) {
+    return { ok: false, reason: 'signed-out' };
+  }
+
+  if (user.company && !(await companyIsActive(user.company))) {
+    return { ok: false, reason: 'company-inactive' };
+  }
+
+  return { ok: true };
+}
+
+/**
+ * How to reach `NotificationService.notifyUser`, whichever way it is exposed,
+ * or null where it does not exist yet.
+ */
+function notificationSender() {
+  if (typeof NotificationService.notifyUser === 'function') {
+    return (...args) => NotificationService.notifyUser(...args);
+  }
+  if (NotificationService.prototype && typeof NotificationService.prototype.notifyUser === 'function') {
+    const instance = new NotificationService();
+    return (...args) => instance.notifyUser(...args);
+  }
+  return null;
+}
+
+/**
+ * Somebody rated a conversation badly: tell the person who handled it, or,
+ * when the bot handled it alone, the company's admins.
+ *
+ * A low score that nobody sees until the monthly report is a customer lost
+ * twice - once to the bad experience and again to the silence after it.
+ */
+async function notifyLowRating(sessionId, result) {
+  const send = notificationSender();
+  if (!send || !result || !result.rating) {
+    return;
+  }
+
+  try {
+    let recipients = [];
+    if (result.rating.operatorId) {
+      recipients = [result.rating.operatorId];
+    } else if (result.company) {
+      const admins = await User.find({
+        company: result.company,
+        role: 'company_admin',
+        isActive: { $ne: false }
+      }).select('_id').lean();
+      recipients = admins.map(admin => admin._id);
+    }
+
+    const comment = result.rating.comment ? `: "${String(result.rating.comment).slice(0, 80)}"` : '';
+    const message = `A customer rated a conversation ${result.rating.score}/5${comment}`;
+
+    await Promise.all(recipients.map(userId => Promise.resolve(send(String(userId), {
+      type: 'low_rating',
+      message,
+      sessionId,
+      link: `?section=history&chat=${encodeURIComponent(sessionId)}`
+    })).catch(error => logger.warn('Could not send a low-rating notification', { error: error.message }))));
+  } catch (error) {
+    logger.warn('Could not notify about a low rating', { sessionId, error: error.message });
+  }
+}
+
+/** The widget key a connection presented in its handshake, if any. */
+function handshakeWidgetKey(socket) {
+  const key = (socket.handshake.auth && socket.handshake.auth.widgetKey) ||
+    (socket.handshake.query && socket.handshake.query.widgetKey);
+  return typeof key === 'string' && key ? key : null;
+}
+
+/**
+ * Origins this server is itself served from, where the dashboard and the
+ * widget preview run. The Host header is what the browser actually reached,
+ * so a page on another site cannot claim it.
+ */
+function selfOrigins(handshake = {}) {
+  const headers = handshake.headers || {};
+  const port = process.env.PORT || 3000;
+  const forwarded = String(headers['x-forwarded-proto'] || '').split(',')[0].trim();
+
+  return [
+    process.env.PUBLIC_URL,
+    headers.host ? `${handshake.secure ? 'https' : 'http'}://${headers.host}` : null,
+    headers.host && forwarded ? `${forwarded}://${headers.host}` : null,
+    ...(process.env.NODE_ENV === 'production'
+      ? []
+      : [`http://localhost:${port}`, `http://127.0.0.1:${port}`])
+  ]
+    .map(value => tenantService.normaliseOrigin(value))
+    .filter(Boolean);
+}
+
+function isSelfOrigin(origin, handshake) {
+  const normalised = tenantService.normaliseOrigin(origin);
+  return Boolean(normalised) && selfOrigins(handshake).includes(normalised);
+}
+
+/**
+ * Let a visitor's connection in, if the page it comes from may use the widget
+ * it names.
+ *
+ * The widget key is public - it is in the page source of every site that
+ * embeds it - so the page's origin is checked against the domains of the
+ * company that key belongs to. This used to accept any origin any tenant had
+ * registered: a domain listed under one (free) account could embed every
+ * other tenant's widget, bill them for the conversations and wear their name.
+ *
+ * No Origin header means a client that is not a browser; nothing it claims
+ * about where it is could be checked anyway.
+ */
+async function admitVisitor(socket, next) {
+  socket.user = { role: 'user' };
+  socket.data.visitor = true;
+
+  const origin = socket.handshake.headers && socket.handshake.headers.origin;
+  if (!origin || isSelfOrigin(origin, socket.handshake)) {
+    return next();
+  }
+
+  const widgetKey = handshakeWidgetKey(socket);
+
+  try {
+    const allowed = await tenantService.isOriginAllowed(origin, widgetKey ? { widgetKey } : {});
+
+    if (!allowed) {
+      logger.warn('Widget connection refused: this site is not allowed for the widget it uses', {
+        origin,
+        widgetKey: widgetKey ? `${widgetKey.slice(0, 8)}…` : null
+      });
+      return next(new Error('This website is not allowed to use this chat'));
+    }
+
+    return next();
+  } catch (error) {
+    logger.error('Could not check a widget connection\'s origin', { origin, error: error.message });
+    return next(new Error('This chat could not be started'));
+  }
+}
+
 function setupWebSockets(server) {
   const io = socketIO(server, {
     cors: {
@@ -124,15 +355,13 @@ function setupWebSockets(server) {
         }
 
         // The admin dashboard connects from the server's own origin.
-        const selfOrigins = [
-          `http://localhost:${process.env.PORT || 3000}`,
-          `http://127.0.0.1:${process.env.PORT || 3000}`,
-          process.env.PUBLIC_URL
-        ].filter(Boolean);
-        if (selfOrigins.includes(origin)) {
+        if (isSelfOrigin(origin)) {
           return callback(null, true);
         }
 
+        // Which widget a connection uses is only known once it is in, so the
+        // per-tenant check is the connection middleware's (`admitVisitor`);
+        // this only keeps out origins no tenant has registered at all.
         tenantService.isOriginAllowed(origin)
           .then(allowed => callback(allowed ? null : new Error('Not allowed by CORS'), allowed))
           .catch(error => callback(error));
@@ -150,12 +379,11 @@ function setupWebSockets(server) {
   io.use(async (socket, next) => {
     try {
       // Get token from socket handshake auth
-      const token = socket.handshake.auth.token;
+      const token = socket.handshake.auth && socket.handshake.auth.token;
 
       // If no token, client is a regular user (not an operator)
       if (!token) {
-        socket.user = { role: 'user' };
-        return next();
+        return admitVisitor(socket, next);
       }
 
       // Verify token
@@ -163,8 +391,10 @@ function setupWebSockets(server) {
 
       // Check if user still exists and is active
       const user = await User.findById(decoded.id)
-        .select('username displayName role company isActive tokenVersion acceptingChats');
-      if (!user || !user.isActive) {
+        .select('username displayName role company isActive tokenVersion acceptingChats invitePending');
+      // An invitation not yet accepted is not an account anybody can use, and
+      // a token signed out on this device stays signed out here too.
+      if (!user || !user.isActive || user.invitePending || await isRevoked(decoded.jti)) {
         return next(new Error('Authentication failed'));
       }
 
@@ -178,8 +408,13 @@ function setupWebSockets(server) {
 
       if (stale) {
         logger.warn('Socket token refused: stale token version', { user: user.username });
-        socket.user = { role: 'user' };
-        return next();
+        return admitVisitor(socket, next);
+      }
+
+      // A suspended company's staff get nothing, the same as an inactive
+      // user: the dashboard reads this as "sign in again".
+      if (user.company && !(await companyIsActive(user.company))) {
+        return next(new Error('Authentication failed: this account is suspended'));
       }
 
       // Add user info to socket. `company` is required so operator events can
@@ -192,16 +427,57 @@ function setupWebSockets(server) {
         companyId: user.company ? user.company.toString() : null,
         acceptingChats: user.acceptingChats !== false
       };
+      // An agency working in a client's dashboard hears that client's
+      // conversations, not its own; throws when that session has ended.
+      if (decoded.actingAs) {
+        Object.assign(socket.user, await require('./middleware/auth').actingSocketScope(decoded, user));
+      }
+      // The token version this connection was admitted under, so the
+      // periodic re-check can tell a later password change.
+      socket.authVersion = decoded.tv;
+      socket.authJti = decoded.jti;
+      socket.data.staff = true;
 
       next();
     } catch (error) {
       if (error.name === 'JsonWebTokenError' || error.name === 'TokenExpiredError') {
-        socket.user = { role: 'user' }; // Treat as regular user if token is invalid
-        return next();
+        // Treat as regular user if token is invalid
+        return admitVisitor(socket, next);
       }
       next(new Error('Authentication failed'));
     }
   });
+
+  /**
+   * Everything said to a visitor goes to their own connections only. A
+   * customer on WhatsApp, Messenger or Instagram has no connection: what the
+   * widget would have shown them - an operator joining, the chat ending - is
+   * sent to their app instead (services/channels/outbound.js).
+   */
+  const toVisitor = (sessionId, event, payload) => {
+    io.to(visitorRoom(sessionId)).emit(event, payload);
+    if (channels.isChannelSession(sessionId)) {
+      channels.toCustomer(sessionId, event, payload);
+    }
+  };
+
+  /** Whether the visitor has the chat open anywhere, on any process. */
+  const visitorConnected = async sessionId => {
+    try {
+      return (await io.in(visitorRoom(sessionId)).fetchSockets()).length > 0;
+    } catch (error) {
+      logger.warn('Could not tell whether a visitor is connected', { sessionId, error: error.message });
+      // Assume they are: an email they did not need is worse than a chat
+      // message they will see.
+      return true;
+    }
+  };
+
+  /** To one tenant's operators and every superadmin. */
+  const toTenantOperators = (companyId, event, payload) => {
+    io.to(operatorRoom(companyId)).emit(event, payload);
+    io.to(GLOBAL_OPERATOR_ROOM).emit(event, payload);
+  };
 
   /**
    * An operator who did not come back: move their conversations on.
@@ -210,8 +486,9 @@ function setupWebSockets(server) {
    * back to the queue with the bot answering, and the visitor is told rather
    * than left wondering why the person they were talking to has gone quiet.
    */
-  const releaseOperatorChats = async (userId, username) => {
+  const releaseOperatorChats = async (userId, username, displayName) => {
     graceTimers.delete(String(userId));
+    const name = displayName || username;
 
     try {
       const held = await Conversation.find({ operatorId: userId, status: 'active' });
@@ -219,19 +496,34 @@ function setupWebSockets(server) {
       for (const conversation of held) {
         const result = await assignmentService.release(conversation, { exclude: [userId] });
         const sessionId = conversation.sessionId;
+        const companyId = conversation.company;
 
-        io.to(sessionId).emit('operator-message', {
-          text: result.assigned
-            ? `${result.operator.displayName} has joined the conversation and will assist you.`
-            : 'Your operator has been disconnected. Someone will be with you shortly; in the meantime the assistant can help.',
-          senderName: result.assigned ? result.operator.displayName : 'Support',
-          timestamp: new Date()
+        const line = lifecycle.addSystemLine(conversation, result.assigned
+          ? `${name} disconnected; reassigned to ${result.operator.displayName}`
+          : `${name} disconnected; returned to the queue`);
+        await conversation.save();
+        lifecycle.announceMessages(conversation, [line], {
+          operators: (event, payload) => toTenantOperators(companyId, event, payload)
         });
 
-        io.to(operatorRoom(conversation.company)).emit('operator-left', {
+        toVisitor(sessionId, 'operator-left', {
+          sessionId,
+          operatorName: name,
+          ...notice('operator_left', { operatorName: name })
+        });
+
+        if (result.assigned) {
+          toVisitor(sessionId, 'operator-joined', {
+            sessionId,
+            operatorName: result.operator.displayName,
+            ...notice('operator_joined', { operatorName: result.operator.displayName })
+          });
+        }
+
+        io.to(operatorRoom(companyId)).emit('operator-left', {
           sessionId,
           operatorId: userId,
-          operatorName: username,
+          operatorName: name,
           reason: 'disconnected',
           reassignedTo: result.assigned ? result.operator.displayName : null,
           timestamp: new Date()
@@ -239,7 +531,7 @@ function setupWebSockets(server) {
         io.to(GLOBAL_OPERATOR_ROOM).emit('operator-left', {
           sessionId,
           operatorId: userId,
-          operatorName: username,
+          operatorName: name,
           reason: 'disconnected',
           timestamp: new Date()
         });
@@ -288,6 +580,26 @@ function setupWebSockets(server) {
      * conversation.
      */
     let boundSessionId = null;
+
+    /**
+     * The token this socket holds for that session: the one it presented, or
+     * the one it was issued. A conversation created from this socket stores
+     * its hash, so the widget's copy is the key to it from then on.
+     */
+    let boundToken = null;
+
+    /**
+     * Bound to a session whose conversation does not exist yet.
+     *
+     * Opening a page with the widget used to create, meter and announce a
+     * conversation, so every page view was billed and queued as one. Now the
+     * socket is bound and the visitor holds a token, but nothing is written
+     * until they do something - see `ensureConversation`.
+     */
+    let pendingSession = false;
+
+    /** What `resume-session` said about the visitor, kept for creating it later. */
+    let resumeHints = {};
 
     // Company of the visitor on the other end of this socket, resolved from the
     // widget key / origin so their events reach only their tenant's operators.
@@ -356,10 +668,7 @@ function setupWebSockets(server) {
     };
 
     /** Same, but including this socket (used for operator-originated events). */
-    const allOperators = (companyId, event, payload) => {
-      io.to(operatorRoom(companyId)).emit(event, payload);
-      io.to(GLOBAL_OPERATOR_ROOM).emit(event, payload);
-    };
+    const allOperators = (companyId, event, payload) => toTenantOperators(companyId, event, payload);
 
     /**
      * The tenant an operator-originated event about a conversation belongs
@@ -371,8 +680,22 @@ function setupWebSockets(server) {
       if (conversation && conversation.company) {
         return conversation.company.toString();
       }
-      return operatorCompanyId;
+      return isOperator ? operatorCompanyId : clientCompanyId;
     };
+
+    /**
+     * Where lifecycle events about a conversation go from this socket.
+     *
+     * A visitor's own events are answered on their own connection, as every
+     * reply always has been; an operator's actions reach the visitor's
+     * connections through the visitor room.
+     */
+    const emitFor = conversation => ({
+      visitor: (event, payload) => (isOperator
+        ? toVisitor(conversation.sessionId, event, payload)
+        : socket.emit(event, payload)),
+      operators: (event, payload) => allOperators(tenantOf(conversation), event, payload)
+    });
 
     /**
      * Guard for operator actions on a specific conversation. Without this an
@@ -395,86 +718,174 @@ function setupWebSockets(server) {
     };
 
     /**
+     * Whether this operator may close or hand on a conversation a colleague
+     * is holding. Two people deciding the fate of one visitor is worse than
+     * one; an admin can still do it, but only deliberately: the dashboard
+     * asks first, naming who holds it, and sends `force` once they confirm.
+     */
+    const heldByColleague = (conversation, force = false) => Boolean(
+      conversation && conversation.operatorId &&
+      String(conversation.operatorId) !== String(socket.user.id) &&
+      !(canForceTakeover && force === true)
+    );
+
+    /**
      * Resolve and remember the tenant for the visitor's session, so later
      * events on this socket can be routed without another database lookup.
+     *
+     * The widget key from the handshake wins: that is the key the connection
+     * was admitted with. A key that arrives only in an event payload has not
+     * been through that check, so it is checked here before it is believed.
      */
     const resolveClientCompany = async (sessionId, hints = {}) => {
       if (clientCompanyId) {
         return clientCompanyId;
       }
 
+      clientCompanyId = await lookupCompany(sessionId, hints);
+      return clientCompanyId;
+    };
+
+    /** The tenant for a session, worked out afresh. See `resolveClientCompany`. */
+    const lookupCompany = async (sessionId, hints = {}) => {
       const existing = sessionId
         ? await Conversation.findOne({ sessionId }).select('company').lean()
         : null;
 
       if (existing && existing.company) {
-        clientCompanyId = existing.company.toString();
-        return clientCompanyId;
+        return existing.company.toString();
+      }
+
+      const origin = socket.handshake.headers.origin;
+      let widgetKey = handshakeWidgetKey(socket);
+
+      if (!widgetKey && typeof hints.widgetKey === 'string' && hints.widgetKey) {
+        const vouched = !origin || isSelfOrigin(origin, socket.handshake) ||
+          await tenantService.isOriginAllowed(origin, { widgetKey: hints.widgetKey });
+        if (vouched) {
+          widgetKey = hints.widgetKey;
+        }
       }
 
       const companyId = await tenantService.resolveCompanyId({
-        widgetKey: hints.widgetKey || socket.handshake.auth?.widgetKey || socket.handshake.query?.widgetKey,
-        origin: socket.handshake.headers.origin || socket.handshake.headers.referer
+        widgetKey,
+        origin: origin || socket.handshake.headers.referer
       });
 
-      clientCompanyId = companyId ? companyId.toString() : null;
-      return clientCompanyId;
+      return companyId ? companyId.toString() : null;
+    };
+
+    /** Who the visitor says they are, from an event or the handshake. */
+    const identityHints = (hints = {}) => ({
+      externalId: hints.externalId || socket.handshake.auth?.externalId || resumeHints.externalId,
+      userHash: hints.userHash || socket.handshake.auth?.userHash || resumeHints.userHash,
+      userJwt: hints.userJwt || socket.handshake.auth?.userJwt,
+      email: hints.email || resumeHints.userEmail,
+      name: hints.name || resumeHints.userName,
+      phone: hints.phone || resumeHints.userPhone
+    });
+
+    /**
+     * The verified user id this socket presents, if the tenant signed it,
+     * with a token or a hash (services/visitor-identity.js).
+     */
+    const presentedIdentity = async (companyId, hints = {}) =>
+      require('./services/visitor-identity').presentedExternalId(companyId, identityHints(hints));
+
+    // Email codes and identity re-checks for the visitor (services/visitor-verification.js).
+    require('./services/visitor-verification').attach(socket, { isOperator, session: () => boundSessionId, company: () => clientCompanyId || (boundSessionId ? resolveClientCompany(boundSessionId) : null) });
+
+    /**
+     * Whether a resume may proceed as far as identity goes.
+     *
+     * A conversation that belongs to a person the tenant verified is that
+     * person's, and a browser presenting a *different* verified person - the
+     * next user of a shared computer, say - does not get to read it, whatever
+     * session id and token are in its storage.
+     */
+    const identityMatches = async (conversation, hints) => {
+      if (!conversation.contact) {
+        return true;
+      }
+
+      const contact = await Contact.findById(conversation.contact).select('identityLevel externalId').lean();
+      if (!contact || contact.identityLevel !== 'verified' || !contact.externalId) {
+        return true;
+      }
+
+      const presented = await presentedIdentity(tenantOf(conversation), hints);
+      return !presented || presented === String(contact.externalId);
     };
 
     /**
-     * Find or create the conversation for a session, always stamping the
-     * resolved company so multi-tenant filtering works downstream.
-     *
-     * @throws {QuotaRefusedError} when the tenant may not start another
-     *         conversation this month; nothing is created
+     * Bind this socket to a session: the only way a visitor socket gets one.
+     * A widget that starts a clean session (a different person signed in,
+     * say) leaves the old one's rooms and tenant behind.
      */
-    const getOrCreateConversation = async (sessionId, hints = {}) => {
-      // Where the visitor is chatting from. Operators use this to know which
-      // site a conversation came from, and it drives the traffic-source chart.
-      const origin = hints.pageUrl || connectionOrigin;
+    const bindTo = (sessionId, token, pending, companyId) => {
+      if (boundSessionId && boundSessionId !== sessionId) {
+        socket.leave(boundSessionId);
+        socket.leave(visitorRoom(boundSessionId));
+      }
+      boundSessionId = sessionId;
+      boundToken = token;
+      pendingSession = pending;
+      clientCompanyId = companyId || null;
+      socket.join(sessionId);
+      socket.join(visitorRoom(sessionId));
+    };
 
-      let conversation = await Conversation.findOne({ sessionId });
+    /** Forget the session, and tell the widget to start a clean one. */
+    const rejectSession = (sessionId) => {
+      if (boundSessionId) {
+        socket.leave(boundSessionId);
+        socket.leave(visitorRoom(boundSessionId));
+      }
+      boundSessionId = null;
+      boundToken = null;
+      pendingSession = false;
+      socket.emit('session-rejected', { sessionId });
+    };
 
-      if (!conversation) {
-        const companyId = await resolveClientCompany(sessionId, hints);
+    /**
+     * The conversation this socket is bound to, created if this is the first
+     * thing the visitor has done.
+     *
+     * Creation is the moment a conversation is metered, gets a contact and is
+     * announced, so it happens here - on a message, the pre-chat form, a
+     * request for a person, a file or an email address left - and never on a
+     * page load.
+     *
+     * A conversation that already exists has to match the token this socket
+     * holds. Two tabs of one browser can both be waiting on the same session;
+     * if the other one engaged first with a different token, this one is
+     * holding the key to nothing and is told to start again.
+     *
+     * @returns {Promise<{conversation?: object, created?: boolean,
+     *                    refused?: boolean, rejected?: boolean}>}
+     */
+    const ensureConversation = async (hints = {}, attempt = 0) => {
+      const sessionId = boundSessionId;
+      const origin = hints.pageUrl || resumeHints.pageUrl || connectionOrigin;
 
-        // Checked before anything is written: a conversation the plan does
-        // not allow must not exist, or it would be counted next month too.
-        const quota = await usageService.check(companyId, 'conversationsPerMonth');
-        if (!quota.allowed) {
-          logger.warn('Conversation refused by plan', {
-            companyId: companyId ? String(companyId) : null,
-            reason: quota.reason
-          });
-          usageService.recordLimitHit(companyId);
-          throw new QuotaRefusedError(quota);
+      const conversation = await Conversation.findOne({ sessionId }).select('+sessionTokenHash');
+
+      if (conversation) {
+        if (conversation.sessionTokenHash && !sessionToken.verify(conversation.sessionTokenHash, boundToken)) {
+          logger.warn('Session engaged by another connection with a different token', { sessionId });
+          rejectSession(sessionId);
+          return { rejected: true };
         }
 
-        conversation = new Conversation({
-          sessionId,
-          company: companyId || undefined,
-          domain: origin,
-          messages: []
-        });
-
-        // Metered once, at creation, so a long conversation counts as one.
-        usageService.record(companyId, { conversations: 1 });
-
-        // Some teams run no bot at all, and for them a conversation that sits
-        // unassigned until somebody notices it is the whole problem. Saved
-        // first, because assignment needs a document with an id.
-        if (companyId) {
-          conversation.company = companyId;
-          await conversation.save();
-
-          const company = await Company.findById(companyId).select('routing').lean();
-          if (company?.routing?.autoAssign && company.routing.assignOnStart) {
-            await assignmentService.autoAssign(conversation);
-          }
+        if (!conversation.sessionTokenHash && boundToken) {
+          // Protected from now on, like every other.
+          conversation.sessionTokenHash = sessionToken.hash(boundToken);
         }
-      } else {
+
+        pendingSession = false;
+
         // Backfill on conversations created before the tenant or origin was
-        // known - for example by a `join` that arrived before `user-details`.
+        // known.
         if (!conversation.company) {
           const companyId = await resolveClientCompany(sessionId, hints);
           if (companyId) {
@@ -484,50 +895,102 @@ function setupWebSockets(server) {
         if (!conversation.domain && origin) {
           conversation.domain = origin;
         }
-      }
-
-      if (conversation.company) {
-        clientCompanyId = conversation.company.toString();
-      }
-
-      // Attach the person behind the session. Identity claims are only trusted
-      // when the tenant signed them; see services/contacts.js.
-      if (clientCompanyId && !conversation.contact) {
-        const contact = await contactService.resolve({
-          companyId: clientCompanyId,
-          sessionId,
-          externalId: hints.externalId || socket.handshake.auth?.externalId,
-          userHash: hints.userHash || socket.handshake.auth?.userHash,
-          email: hints.email,
-          name: hints.name,
-          phone: hints.phone
-        });
-
-        if (contact) {
-          await contactService.linkConversation(contact, conversation);
+        if (conversation.company) {
+          clientCompanyId = conversation.company.toString();
         }
+
+        // Attach the person behind the session. Identity claims are only
+        // trusted when the tenant signed them; see services/contacts.js.
+        if (clientCompanyId && !conversation.contact) {
+          const contact = await contactService.resolve({
+            companyId: clientCompanyId,
+            sessionId,
+            ...identityHints(hints)
+          });
+          if (contact) {
+            await contactService.linkConversation(contact, conversation);
+          }
+        }
+
+        return { conversation, created: false };
       }
 
-      return conversation;
+      const companyId = await resolveClientCompany(sessionId, hints);
+
+      const result = await lifecycle.createConversation({
+        sessionId,
+        companyId,
+        domain: origin,
+        sessionTokenHash: boundToken ? sessionToken.hash(boundToken) : undefined,
+        identity: identityHints(hints)
+      });
+
+      if (result.refused) {
+        return { refused: true };
+      }
+
+      if (result.duplicate) {
+        // Another connection created it a moment ago; check our token
+        // against what it stored.
+        return attempt === 0 ? ensureConversation(hints, 1) : { rejected: true };
+      }
+
+      pendingSession = false;
+      clientCompanyId = companyId ? String(companyId) : null;
+      logger.info(`Conversation started: ${sessionId}`);
+
+      return { conversation: result.conversation, created: true };
     };
 
     /**
-     * Tell the visitor the chat is unavailable, in the bot's voice.
-     *
-     * Persisted when there is a conversation to persist it on, so the
-     * transcript an operator reads later explains the gap.
+     * Tell the visitor nobody can take their conversation, in the bot's
+     * voice. Only when no conversation could be started: once one exists, a
+     * spent allowance hands over to the team instead.
      */
-    const sendUnavailable = async (sessionId, conversation) => {
-      const payload = { text: usageService.UNAVAILABLE_MESSAGE, timestamp: new Date() };
+    const sendUnavailable = () => {
+      const unavailable = notice('unavailable');
+      socket.emit('bot-message', {
+        text: unavailable.message,
+        canRate: false,
+        sources: [],
+        ...unavailable,
+        timestamp: new Date()
+      });
+    };
 
-      if (conversation) {
-        conversation.messages.push({ content: payload.text, sender: 'bot', timestamp: payload.timestamp });
-        conversation.lastActivity = new Date();
-        await conversation.save();
-        payload.id = lastMessageId(conversation);
+    /**
+     * The tail of the engagements already under way on this socket.
+     *
+     * A widget that reconnects sends what it had queued all at once, and the
+     * first of those messages is the one that creates the conversation. Run
+     * side by side, each found no conversation and tried to create one - and
+     * the plan check behind creation is not safe to race either. So the
+     * finding-or-creating happens one event at a time, in the order they
+     * arrived; what follows it (the reply) still runs side by side.
+     */
+    let engaging = Promise.resolve();
+
+    /**
+     * The first step of every visitor action that engages: find or create the
+     * conversation, or say why there is none.
+     *
+     * @returns {Promise<{conversation: object, created: boolean}|null>}
+     */
+    const engage = async (hints = {}) => {
+      const turn = engaging.then(() => ensureConversation(hints));
+      engaging = turn.catch(() => {});
+      const result = await turn;
+
+      if (result.refused) {
+        sendUnavailable();
+        return null;
       }
 
-      socket.emit('bot-message', payload);
+      if (result.rejected) {
+        return null;
+      }
+
+      return result;
     };
 
     /**
@@ -535,67 +998,55 @@ function setupWebSockets(server) {
      *
      * One helper for the three places that want it, which used to be three
      * copies of the same block. The draft goes to the holding operator's own
-     * room rather than to every operator of the tenant: it is a suggestion
-     * for the person answering, not an announcement.
-     *
-     * A suggestion is a model call, so it is metered as one and only offered
-     * on plans that include the feature.
+     * room rather than to every operator of the tenant (see
+     * `lifecycle.offerSuggestion`, which a messaging channel uses too).
      */
-    const offerSuggestion = async (conversation, targetMessage, options = {}) => {
-      if (!conversation || !targetMessage || conversation.suggestionsEnabled === false) {
-        return;
+    const offerSuggestion = (conversation, targetMessage, options = {}) => lifecycle.offerSuggestion(
+      conversation,
+      targetMessage,
+      {
+        ...options,
+        companyId: tenantOf(conversation),
+        toUser: (userId, event, payload) => io.to(userRoom(userId)).emit(event, payload)
       }
-
-      const recipientId = options.to || conversation.operatorId;
-      if (!recipientId) {
-        // Nobody holding it means nobody to draft for.
-        return;
-      }
-
-      const companyId = tenantOf(conversation);
-
-      if (!(await usageService.hasFeature(companyId, 'aiSuggestions'))) {
-        return;
-      }
-
-      const quota = await usageService.check(companyId, 'aiResponsesPerMonth');
-      if (!quota.allowed) {
-        logger.warn('Operator suggestion refused by plan', {
-          companyId: companyId ? String(companyId) : null,
-          reason: quota.reason
-        });
-        usageService.recordLimitHit(companyId);
-        return;
-      }
-
-      const history = conversation.messages
-        .slice(-10)
-        .map(msg => ({
-          role: msg.sender === 'user' ? 'user' : 'assistant',
-          content: msg.content
-        }));
-
-      const aiService = await AIService.forCompany(companyId);
-      const suggestion = await aiService.generateOperatorSuggestion(targetMessage.content, history);
-
-      usageService.record(companyId, { aiResponses: 1 });
-
-      io.to(userRoom(recipientId)).emit('operator-suggestion', {
-        sessionId: conversation.sessionId,
-        userMessageId: targetMessage._id ? targetMessage._id.toString() : undefined,
-        userMessage: targetMessage.content,
-        suggestion,
-        timestamp: new Date()
-      });
-    };
+    );
 
     /**
      * Persist and deliver an operator's message, over whichever channel the
      * conversation lives on.
      *
-     * @returns {Promise<{ok: boolean, error?: string, messageId?: string}>}
+     * A chat visitor who has gone - closed the tab, walked away while the
+     * operator looked into it - is answered by email when we have an address
+     * for them, because a reply they never see is no reply. Without one the
+     * message waits in the conversation for them to come back.
+     *
+     * @returns {Promise<{ok: boolean, error?: string, warning?: string,
+     *                    messageId?: string, emailedTo?: string}>}
      */
     const deliverOperatorMessage = async (conversation, text) => {
+      const now = new Date();
+      let warning;
+      // WhatsApp, Messenger or Instagram: the customer is always reachable
+      // there, within the provider's rules, and never by email instead.
+      const viaApp = channels.isMessagingChannel(conversation.channel);
+
+      if (conversation.channel !== 'email' && !viaApp && !(await visitorConnected(conversation.sessionId)) &&
+          await emailChannel.visitorEmail(conversation)) {
+        const emailed = await emailChannel.sendFollowUp(conversation, text, {
+          id: socket.user.id,
+          displayName: operatorDisplayName,
+          username: socket.user.username
+        });
+
+        if (emailed.sent) {
+          return { ok: true, messageId: emailed.replyId, emailedTo: emailed.to };
+        }
+
+        // Kept in the conversation either way, so the visitor sees it if they
+        // come back; the operator is told it did not reach them.
+        warning = `Saved to the conversation, but the email to the visitor could not be sent: ${emailed.reason}`;
+      }
+
       // An email thread is answered from the same composer; only delivery
       // differs. Sent before persisting so a failure can be reported to the
       // operator rather than leaving a message that never went out.
@@ -607,6 +1058,14 @@ function setupWebSockets(server) {
         if (!delivery.sent) {
           return { ok: false, error: `Could not send that email: ${delivery.reason}` };
         }
+      } else if (viaApp) {
+        delivery = await channels.sendOperatorReply(conversation, text);
+
+        if (!delivery.sent) {
+          // Outside the reply window the provider's rule is the whole
+          // explanation; anything else is a failure to send.
+          return { ok: false, error: delivery.window ? delivery.reason : `Could not send that message: ${delivery.reason}` };
+        }
       }
 
       conversation.messages.push({
@@ -614,11 +1073,23 @@ function setupWebSockets(server) {
         sender: 'operator',
         operatorId: socket.user.id,
         operatorName: operatorDisplayName,
-        emailMessageId: delivery.messageId,
-        timestamp: new Date()
+        emailMessageId: conversation.channel === 'email' ? delivery.messageId : undefined,
+        // The provider's id for it, so a later "not delivered" report finds it.
+        messageId: viaApp ? delivery.messageId : undefined,
+        timestamp: now
       });
+      const stored = lastMessage(conversation);
 
-      conversation.lastActivity = new Date();
+      // Answering is taking part, whether or not they pressed "take over".
+      conversation.operatorEverJoined = true;
+      if (!conversation.firstOperatorJoinedAt) {
+        conversation.firstOperatorJoinedAt = now;
+      }
+      if (!conversation.firstOperatorReplyAt) {
+        conversation.firstOperatorReplyAt = now;
+      }
+
+      conversation.lastActivity = now;
       await conversation.save();
 
       usageService.record(conversation.company, { operatorMessages: 1, messages: 1 });
@@ -626,17 +1097,46 @@ function setupWebSockets(server) {
       const messageId = lastMessageId(conversation);
 
       // Chat visitors get it over the socket. Email visitors already have it
-      // in their inbox.
+      // in their inbox. Answering is reading: what they wrote before it gets
+      // its second tick.
       if (conversation.channel !== 'email') {
-        io.to(conversation.sessionId).emit('operator-message', {
+        tellVisitorRead(conversation);
+        toVisitor(conversation.sessionId, 'operator-message', {
           id: messageId,
           text,
           senderName: operatorDisplayName,
-          timestamp: new Date()
+          timestamp: now
         });
       }
 
-      return { ok: true, messageId };
+      // Colleagues with the conversation open see the reply too. Until this
+      // an operator's message reached the visitor and nobody else.
+      lifecycle.announceMessages(conversation, [stored], emitFor(conversation));
+
+      return { ok: true, messageId, warning };
+    };
+
+    /**
+     * Tell the visitor a person has read what they wrote.
+     *
+     * Distinct from the acknowledgement sent when a message is stored, which
+     * carries no `reader`: the widget's second tick means somebody looked,
+     * and it used to appear the moment the server saved a message nobody had
+     * seen.
+     */
+    const tellVisitorRead = (conversation, message) => {
+      const target = message || lifecycle.lastVisitorMessage(conversation);
+      if (!target || conversation.channel === 'email') {
+        return;
+      }
+
+      toVisitor(conversation.sessionId, 'message-read', {
+        // The widget knows its own messages by the id it gave them.
+        messageId: target.messageId || String(target._id),
+        id: String(target._id),
+        reader: 'operator',
+        timestamp: new Date()
+      });
     };
 
     /** A valid chat message, or the reason it is not one. */
@@ -666,6 +1166,46 @@ function setupWebSockets(server) {
         graceTimers.delete(String(socket.user.id));
         logger.info('Operator reconnected within the grace period', { operator: socket.user.username });
       }
+
+      // Looked at again at most once a minute, on whatever the dashboard
+      // sends next (it sends a heartbeat every thirty seconds). A socket whose
+      // person was deactivated, signed out everywhere or whose company was
+      // suspended is closed rather than left listening to the tenant's
+      // conversations. `socketManager.disconnectUser` does the same at once.
+      let verifiedAt = Date.now();
+      let checking = null;
+
+      socket.use((packet, next) => {
+        if (Date.now() - verifiedAt < envInt('SOCKET_REAUTH_MS', 60 * 1000)) {
+          return next();
+        }
+
+        if (!checking) {
+          checking = stillAuthorised(socket.user.id, socket.authVersion, socket.authJti)
+            .finally(() => {
+              checking = null;
+            });
+        }
+
+        checking.then(result => {
+          if (result.ok) {
+            verifiedAt = Date.now();
+            return next();
+          }
+
+          logger.warn('Closing a connection that is no longer authorised', {
+            operator: socket.user.username,
+            reason: result.reason
+          });
+          socket.emit('session-expired', { reason: result.reason });
+          socket.disconnect(true);
+        }, error => {
+          // A database blip is not a reason to throw somebody out mid-shift;
+          // the next event checks again.
+          logger.warn('Could not re-check an operator connection', { error: error.message });
+          next();
+        });
+      });
     }
 
     // Join a chat session room
@@ -714,6 +1254,13 @@ function setupWebSockets(server) {
      * it is in dashboard URLs and exports - so a conversation that has a
      * token demands it, and a resume without the right one gets nothing: no
      * room, no history, no binding.
+     *
+     * A session with no conversation yet writes nothing. The socket is bound
+     * and given a token (`pending: true`) and the conversation is created on
+     * the visitor's first real action. Until then there is nothing to
+     * protect, so a well-formed token the widget already holds is kept - two
+     * tabs of one browser then agree on it - and anything else is replaced
+     * with a fresh one.
      */
     socket.on('resume-session', async (data = {}) => {
       const sessionId = data && data.sessionId;
@@ -723,10 +1270,40 @@ function setupWebSockets(server) {
       }
 
       try {
-        let conversation = await Conversation.findOne({ sessionId }).select('+sessionTokenHash');
+        const conversation = await Conversation.findOne({ sessionId }).select('+sessionTokenHash');
+
+        resumeHints = {
+          pageUrl: typeof data.pageUrl === 'string' ? data.pageUrl.slice(0, 500) : undefined,
+          userName: typeof data.userName === 'string' ? data.userName.slice(0, 200) : undefined,
+          userEmail: typeof data.userEmail === 'string' && EMAIL_ADDRESS.test(data.userEmail) ? data.userEmail : undefined,
+          userPhone: typeof data.userPhone === 'string' ? data.userPhone.slice(0, 50) : undefined,
+          externalId: data.externalId,
+          userHash: data.userHash
+        };
+
+        if (!conversation) {
+          const token = typeof data.sessionToken === 'string' && SESSION_TOKEN_FORMAT.test(data.sessionToken)
+            ? data.sessionToken
+            : sessionToken.issue();
+
+          bindTo(sessionId, token, true, await lookupCompany(sessionId, data));
+
+          socket.emit('session-ready', { sessionId, sessionToken: token, pending: true });
+          socket.emit('session-history', { sessionId, messages: [] });
+          return;
+        }
+
+        // A WhatsApp, Messenger or Instagram conversation belongs to
+        // somebody on that app. No browser holds the key to it, whatever
+        // session id it presents.
+        if (channels.isMessagingChannel(conversation.channel)) {
+          logger.warn('Session resume rejected: it is a messaging-app conversation', { sessionId });
+          return socket.emit('session-rejected', { sessionId });
+        }
+
         let token = null;
 
-        if (conversation && conversation.sessionTokenHash) {
+        if (conversation.sessionTokenHash) {
           if (!sessionToken.verify(conversation.sessionTokenHash, data.sessionToken)) {
             logger.warn('Session resume rejected: token mismatch', { sessionId });
             return socket.emit('session-rejected', { sessionId });
@@ -734,48 +1311,39 @@ function setupWebSockets(server) {
           // The token they presented is the token; hand it back so the widget
           // has one place to read it from.
           token = data.sessionToken;
-        } else if (conversation) {
+        } else {
           // Created before tokens existed. Accepted this once, and given a
           // token so that from now on it is protected like every other.
           token = sessionToken.issue();
           conversation.sessionTokenHash = sessionToken.hash(token);
           await conversation.save();
-        } else {
-          try {
-            conversation = await getOrCreateConversation(sessionId, data);
-          } catch (error) {
-            if (!(error instanceof QuotaRefusedError)) {
-              throw error;
-            }
-            // Nothing exists to hijack, so the socket may hold the id; the
-            // visitor is told why nobody is answering.
-            boundSessionId = sessionId;
-            socket.join(sessionId);
-            socket.emit('session-ready', { sessionId, sessionToken: null });
-            await sendUnavailable(sessionId, null);
-            return;
-          }
-
-          token = sessionToken.issue();
-          conversation.sessionTokenHash = sessionToken.hash(token);
-          await conversation.save();
         }
 
-        if (conversation.company) {
-          clientCompanyId = conversation.company.toString();
-        } else {
-          await resolveClientCompany(sessionId, data);
+        if (!(await identityMatches(conversation, data))) {
+          logger.warn('Session resume rejected: it belongs to a different verified person', { sessionId });
+          return socket.emit('session-rejected', { sessionId });
         }
 
-        boundSessionId = sessionId;
-        socket.join(sessionId);
+        bindTo(sessionId, token, false, conversation.company
+          ? conversation.company.toString()
+          : await lookupCompany(sessionId, data));
 
-        socket.emit('session-ready', { sessionId, sessionToken: token });
+        // Who is answering, so the widget's header is right after a reload
+        // rather than saying "Assistant" while a person types.
+        const holder = conversation.operatorId && conversation.operatorName
+          ? { operatorName: conversation.operatorName, operator: { name: conversation.operatorName } }
+          : {};
+
+        socket.emit('session-ready', { sessionId, sessionToken: token, ...holder });
 
         // History goes out as one event rather than replayed as live
         // messages, so the widget can tell "what was said" from "what was
-        // just said" and drop what it already has by id.
-        const messages = (conversation.messages || []).slice(-HISTORY_REPLAY).map(toReplayPayload);
+        // just said" and drop what it already has by id. Transcript events
+        // are for operators and stay out of it.
+        const messages = (conversation.messages || [])
+          .filter(message => message.sender !== 'system')
+          .slice(-HISTORY_REPLAY)
+          .map(toReplayPayload);
         socket.emit('session-history', { sessionId, messages });
 
         logger.info(`Session resumed: ${sessionId}`);
@@ -787,7 +1355,8 @@ function setupWebSockets(server) {
 
     // Handle chat opened event
     socket.on('chat-opened', async () => {
-      if (isOperator || !boundSessionId) {
+      // Nothing to show an operator for a session that has no conversation.
+      if (isOperator || !boundSessionId || pendingSession) {
         return;
       }
 
@@ -813,8 +1382,12 @@ function setupWebSockets(server) {
       try {
         const { name, email, phone } = data;
 
-        // Save user details to conversation metadata
-        const conversation = await getOrCreateConversation(sessionId, data);
+        // Submitting the form is engaging: this may start the conversation.
+        const engaged = await engage(data);
+        if (!engaged) {
+          return;
+        }
+        const { conversation, created } = engaged;
 
         // Initialize metadata if it doesn't exist
         if (!conversation.metadata) {
@@ -825,6 +1398,7 @@ function setupWebSockets(server) {
         conversation.metadata.set('name', name || '');
         conversation.metadata.set('email', email || '');
         conversation.metadata.set('phone', phone || '');
+        recordConsent(conversation, data.consent);
 
         // Now that they have told us who they are, re-resolve: an email may
         // merge this session with a person we already know.
@@ -856,144 +1430,27 @@ function setupWebSockets(server) {
           timestamp: new Date()
         });
 
+        if (created) {
+          await lifecycle.announceStart(conversation, { preview: '', emit: emitFor(conversation) });
+        }
+
         logger.info(`User details updated for session: ${sessionId}`);
       } catch (error) {
-        if (error instanceof QuotaRefusedError) {
-          return sendUnavailable(sessionId, null);
-        }
         logger.error('Error handling user details:', error);
         socket.emit('error', { sessionId, message: 'Failed to save user details' });
       }
     });
 
     /**
-     * The bot's turn.
-     *
-     * The published workflow answers if the tenant has one, otherwise the
-     * assistant. This used to call the assistant directly, which is why a
-     * published workflow had no effect on any live conversation.
-     *
-     * The plan is checked first and the model is not called when it says no;
-     * and a failure to produce a reply is said out loud, in the bot's voice,
-     * rather than left as an error event the widget may or may not show.
+     * The bot's turn: `lifecycle.answerAutomatically`, which the messaging
+     * channels share, with the answer going back on this socket and "the
+     * bot is typing" to the session's room.
      */
-    const answerAutomatically = async (conversation, message) => {
-      const sessionId = conversation.sessionId;
-      const companyId = clientCompanyId;
-
-      const quota = await usageService.check(companyId, 'aiResponsesPerMonth');
-      if (!quota.allowed) {
-        logger.warn('Automated reply refused by plan', {
-          companyId: companyId ? String(companyId) : null,
-          reason: quota.reason
-        });
-        usageService.recordLimitHit(companyId);
-        return sendUnavailable(sessionId, conversation);
-      }
-
-      const messageHistory = conversation.messages
-        .slice(-10)
-        .map(msg => ({
-          role: msg.sender === 'user' ? 'user' : 'assistant',
-          content: msg.content
-        }));
-
-      io.to(sessionId).emit('bot-typing', { sessionId, typing: true });
-
-      let reply;
-      try {
-        reply = await replyService.generate({
-          conversation,
-          message,
-          history: messageHistory
-        });
-      } catch (error) {
-        logger.error('Failed to generate a reply', { sessionId, error: error.message });
-        io.to(sessionId).emit('bot-typing', { sessionId, typing: false });
-
-        // Said in the bot's voice, and saved, so the transcript shows the gap
-        // and the visitor is not staring at a typing indicator that ends in
-        // nothing.
-        conversation.messages.push({
-          content: usageService.REPLY_FAILED_MESSAGE,
-          sender: 'bot',
-          timestamp: new Date()
-        });
-        conversation.lastActivity = new Date();
-        await conversation.save();
-
-        socket.emit('bot-message', {
-          id: lastMessageId(conversation),
-          text: usageService.REPLY_FAILED_MESSAGE,
-          timestamp: new Date()
-        });
-        socket.emit('error', { sessionId, message: 'Failed to generate a reply' });
-        return;
-      }
-
-      const botResponse = reply.text;
-      // The knowledge sources the answer drew on, for the widget to cite.
-      const sources = Array.isArray(reply.sources) ? reply.sources : [];
-
-      // Create a message ID for the bot response
-      const botMessageId = 'bot_' + Date.now();
-
-      conversation.messages.push({
-        content: botResponse,
-        sender: 'bot',
-        messageId: botMessageId,
-        sources: sources.length ? sources : undefined,
-        timestamp: new Date()
-      });
-      conversation.lastActivity = new Date();
-      await conversation.save();
-
-      const dbBotMessageId = lastMessageId(conversation);
-
-      io.to(sessionId).emit('bot-typing', { sessionId, typing: false });
-
-      socket.emit('bot-message', {
-        id: dbBotMessageId,
-        clientId: botMessageId,
-        text: botResponse,
-        // Quick replies, when the workflow offered a set of choices. The
-        // widget renders them as buttons; a visitor tapping one is
-        // unambiguous in a way that typing never is.
-        choices: reply.choices || undefined,
-        // Products or appointment times for the widget to render.
-        cards: reply.cards || undefined,
-        // Always an array, so the widget can test its length without a guard.
-        sources,
-        timestamp: new Date()
-      });
-
-      // A workflow node can ask for a person. Honour it here rather than
-      // leaving the escalation as a sentence the visitor has to act on.
-      if (reply.escalate && reply.escalate.enabled !== false) {
-        const escalated = await assignmentService.autoAssign(conversation);
-        allOperators(companyId, 'operator-requested', {
-          sessionId,
-          assigned: escalated.assigned,
-          timestamp: new Date()
-        });
-      }
-
-      // Only an assistant reply is a model call. A workflow that answered
-      // from a fixed template or a lookup did not use the model, and
-      // metering it as one would overcharge the tenant.
-      usageService.record(companyId, reply.source === 'workflow'
-        ? { messages: 1 }
-        : { aiResponses: 1, messages: 1 });
-
-      toOperators(companyId, 'new-message', {
-        sessionId,
-        message: botResponse,
-        sender: 'bot',
-        messageId: dbBotMessageId,
-        sources,
-        timestamp: new Date()
-      });
-    };
+    const answerAutomatically = (conversation, message) => lifecycle.answerAutomatically(conversation, message, {
+      emit: emitFor(conversation),
+      companyId: tenantOf(conversation),
+      typing: typing => io.to(conversation.sessionId).emit('bot-typing', { sessionId: conversation.sessionId, typing })
+    });
 
     // Handle user messages from widget
     socket.on('user-message', async (data = {}) => {
@@ -1002,7 +1459,14 @@ function setupWebSockets(server) {
       }
 
       const sessionId = boundSessionId;
-      const { messageId, timestamp } = data;
+      const { timestamp } = data;
+
+      // The widget's own id for the message. `messageId` is what older
+      // widgets send.
+      const offeredId = data.clientMessageId !== undefined ? data.clientMessageId : data.messageId;
+      const clientMessageId = typeof offeredId === 'string' && CLIENT_MESSAGE_ID.test(offeredId)
+        ? offeredId
+        : undefined;
 
       const validated = validateMessage(data.message);
       if (validated.error) {
@@ -1015,17 +1479,21 @@ function setupWebSockets(server) {
         return socket.emit('error', { sessionId, message: 'You are sending messages too quickly. Please wait a moment.' });
       }
 
-      let conversation;
-
       try {
-        // Save message to database
-        try {
-          conversation = await getOrCreateConversation(sessionId, data);
-        } catch (error) {
-          if (error instanceof QuotaRefusedError) {
-            return sendUnavailable(sessionId, null);
-          }
-          throw error;
+        const engaged = await engage(data);
+        if (!engaged) {
+          return;
+        }
+        const { conversation, created } = engaged;
+
+        // A widget that lost its connection mid-send sends the message again
+        // when it is back. The same id twice is the same message: it is
+        // acknowledged, not stored or answered a second time.
+        if (clientMessageId && conversation.messages.some(
+          stored => stored.sender === 'user' && stored.messageId === clientMessageId
+        )) {
+          socket.emit('message-read', { messageId: clientMessageId, timestamp: new Date() });
+          return;
         }
 
         // Check if the conversation was ended and reactivate it if needed
@@ -1051,13 +1519,14 @@ function setupWebSockets(server) {
           });
         }
 
+        recordConsent(conversation, data.consent);
+
         const sentAt = timestamp ? new Date(timestamp) : new Date();
 
-        // Add the new message with messageId
         const messageDoc = {
           content: message,
           sender: 'user',
-          messageId, // Store client-generated message ID for tracking
+          messageId: clientMessageId,
           timestamp: Number.isNaN(sentAt.getTime()) ? new Date() : sentAt
         };
 
@@ -1075,7 +1544,7 @@ function setupWebSockets(server) {
 
         await conversation.save();
         const dbMessageId = lastMessageId(conversation);
-        const storedUserMessage = conversation.messages[conversation.messages.length - 1];
+        const storedUserMessage = lastMessage(conversation);
 
         // Broadcast to operators (admin dashboard)
         const broadcastData = {
@@ -1083,7 +1552,7 @@ function setupWebSockets(server) {
           message,
           sender: 'user',
           messageId: dbMessageId,
-          clientMessageId: messageId,
+          clientMessageId,
           timestamp: new Date()
         };
 
@@ -1093,19 +1562,33 @@ function setupWebSockets(server) {
         }
 
         toOperators(clientCompanyId, 'new-message', broadcastData);
+        lifecycle.announceMessages(conversation, [storedUserMessage], emitFor(conversation));
 
         usageService.record(clientCompanyId, { messages: 1 });
 
         // Send read receipt for the user message before any reply is
         // generated, so a slow model does not look like a lost message.
         socket.emit('message-read', {
-          messageId,
+          messageId: clientMessageId,
           timestamp: new Date()
         });
+
+        if (created) {
+          // Announced once the first message is stored, so the queue shows
+          // what they asked; and routed before anyone answers, so a tenant
+          // that assigns on start gets a person on the first message.
+          await lifecycle.announceStart(conversation, { preview: message, emit: emitFor(conversation) });
+        }
 
         if (conversation.hasOperator) {
           // A person has it: draft them a reply rather than answering.
           await offerSuggestion(conversation, storedUserMessage);
+        } else if (wantsAPerson(message)) {
+          // "Can I talk to a person?" typed rather than tapped. The bot
+          // answering that with a paragraph about itself is the most
+          // frustrating thing a support bot does.
+          const reason = lastBotMessageUnanswered(conversation) ? 'bot_unanswered' : 'visitor_request';
+          await lifecycle.handOver(conversation, reason, { emit: emitFor(conversation) });
         } else if (conversation.botEnabled !== false) {
           await answerAutomatically(conversation, message);
         }
@@ -1125,7 +1608,11 @@ function setupWebSockets(server) {
       const { fileId, fileName, timestamp } = data;
 
       try {
-        const conversation = await getOrCreateConversation(sessionId, data);
+        const engaged = await engage(data);
+        if (!engaged) {
+          return;
+        }
+        const { conversation, created } = engaged;
 
         // POST /api/upload already recorded the message. This event is the
         // widget telling us the upload finished, so only append when the
@@ -1143,6 +1630,7 @@ function setupWebSockets(server) {
           });
         }
 
+        recordConsent(conversation, data.consent);
         conversation.lastActivity = new Date();
         await conversation.save();
 
@@ -1169,18 +1657,23 @@ function setupWebSockets(server) {
           fileInfo: { fileName: storedName, fileId, url: fileUrl }
         });
 
+        if (!alreadyRecorded && recorded) {
+          lifecycle.announceMessages(conversation, [recorded], emitFor(conversation));
+        }
+
+        if (created) {
+          await lifecycle.announceStart(conversation, { preview: `[File uploaded: ${storedName}]`, emit: emitFor(conversation) });
+        }
+
         socket.emit('message-read', { messageId: fileId, timestamp: new Date() });
       } catch (error) {
-        if (error instanceof QuotaRefusedError) {
-          return sendUnavailable(sessionId, null);
-        }
         logger.error('Error handling file upload:', { error });
       }
     });
 
     // Handle typing indicators from users
     socket.on('user-typing', (data = {}) => {
-      if (isOperator || !boundSessionId) {
+      if (isOperator || !boundSessionId || pendingSession) {
         return;
       }
 
@@ -1205,16 +1698,52 @@ function setupWebSockets(server) {
       }
 
       // Broadcast typing status to users in the session
-      io.to(sessionId).emit('operator-typing', {
+      toVisitor(sessionId, 'operator-typing', {
         isTyping,
         operatorName: operatorDisplayName,
         timestamp: new Date()
       });
     });
 
+    /**
+     * An operator has read a conversation - opened it, or scrolled to the
+     * end. Without a `messageId` it is everything the visitor has written.
+     */
+    socket.on('operator-read', async (data = {}) => {
+      if (!isOperator) {
+        return;
+      }
+
+      const { sessionId, messageId } = data;
+
+      if (!(await canOperateOn(sessionId))) {
+        return;
+      }
+
+      try {
+        const conversation = await Conversation.findOne({ sessionId })
+          .select('sessionId channel messages._id messages.messageId messages.sender')
+          .lean();
+        if (!conversation) {
+          return;
+        }
+
+        const target = typeof messageId === 'string' && messageId
+          ? conversation.messages.find(message => message.sender === 'user' &&
+              (String(message._id) === messageId || message.messageId === messageId))
+          : lifecycle.lastVisitorMessage(conversation);
+
+        if (target) {
+          tellVisitorRead(conversation, target);
+        }
+      } catch (error) {
+        logger.warn('Could not send a read receipt', { sessionId, error: error.message });
+      }
+    });
+
     // Handle message read receipts
     socket.on('message-read', (data = {}) => {
-      if (isOperator || !boundSessionId) {
+      if (isOperator || !boundSessionId || pendingSession) {
         return;
       }
 
@@ -1231,7 +1760,7 @@ function setupWebSockets(server) {
 
     // Handle marking all messages as read
     socket.on('mark-all-read', () => {
-      if (isOperator || !boundSessionId) {
+      if (isOperator || !boundSessionId || pendingSession) {
         return;
       }
 
@@ -1240,6 +1769,165 @@ function setupWebSockets(server) {
         sessionId: boundSessionId,
         timestamp: new Date()
       });
+    });
+
+    /**
+     * A visitor's thumbs up or down on one of the bot's answers.
+     *
+     * Only on a bot message of the conversation this socket is bound to: the
+     * message id is checked against that conversation, never looked up on its
+     * own, so nobody can rate somebody else's transcript. A visitor may
+     * change their mind; the latest rating stands.
+     */
+    socket.on('message-feedback', async (data = {}) => {
+      if (isOperator || !boundSessionId || pendingSession) {
+        return;
+      }
+
+      const sessionId = boundSessionId;
+      const { messageId, rating } = data;
+
+      if (typeof messageId !== 'string' || !/^[0-9a-f]{24}$/i.test(messageId) || !['up', 'down'].includes(rating)) {
+        return socket.emit('error', { sessionId, message: 'That rating could not be recorded' });
+      }
+
+      if (!rateLimit()) {
+        return;
+      }
+
+      try {
+        const at = new Date();
+        const updated = await Conversation.findOneAndUpdate(
+          { sessionId, messages: { $elemMatch: { _id: messageId, sender: 'bot' } } },
+          { $set: { 'messages.$.feedback': { rating, at } } },
+          { new: true, projection: { company: 1, sessionId: 1 } }
+        ).lean();
+
+        if (!updated) {
+          return socket.emit('error', { sessionId, message: 'That rating could not be recorded' });
+        }
+
+        allOperators(tenantOf(updated), 'message-feedback', { sessionId, messageId, rating, timestamp: at });
+      } catch (error) {
+        logger.error('Error recording message feedback', { sessionId, error: error.message });
+      }
+    });
+
+    /**
+     * A visitor leaving their email address for a reply.
+     *
+     * The way out when nobody can answer now: closed, nobody at the desk, or
+     * the bot could not help. The conversation is created if this is the
+     * first thing they did, marked as waiting with the reason, and the team
+     * is told - and an operator's reply to it goes by email when the visitor
+     * is no longer here to read it in the chat.
+     */
+    socket.on('leave-message', async (data = {}) => {
+      if (isOperator || !boundSessionId) {
+        return;
+      }
+
+      const sessionId = boundSessionId;
+      const email = typeof data.email === 'string' ? data.email.trim().toLowerCase() : '';
+
+      if (!email || email.length > MAX_EMAIL_LENGTH || !EMAIL_ADDRESS.test(email)) {
+        return socket.emit('error', { sessionId, message: 'Please enter a valid email address' });
+      }
+
+      let text = null;
+      if (typeof data.message === 'string' && data.message.trim()) {
+        const validated = validateMessage(data.message);
+        if (validated.error) {
+          return socket.emit('error', { sessionId, message: validated.error });
+        }
+        text = validated.text;
+      }
+
+      if (!rateLimit()) {
+        return socket.emit('error', { sessionId, message: 'You are sending messages too quickly. Please wait a moment.' });
+      }
+
+      try {
+        const engaged = await engage({ ...data, email });
+        if (!engaged) {
+          return;
+        }
+        const { conversation, created } = engaged;
+        const now = new Date();
+        const stored = [];
+
+        conversation.followUp = {
+          email,
+          requestedAt: now,
+          lastSentAt: conversation.followUp ? conversation.followUp.lastSentAt : undefined
+        };
+
+        if (!conversation.metadata) {
+          conversation.metadata = new Map();
+        }
+        if (!conversation.metadata.get('email')) {
+          conversation.metadata.set('email', email);
+        }
+        recordConsent(conversation, data.consent);
+
+        if (text) {
+          conversation.messages.push({ content: text, sender: 'user', timestamp: now });
+          stored.push(lastMessage(conversation));
+          usageService.record(clientCompanyId, { messages: 1 });
+        }
+
+        stored.push(lifecycle.addSystemLine(conversation, `Left an email address for a reply: ${email}`));
+
+        if (!conversation.operatorId) {
+          const reach = await lifecycle.reachability(tenantOf(conversation));
+          const current = conversation.handoff && conversation.handoff.reason;
+          const reason = !reach.canReach ? 'offline_message' : (current || 'visitor_request');
+
+          conversation.handoff = {
+            requestedAt: (conversation.handoff && conversation.handoff.requestedAt) || now,
+            reason,
+            summary: lifecycle.handoverSummary(conversation)
+          };
+          conversation.awaitingOperatorSince = conversation.awaitingOperatorSince || now;
+        }
+
+        // An address they typed is a claim, not a verified identity; it
+        // threads this conversation onto anyone we know by that address.
+        const contact = await contactService.resolve({
+          companyId: clientCompanyId,
+          sessionId,
+          externalId: socket.handshake.auth?.externalId,
+          userHash: socket.handshake.auth?.userHash,
+          email
+        });
+        if (contact) {
+          await contactService.linkConversation(contact, conversation);
+        }
+
+        conversation.lastActivity = now;
+        await conversation.save();
+
+        const emit = emitFor(conversation);
+        lifecycle.announceMessages(conversation, stored, emit);
+
+        socket.emit('followup-saved', { email, ...notice('followup_saved', { email }) });
+
+        emit.operators('handoff-requested', {
+          sessionId,
+          visitorName: lifecycle.visitorName(conversation) || email,
+          reason: conversation.handoff ? conversation.handoff.reason : 'offline_message',
+          requestedAt: conversation.handoff ? conversation.handoff.requestedAt : now,
+          preview: lifecycle.preview(text || lifecycle.lastVisitorMessage(conversation)?.content),
+          email
+        });
+
+        if (created) {
+          await lifecycle.announceStart(conversation, { preview: text || '', emit });
+        }
+      } catch (error) {
+        logger.error('Error saving a follow-up request', { sessionId, error: error.message });
+        socket.emit('error', { sessionId, message: 'Your message could not be saved. Please try again.' });
+      }
     });
 
     // Handle operator joining monitoring room
@@ -1273,15 +1961,24 @@ function setupWebSockets(server) {
 
       try {
         const current = await Conversation.findOne({ sessionId })
-          .select('operatorId operatorName company')
+          .select('operatorId operatorName company firstOperatorJoinedAt')
           .lean();
 
         if (!current) {
           return socket.emit('error', { sessionId, message: 'Conversation not found' });
         }
 
-        const heldByAnother = current.operatorId &&
-          String(current.operatorId) !== String(socket.user.id);
+        // The person who already holds it, coming back - a refresh, a second
+        // tab, a reconnect. They rejoin the room and nothing else happens:
+        // announcing them to the visitor again, wiping the workflow and
+        // drafting another suggestion was what every page reload used to do.
+        if (current.operatorId && String(current.operatorId) === String(socket.user.id)) {
+          socket.join(sessionId);
+          socket.emit('operator-rejoined', { sessionId, timestamp: new Date() });
+          return;
+        }
+
+        const heldByAnother = Boolean(current.operatorId);
 
         // Two people answering one visitor is worse than one. A colleague's
         // conversation can be taken only deliberately, and only by someone
@@ -1294,6 +1991,7 @@ function setupWebSockets(server) {
           });
         }
 
+        const now = new Date();
         const conversation = await Conversation.findOneAndUpdate(
           { sessionId },
           {
@@ -1301,10 +1999,22 @@ function setupWebSockets(server) {
               hasOperator: true,
               // The workflow stops here. Two of them asking questions at once
               // — a person and a half-finished flow — is worse than either.
-              workflowState: { awaiting: null, variables: {}, updatedAt: new Date() },
+              workflowState: { awaiting: null, variables: {}, updatedAt: now },
               operatorId: socket.user.id,
               operatorName: operatorDisplayName,
-              assignment: { method: 'manual', at: new Date() }
+              assignment: { method: 'manual', at: now },
+              operatorEverJoined: true,
+              ...(current.firstOperatorJoinedAt ? {} : { firstOperatorJoinedAt: now })
+            },
+            $push: {
+              messages: {
+                content: heldByAnother
+                  ? `${operatorDisplayName} took over from ${current.operatorName || 'a colleague'}`
+                  : `${operatorDisplayName} joined`,
+                sender: 'system',
+                path: 'system',
+                timestamp: now
+              }
             },
             $unset: { awaitingOperatorSince: 1 }
           },
@@ -1320,12 +2030,15 @@ function setupWebSockets(server) {
         logger.info(`Operator joined session room: ${sessionId}`);
 
         const tenantId = tenantOf(conversation);
+        const emit = emitFor(conversation);
 
-        // Notify user that operator has joined
-        io.to(sessionId).emit('operator-message', {
-          text: `${operatorDisplayName} has joined the conversation and will assist you.`,
-          senderName: operatorDisplayName,
-          timestamp: new Date()
+        lifecycle.announceMessages(conversation, [lastMessage(conversation)], emit);
+
+        // The visitor sees who they are talking to now.
+        toVisitor(sessionId, 'operator-joined', {
+          sessionId,
+          operatorName: operatorDisplayName,
+          ...notice('operator_joined', { operatorName: operatorDisplayName })
         });
 
         if (heldByAnother) {
@@ -1333,7 +2046,7 @@ function setupWebSockets(server) {
           io.to(userRoom(current.operatorId)).emit('chat-taken-from-you', {
             sessionId,
             takenBy: operatorDisplayName,
-            timestamp: new Date()
+            timestamp: now
           });
         }
 
@@ -1342,14 +2055,12 @@ function setupWebSockets(server) {
           sessionId,
           operatorId: socket.user.id,
           operatorName: operatorDisplayName,
-          timestamp: new Date()
+          timestamp: now
         });
 
         // Draft a reply to whatever the visitor last said, for the person
         // who has just taken over.
-        const lastUserMessage = [...conversation.messages]
-          .reverse()
-          .find(msg => msg.sender === 'user');
+        const lastUserMessage = lifecycle.lastVisitorMessage(conversation);
 
         if (lastUserMessage) {
           await offerSuggestion(conversation, lastUserMessage, { to: socket.user.id });
@@ -1390,6 +2101,10 @@ function setupWebSockets(server) {
         const result = await deliverOperatorMessage(conversation, validated.text);
         if (!result.ok) {
           socket.emit('error', { sessionId, message: result.error });
+        } else if (result.warning) {
+          socket.emit('error', { sessionId, message: result.warning });
+        } else if (result.emailedTo) {
+          socket.emit('operator-message-emailed', { sessionId, messageId: result.messageId, to: result.emailedTo });
         }
       } catch (error) {
         logger.error('Error handling operator message:', { error });
@@ -1425,9 +2140,7 @@ function setupWebSockets(server) {
             msg => msg._id.toString() === messageId && msg.sender === 'user'
           );
         } else {
-          targetMessage = [...conversation.messages]
-            .reverse()
-            .find(msg => msg.sender === 'user');
+          targetMessage = lifecycle.lastVisitorMessage(conversation);
         }
 
         if (!targetMessage) {
@@ -1474,6 +2187,9 @@ function setupWebSockets(server) {
         if (!result.ok) {
           return socket.emit('error', { sessionId, message: result.error });
         }
+        if (result.warning) {
+          socket.emit('error', { sessionId, message: result.warning });
+        }
 
         // Notify all operators that the suggestion was used
         allOperators(tenantOf(conversation), 'suggestion-used', {
@@ -1501,7 +2217,7 @@ function setupWebSockets(server) {
         return;
       }
 
-      io.to(sessionId).emit('request-user-details');
+      toVisitor(sessionId, 'request-user-details');
     });
 
     // Handle toggling suggestions for a chat
@@ -1578,8 +2294,16 @@ function setupWebSockets(server) {
           return;
         }
 
+        if (heldByColleague(conversation, data.force)) {
+          return socket.emit('error', {
+            sessionId,
+            message: `${conversation.operatorName || 'Another operator'} is handling this conversation`
+          });
+        }
+
         const tenantId = tenantOf(conversation);
-        let text;
+        const emit = emitFor(conversation);
+        let line;
 
         if (passToBot === false) {
           // Not "leave it for the next person" - that used to mean nobody:
@@ -1588,27 +2312,43 @@ function setupWebSockets(server) {
           // colleague now.
           const result = await assignmentService.release(conversation, { exclude: [socket.user.id] });
 
-          text = result.assigned
-            ? `${operatorDisplayName} has left the conversation. ${result.operator.displayName} will assist you.`
-            : `${operatorDisplayName} has left the conversation. The next available operator will be with you shortly; in the meantime the assistant can help.`;
+          line = lifecycle.addSystemLine(conversation, result.assigned
+            ? `${operatorDisplayName} passed this to ${result.operator.displayName}`
+            : `${operatorDisplayName} returned this to the queue`);
+          await conversation.save();
+
+          toVisitor(sessionId, 'operator-left', {
+            sessionId,
+            operatorName: operatorDisplayName,
+            ...notice('operator_left', { operatorName: operatorDisplayName })
+          });
+
+          if (result.assigned) {
+            toVisitor(sessionId, 'operator-joined', {
+              sessionId,
+              operatorName: result.operator.displayName,
+              ...notice('operator_joined', { operatorName: result.operator.displayName })
+            });
+          }
         } else {
           conversation.hasOperator = false;
           conversation.operatorId = null;
           conversation.operatorName = null;
           conversation.botEnabled = true;
           conversation.awaitingOperatorSince = undefined;
+          line = lifecycle.addSystemLine(conversation, `${operatorDisplayName} handed this back to the bot`);
           await conversation.save();
 
-          text = `${operatorDisplayName} has left the conversation. The chatbot will assist you.`;
+          toVisitor(sessionId, 'operator-left', {
+            sessionId,
+            operatorName: operatorDisplayName,
+            ...notice('handed_back', { operatorName: operatorDisplayName })
+          });
         }
 
-        socket.leave(sessionId);
+        lifecycle.announceMessages(conversation, [line], emit);
 
-        io.to(sessionId).emit('operator-message', {
-          text,
-          senderName: operatorDisplayName,
-          timestamp: new Date()
-        });
+        socket.leave(sessionId);
 
         allOperators(tenantId, 'operator-left', {
           sessionId,
@@ -1621,7 +2361,13 @@ function setupWebSockets(server) {
       }
     });
 
-    // Handle end chat
+    /**
+     * An operator closing a conversation, with how it ended.
+     *
+     * The outcome - resolved, needs a follow-up, not resolved, spam - is what
+     * lets a tenant tell a bot that deflects from a bot that helps, and it is
+     * only known to the person who closed it.
+     */
     socket.on('end-chat', async (data = {}) => {
       if (!isOperator) {
         return;
@@ -1634,20 +2380,51 @@ function setupWebSockets(server) {
         return socket.emit('error', { sessionId, message: 'You do not have access to this conversation' });
       }
 
+      let outcome = null;
+      if (data.outcome !== undefined && data.outcome !== null) {
+        const status = data.outcome && data.outcome.status;
+        if (!OUTCOMES.includes(status)) {
+          return socket.emit('error', { sessionId, message: 'Choose how the conversation ended' });
+        }
+        const note = typeof data.outcome.note === 'string' ? data.outcome.note.trim().slice(0, MAX_OUTCOME_NOTE) : '';
+        outcome = { status, note: note || undefined, by: socket.user.id, at: new Date() };
+      }
+
       try {
+        const current = await Conversation.findOne({ sessionId }).select('operatorId operatorName').lean();
+        if (heldByColleague(current, data.force)) {
+          return socket.emit('error', {
+            sessionId,
+            message: `${current.operatorName || 'Another operator'} is handling this conversation`
+          });
+        }
+
+        const now = new Date();
+
         // Update conversation status in database
         const conversation = await Conversation.findOneAndUpdate(
           { sessionId },
           {
             $set: {
               status: 'ended',
-              endedAt: new Date(),
+              endedAt: now,
               hasOperator: false,
               operatorId: null,
               operatorName: null,
               // A visitor returning days later should not be answered as
               // though they were still half way through answering a question.
-              workflowState: { awaiting: null, variables: {}, updatedAt: new Date() }
+              workflowState: { awaiting: null, variables: {}, updatedAt: now },
+              ...(outcome ? { outcome } : {})
+            },
+            $push: {
+              messages: {
+                content: outcome
+                  ? `Ended by ${operatorDisplayName} (${outcome.status.replace('_', ' ')})`
+                  : `Ended by ${operatorDisplayName}`,
+                sender: 'system',
+                path: 'system',
+                timestamp: now
+              }
             },
             $unset: { awaitingOperatorSince: 1 }
           },
@@ -1657,10 +2434,14 @@ function setupWebSockets(server) {
         if (conversation) {
           const tenantId = tenantOf(conversation);
 
+          lifecycle.announceMessages(conversation, [lastMessage(conversation)], emitFor(conversation));
+
           // Ask for a rating on the way out. This is the only moment the
           // customer is both still present and finished — asking earlier
           // interrupts, and asking later means emailing them.
-          const askForRating = csatService.shouldRequestRating(conversation);
+          // Not on a messaging app, where there is no rating form to show.
+          const askForRating = !channels.isMessagingChannel(conversation.channel) &&
+            csatService.shouldRequestRating(conversation);
 
           if (askForRating) {
             await csatService.markRequested(sessionId);
@@ -1670,23 +2451,25 @@ function setupWebSockets(server) {
             sessionId,
             endedBy: 'operator',
             operatorName: operatorDisplayName,
-            messages: conversation.messages.length,
+            messages: conversation.messages.filter(message => message.sender !== 'system').length,
             startedAt: conversation.startedAt,
             endedAt: conversation.endedAt,
+            outcome: outcome ? outcome.status : null,
             tags: conversation.tags || []
           });
 
           // Notify user that chat has ended
-          io.to(sessionId).emit('chat-ended', {
-            message: 'This conversation has been ended by the operator.',
+          toVisitor(sessionId, 'chat-ended', {
             requestRating: askForRating,
-            timestamp: new Date()
+            ...notice('chat_ended'),
+            timestamp: now
           });
 
           // Notify all operators that this chat has ended
           allOperators(tenantId, 'chat-ended', {
             sessionId,
-            timestamp: new Date()
+            outcome: outcome ? { status: outcome.status, note: outcome.note } : undefined,
+            timestamp: now
           });
 
           // Notify all operators that the operator has left this chat
@@ -1694,7 +2477,7 @@ function setupWebSockets(server) {
             sessionId,
             operatorId: socket.user.id,
             operatorName: operatorDisplayName,
-            timestamp: new Date()
+            timestamp: now
           });
         }
       } catch (error) {
@@ -1705,62 +2488,30 @@ function setupWebSockets(server) {
     /**
      * A visitor asking for a person.
      *
-     * Explicit rather than inferred. Guessing "this one wants a human" from the
-     * message text gets it wrong in both directions — it escalates people who
-     * were only being polite, and misses the ones who are quietly giving up.
+     * Explicit, from the widget's button. Whether anyone can actually answer
+     * is checked - opening hours, and somebody connected and taking chats -
+     * and a visitor nobody can answer now is asked for an email address
+     * rather than left in a queue nobody is watching.
      */
-    socket.on('request-operator', async () => {
+    socket.on('request-operator', async (data = {}) => {
       if (isOperator || !boundSessionId) {
         return;
       }
 
-      const sessionId = boundSessionId;
-
       try {
-        const conversation = await Conversation.findOne({ sessionId });
-
-        if (!conversation) {
+        const engaged = await engage(data || {});
+        if (!engaged) {
           return;
         }
+        const { conversation, created } = engaged;
+        const emit = emitFor(conversation);
 
-        if (conversation.operatorId) {
-          return socket.emit('operator-requested', {
-            queued: false,
-            connected: true,
-            operatorName: conversation.operatorName
-          });
+        if (created) {
+          await lifecycle.announceStart(conversation, { preview: '', emit });
         }
 
-        // Marked as waiting so the queue shows who has asked for a person, not
-        // only who already has one.
-        conversation.awaitingOperatorSince = new Date();
-        await conversation.save();
-
-        allOperators(conversation.company, 'operator-requested', {
-          sessionId,
-          timestamp: new Date()
-        });
-
-        const result = await assignmentService.autoAssign(conversation);
-
-        // The bot steps aside only once a person has actually taken the
-        // conversation.
-        //
-        // This used to switch the bot off the moment somebody *asked* for a
-        // human. If nobody ever claimed it, the bot would not answer and no
-        // operator would either: every further message was stored and silently
-        // left unanswered, with no timeout and no way back. Somebody who asked
-        // for help got less help than if they had never asked.
-        if (result.assigned) {
-          conversation.botEnabled = false;
-          await conversation.save();
-        }
-
-        socket.emit('operator-requested', {
-          queued: !result.assigned,
-          connected: result.assigned,
-          operatorName: result.assigned ? result.operator.displayName : null
-        });
+        const reason = lastBotMessageUnanswered(conversation) ? 'bot_unanswered' : 'visitor_request';
+        await lifecycle.handOver(conversation, reason, { emit });
       } catch (error) {
         logger.error('Error handling operator request:', { error: error.message });
       }
@@ -1800,6 +2551,11 @@ function setupWebSockets(server) {
             comment: result.rating.comment,
             timestamp: new Date()
           });
+
+          // Once per rating, on the score rather than on a comment added to it.
+          if (!result.commentAdded && result.rating.score <= LOW_RATING) {
+            notifyLowRating(sessionId, result);
+          }
         }
       } catch (error) {
         logger.error('Error recording rating:', { error: error.message });
@@ -1843,7 +2599,7 @@ function setupWebSockets(server) {
       logger.info('Client disconnected');
 
       // If it was a user (not an operator), notify operators
-      if (!isOperator && boundSessionId) {
+      if (!isOperator && boundSessionId && !pendingSession) {
         toOperators(clientCompanyId, 'chat-activity', {
           type: 'closed',
           sessionId: boundSessionId,
@@ -1868,7 +2624,7 @@ function setupWebSockets(server) {
 
         const grace = envInt('OPERATOR_GRACE_MS', 60 * 1000);
         const timer = setTimeout(() => {
-          releaseOperatorChats(socket.user.id, socket.user.username);
+          releaseOperatorChats(socket.user.id, socket.user.username, operatorDisplayName);
         }, grace);
         // Never keep the process alive for this.
         if (typeof timer.unref === 'function') {

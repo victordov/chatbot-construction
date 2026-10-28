@@ -68,6 +68,63 @@ function weekdayIn(timezone) {
 }
 
 /**
+ * A date as `YYYY-MM-DD` in a given timezone, the form closed dates are kept in.
+ */
+function localDateIn(timezone, at = new Date()) {
+  try {
+    // en-CA formats as ISO year-month-day.
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit'
+    }).format(at);
+  } catch {
+    return at.toISOString().slice(0, 10);
+  }
+}
+
+/** `YYYY-MM-DD` moved by whole days, without any timezone getting involved. */
+function shiftDate(date, days) {
+  const moved = new Date(`${date}T12:00:00Z`);
+  moved.setUTCDate(moved.getUTCDate() + days);
+  return moved.toISOString().slice(0, 10);
+}
+
+/**
+ * Whether a rule runs past midnight: open Friday 22:00, closed Saturday 06:00.
+ */
+function overnight(rule) {
+  return (rule.closesAt ?? 1440) < (rule.opensAt ?? 0);
+}
+
+/**
+ * Is a moment inside the schedule?
+ *
+ * Today's rule covers from its opening time to its closing time, or to
+ * midnight when it runs overnight; yesterday's overnight rule covers this
+ * morning up to its closing time. A closed date closes the whole calendar
+ * day, including the morning tail of the night before.
+ */
+function openAt(days, closed, weekday, minutes, date) {
+  if (closed.has(date)) {
+    return false;
+  }
+
+  const today = days.find(day => day.day === weekday);
+  if (today && !today.closed) {
+    const opens = today.opensAt ?? 0;
+    const closes = today.closesAt ?? 1440;
+    if (overnight(today) ? minutes >= opens : minutes >= opens && minutes < closes) {
+      return true;
+    }
+  }
+
+  const yesterday = days.find(day => day.day === (weekday + 6) % 7);
+  return Boolean(
+    yesterday && !yesterday.closed && overnight(yesterday) &&
+    !closed.has(shiftDate(date, -1)) && minutes < (yesterday.closesAt ?? 0)
+  );
+}
+
+/**
  * Format minutes-past-midnight as HH:MM, for telling a visitor when to return.
  */
 function formatMinutes(minutes) {
@@ -107,43 +164,59 @@ async function isWithinBusinessHours(companyId) {
     }
   }
 
-  if (!hours || !hours.enabled || !Array.isArray(hours.days) || hours.days.length === 0) {
+  const closedDates = Array.isArray(hours?.closedDates) ? hours.closedDates : [];
+  const hasSchedule = Array.isArray(hours?.days) && hours.days.length > 0;
+
+  if (!hours || !hours.enabled || (!hasSchedule && closedDates.length === 0)) {
     return { open: true, enabled: false, offlineMessage: null, opensAt: null, timezone: hours?.timezone || 'UTC' };
   }
 
   const timezone = hours.timezone || 'UTC';
   const today = weekdayIn(timezone);
   const nowMinutes = minutesNowIn(timezone);
-  const rule = hours.days.find(day => day.day === today);
+  const date = localDateIn(timezone);
+  const closed = new Set(closedDates.map(entry => entry && entry.date).filter(Boolean));
+  // With no weekly schedule but some holidays, every other day is open all day.
+  const days = hasSchedule
+    ? hours.days
+    : [0, 1, 2, 3, 4, 5, 6].map(day => ({ day, opensAt: 0, closesAt: 1440, closed: false }));
 
-  const open = Boolean(
-    rule &&
-    !rule.closed &&
-    nowMinutes >= (rule.opensAt ?? 0) &&
-    nowMinutes < (rule.closesAt ?? 1440)
-  );
+  const open = openAt(days, closed, today, nowMinutes, date);
+  const holiday = closed.has(date) ? closedDates.find(entry => entry.date === date) : null;
 
   return {
     open,
     enabled: true,
     timezone,
     offlineMessage: open ? null : (hours.offlineMessage || null),
+    // Named, so the admin's "Right now" line can say why it is closed today.
+    closedToday: holiday ? (holiday.label || 'Closed today') : null,
     // When they can come back, so the visitor is not left guessing.
-    opensAt: open ? null : nextOpening(hours.days, today, nowMinutes)
+    opensAt: open ? null : nextOpening(days, today, nowMinutes, { closed, date })
   };
 }
 
 /**
  * A human description of the next opening, e.g. "Monday at 09:00".
+ *
+ * Closed dates are skipped, so the day after a bank holiday is the answer
+ * rather than the holiday itself. Looks a little over two weeks ahead, which
+ * covers a long holiday shutdown without walking the calendar for ever.
  */
-function nextOpening(days, today, nowMinutes) {
+function nextOpening(days, today, nowMinutes, options = {}) {
   const names = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  const closed = options.closed || new Set();
+  const date = options.date || null;
 
-  for (let offset = 0; offset < 8; offset += 1) {
+  for (let offset = 0; offset < 16; offset += 1) {
     const day = (today + offset) % 7;
     const rule = days.find(entry => entry.day === day);
 
     if (!rule || rule.closed) {
+      continue;
+    }
+
+    if (date && closed.has(shiftDate(date, offset))) {
       continue;
     }
 
@@ -158,6 +231,10 @@ function nextOpening(days, today, nowMinutes) {
     }
     if (offset === 1) {
       return `tomorrow at ${when}`;
+    }
+    if (offset >= 7 && date) {
+      // A week or more away: the weekday alone would be ambiguous.
+      return `${names[day]} ${shiftDate(date, offset)} at ${when}`;
     }
     return `${names[day]} at ${when}`;
   }
@@ -267,5 +344,8 @@ module.exports = {
   // Exported for tests and for the settings UI.
   formatMinutes,
   minutesNowIn,
-  weekdayIn
+  weekdayIn,
+  localDateIn,
+  openAt,
+  nextOpening
 };

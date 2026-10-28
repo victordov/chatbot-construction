@@ -15,6 +15,7 @@ import feather from 'feather-icons';
 import { confirmDialog, promptDialog } from '../shared/dialogs.js';
 import { escapeHtml } from '../shared/html.js';
 import { showToast } from '../shared/toast.js';
+import { connectEdge, describeTrigger, wouldCycle } from './graph.js';
 
 const AUTH_TOKEN_KEY = 'chatbot-auth-token';
 
@@ -50,8 +51,8 @@ const NODE_TYPES = {
     inputs: 0, outputs: 0, singleton: true, configuration: true,
     fields: [
       { key: 'prompt', label: 'Persona prompt', type: 'textarea', rows: 4, required: true,
-        placeholder: 'You are a friendly support assistant for Acme...',
-        help: 'Platform safety rules are always applied on top of this.' },
+        placeholder: 'e.g. You are the support assistant for Acme Tools…',
+        help: 'Platform safety rules are always applied on top of this. Until you edit it, the persona from Persona & replies is used instead.' },
       { key: 'tone', label: 'Tone', type: 'select',
         options: ['professional', 'friendly', 'casual', 'formal', 'empathetic'] },
       { key: 'personality', label: 'Personality', type: 'select',
@@ -123,7 +124,10 @@ const NODE_TYPES = {
     description: 'Filter unsafe content',
     inputs: 0, outputs: 0, singleton: true, configuration: true,
     fields: [
-      { key: 'strictness', label: 'Strictness', type: 'select', options: ['low', 'medium', 'high'] }
+      { key: 'strictness', label: 'Strictness', type: 'select', options: ['low', 'medium', 'high'],
+        help: 'Low blocks only threats, sexual content involving minors, self-harm instructions and graphic violence. ' +
+          'Medium blocks what the moderation model flags. High also blocks anything close to that line. ' +
+          'Applies to what the visitor writes and to what the bot answers.' }
     ]
   },
   fallback: {
@@ -221,7 +225,13 @@ const NODE_TYPES = {
       { key: 'input', label: 'Inputs', type: 'capability-input' },
       { key: 'offerAsChoices', label: 'Offer the results as buttons', type: 'select',
         options: ['no', 'yes'],
-        help: 'A visitor tapping a product or a time is unambiguous in a way typing is not.' }
+        help: 'A visitor tapping a product or a time is unambiguous in a way typing is not. The flow waits for the tap, then carries on from "Found something".' },
+      { key: 'question', label: 'Question with the buttons', type: 'text',
+        placeholder: 'Which one would you like?',
+        showWhen: d => d.offerAsChoices === 'yes' || d.offerAsChoices === true },
+      { key: 'variable', label: 'Save the pick as', type: 'text', placeholder: 'selected',
+        help: 'Use it later as {{selected}}, and its label as {{selected_label}}.',
+        showWhen: d => d.offerAsChoices === 'yes' || d.offerAsChoices === true }
     ]
   },
   notify: {
@@ -274,9 +284,20 @@ const NODE_TYPES = {
 /** Sensible starting data so a freshly dropped node is already valid. */
 const NODE_DEFAULTS = {
   start: { label: 'Start' },
-  persona: { label: 'Persona', prompt: 'You are a helpful assistant.', tone: 'professional', personality: 'helpful' },
+  // `inheritPersona`: until somebody edits it, a new Persona step uses the
+  // persona from Persona & replies. A default "You are a helpful assistant."
+  // used to replace what the tenant wrote there the moment it was published.
+  persona: {
+    label: 'Persona', prompt: 'You are a helpful assistant.', tone: 'professional', personality: 'helpful',
+    inheritPersona: true
+  },
   knowledge: { label: 'Knowledge', sourceType: 'vector_store', config: {} },
-  llm: { label: 'AI Reply', prompt: 'Answer the question.\n\nQuestion: {{user_input}}', model: 'gpt-4o-mini', temperature: 0.7 },
+  llm: {
+    label: 'AI Reply',
+    prompt: 'Answer the question using the knowledge provided. If it does not cover the question, say so plainly rather than guessing.\n\nQuestion: {{user_input}}',
+    model: 'gpt-4o-mini',
+    temperature: 0.7
+  },
   response: { label: 'Fixed Reply', template: 'Thanks for reaching out!' },
   router: { label: 'Router', conditions: [] },
   moderation: { label: 'Moderation', strictness: 'medium' },
@@ -538,6 +559,12 @@ class WorkflowEditor {
     // Stand-in values for an action node's placeholders, keyed by node id.
     // Scaffolding for the "Try it" button, deliberately not persisted.
     this.testValues = {};
+    // The preview conversation so far, sent with each message so an AI Reply
+    // step sees what was said - as it does in a real conversation.
+    this.previewHistory = [];
+    // How many workflows are live and how many the plan allows, for the
+    // publish dialog. Null until the list has loaded.
+    this.liveUsage = null;
 
     this.view = { x: 0, y: 0, zoom: 1 };
     this.history = [];
@@ -670,7 +697,12 @@ class WorkflowEditor {
     const body = await response.json().catch(() => ({}));
 
     if (!response.ok) {
-      throw new Error(body.error || `Request failed (${response.status})`);
+      // The status and body travel with the error: a publish refused with 409
+      // names the workflow to replace, and a 400 lists the problems.
+      const error = new Error(body.error || `Request failed (${response.status})`);
+      error.status = response.status;
+      error.body = body;
+      throw error;
     }
 
     return body;
@@ -680,7 +712,8 @@ class WorkflowEditor {
 
   async loadWorkflowList() {
     try {
-      const { workflows } = await this.api('');
+      const { workflows, liveUsage } = await this.api('');
+      this.liveUsage = liveUsage || null;
       this.renderWorkflowList(workflows || []);
     } catch (error) {
       this.toast(`Could not load workflows: ${error.message}`, 'danger');
@@ -694,7 +727,7 @@ class WorkflowEditor {
            ${wf._id === this.workflowId ? 'active' : ''}"
            href="?id=${encodeURIComponent(wf._id)}">
           <span class="text-truncate">${escapeHtml(wf.name)}</span>
-          <span class="badge bg-${wf.status === 'published' ? 'success' : 'secondary'}">${escapeHtml(wf.status)}</span>
+          <span class="badge bg-${wf.status === 'published' ? 'success' : 'secondary'}">${escapeHtml(wf.status === 'published' ? 'live' : wf.status)}</span>
         </a>
       </li>`).join('');
 
@@ -705,15 +738,24 @@ class WorkflowEditor {
   }
 
   startBlankWorkflow() {
-    this.workflow = { name: 'Untitled workflow', description: '', status: 'draft', version: 1 };
+    this.workflow = {
+      name: 'Untitled workflow', description: '', status: 'draft', version: 1,
+      trigger: { type: 'always', description: '', keywords: [] }
+    };
     // A blank canvas is intimidating and a workflow is invalid without a
-    // persona, so seed the two nodes every workflow needs.
-    this.nodes = [
-      this.makeNode('persona', { x: 80, y: 60 }),
-      this.makeNode('start', { x: 80, y: 220 }),
-      this.makeNode('llm', { x: 360, y: 220 })
+    // persona, so seed a flow that already works: look the question up in
+    // the knowledge base, then answer from it. The starter used to go
+    // straight from Start to an AI Reply, so publishing it stopped the bot
+    // using the knowledge it had been answering from.
+    const persona = this.makeNode('persona', { x: 80, y: 60 });
+    const start = this.makeNode('start', { x: 80, y: 220 });
+    const knowledge = this.makeNode('knowledge', { x: 352, y: 220 });
+    const reply = this.makeNode('llm', { x: 624, y: 220 });
+    this.nodes = [persona, start, knowledge, reply];
+    this.edges = [
+      { id: this.uid('edge'), source: start.id, target: knowledge.id, sourceHandle: null },
+      { id: this.uid('edge'), source: knowledge.id, target: reply.id, sourceHandle: null }
     ];
-    this.edges = [{ id: this.uid('edge'), source: this.nodes[1].id, target: this.nodes[2].id }];
     this.markSaved();
     this.pushHistory();
     this.render();
@@ -1174,58 +1216,24 @@ class WorkflowEditor {
       return;
     }
 
-    const exists = this.edges.some(e =>
-      e.source === source && e.target === target && (e.sourceHandle || null) === (sourceHandle || null));
-    if (exists) {
-      return;
-    }
-
     // Reject connections that would create a cycle - the compiler rejects
     // them too, but failing here means the user finds out immediately.
-    if (this.wouldCycle(source, target)) {
+    if (wouldCycle(this.edges, source, target)) {
       this.toast('That connection would create a loop', 'warning');
       return;
     }
 
-    // Only routers branch. Reconnecting any other node's output replaces the
-    // existing link rather than silently creating an ambiguous fork.
-    const sourceNode = this.nodeById(source);
-    if (sourceNode && sourceNode.type !== 'router') {
-      this.edges = this.edges.filter(e => e.source !== source);
-    } else {
-      // A router's individual output can still only go to one place.
-      this.edges = this.edges.filter(e =>
-        !(e.source === source && (e.sourceHandle || null) === (sourceHandle || null)));
+    // One connection per output (see graph.js): connecting an output that is
+    // already wired moves that wire, and leaves the step's other outputs -
+    // an Action's Failed path, a Router's other rules - where they were.
+    const result = connectEdge(this.edges, { source, target, sourceHandle, id: this.uid('edge') });
+    if (!result.changed) {
+      return;
     }
 
-    this.edges.push({ id: this.uid('edge'), source, target, sourceHandle: sourceHandle || null });
+    this.edges = result.edges;
     this.markDirty();
     this.pushHistory();
-  }
-
-  wouldCycle(source, target) {
-    const adjacency = new Map();
-    this.edges.forEach(e => {
-      if (!adjacency.has(e.source)) {
-        adjacency.set(e.source, []);
-      }
-      adjacency.get(e.source).push(e.target);
-    });
-
-    const seen = new Set();
-    const stack = [target];
-    while (stack.length) {
-      const current = stack.pop();
-      if (current === source) {
-        return true;
-      }
-      if (seen.has(current)) {
-        continue;
-      }
-      seen.add(current);
-      (adjacency.get(current) || []).forEach(next => stack.push(next));
-    }
-    return false;
   }
 
   // -- rendering --------------------------------------------------------
@@ -1251,13 +1259,30 @@ class WorkflowEditor {
   renderHeader() {
     const wf = this.workflow || {};
     this.el.title.textContent = wf.name || 'Untitled workflow';
-    this.el.version.textContent = `v${wf.version || 1}`;
+
+    // Which version visitors get, and whether the canvas is ahead of it: a
+    // save is a draft, and only Publish changes what is live.
+    if (wf.status === 'published' && wf.hasUnpublishedChanges) {
+      this.el.version.textContent = `Live: v${wf.liveVersion} · Draft: v${wf.version} (unpublished changes)`;
+      this.el.version.className = 'wf-version text-warning-emphasis small';
+    } else if (wf.status === 'published') {
+      this.el.version.textContent = `Live: v${wf.liveVersion || wf.version}`;
+      this.el.version.className = 'wf-version text-muted small';
+    } else {
+      this.el.version.textContent = `v${wf.version || 1}`;
+      this.el.version.className = 'wf-version text-muted small';
+    }
+
+    const unpublish = document.getElementById('wf-unpublish');
+    if (unpublish) {
+      unpublish.hidden = wf.status !== 'published';
+    }
 
     const status = wf.status || 'draft';
     // "Live" says what published means for a customer.
     this.el.status.textContent = { published: 'live', draft: 'draft', archived: 'archived' }[status] || status;
     this.el.status.title = status === 'published'
-      ? 'Customers are talking to this workflow now'
+      ? `Live. ${describeTrigger(wf.trigger)}.`
       : 'Not answering customers. Publish to make it live.';
     this.el.status.className = `wf-status wf-status-${status}`;
 
@@ -1276,14 +1301,14 @@ class WorkflowEditor {
 
       const ports = [];
       if (def.inputs > 0) {
-        ports.push(`<span class="wf-port wf-port-in" data-port="in" data-node-id="${node.id}" title="Incoming"></span>`);
+        ports.push(`<span class="wf-port wf-port-in" data-port="in" data-node-id="${escapeHtml(node.id)}" title="Incoming"></span>`);
       }
       if (def.outputs > 0) {
         const handles = outputHandles(node);
 
         handles.forEach((h, index) => {
           const offset = handles.length === 1 ? 50 : (100 / (handles.length + 1)) * (index + 1);
-          ports.push(`<span class="wf-port wf-port-out" data-port="out" data-node-id="${node.id}"
+          ports.push(`<span class="wf-port wf-port-out" data-port="out" data-node-id="${escapeHtml(node.id)}"
             ${h.handle ? `data-handle="${escapeHtml(h.handle)}"` : ''}
             style="top:${offset}%" title="${escapeHtml(h.label || 'Outgoing')}"></span>`);
         });
@@ -1291,8 +1316,8 @@ class WorkflowEditor {
 
       return `
         <div class="wf-node ${selected ? 'selected' : ''} ${invalid ? 'invalid' : ''} ${def.configuration ? 'config' : ''}"
-             data-node-id="${node.id}"
-             style="left:${node.position.x}px; top:${node.position.y}px; --node-color:${def.color}">
+             data-node-id="${escapeHtml(node.id)}"
+             style="left:${Number(node.position.x) || 0}px; top:${Number(node.position.y) || 0}px; --node-color:${def.color}">
           <div class="wf-node-head">
             <span class="wf-node-icon"><i data-feather="${def.icon}"></i></span>
             <span class="wf-node-title">${escapeHtml(node.data.label || def.label)}</span>
@@ -1346,7 +1371,7 @@ class WorkflowEditor {
   }
 
   renderNodePosition(node) {
-    const el = this.el.nodeLayer.querySelector(`[data-node-id="${node.id}"]`);
+    const el = this.el.nodeLayer.querySelector(`[data-node-id="${CSS.escape(node.id)}"]`);
     if (el) {
       el.style.left = `${node.position.x}px`;
       el.style.top = `${node.position.y}px`;
@@ -1392,7 +1417,7 @@ class WorkflowEditor {
       const to = this.portPosition(edge.target, 'in');
       const selected = edge.id === this.selectedEdgeId;
       return `
-        <g data-edge-id="${edge.id}" class="wf-edge ${selected ? 'selected' : ''}">
+        <g data-edge-id="${escapeHtml(edge.id)}" class="wf-edge ${selected ? 'selected' : ''}">
           <path class="wf-edge-hit" d="${path(from, to)}" />
           <path class="wf-edge-line" d="${path(from, to)}" marker-end="url(#wf-arrow)" />
         </g>`;
@@ -1434,7 +1459,8 @@ class WorkflowEditor {
           <label class="form-label mt-2" for="wf-desc-input">Description</label>
           <textarea class="form-control form-control-sm" id="wf-desc-input" rows="3"
             >${escapeHtml(this.workflow?.description || '')}</textarea>
-        </div>`;
+        </div>
+        ${this.renderTriggerPanel()}`;
 
       document.getElementById('wf-name-input')?.addEventListener('input', e => {
         this.workflow.name = e.target.value;
@@ -1445,6 +1471,7 @@ class WorkflowEditor {
         this.workflow.description = e.target.value;
         this.markDirty();
       });
+      this.bindTriggerPanel();
       return;
     }
 
@@ -1470,6 +1497,12 @@ class WorkflowEditor {
       <input class="form-control form-control-sm mb-3" id="wf-field-label"
              data-field="label" value="${escapeHtml(node.data.label || def.label)}">
 
+      ${node.type === 'persona' && node.data.inheritPersona ? `
+        <div class="alert alert-info py-2 px-3 small" id="wf-persona-inherits">
+          Using the persona from <strong>Persona &amp; replies</strong>. Edit the prompt
+          below to give this workflow its own.
+        </div>` : ''}
+
       ${fields.map(field => this.renderField(node, field)).join('')}
 
       ${advanced.length ? `
@@ -1487,6 +1520,91 @@ class WorkflowEditor {
 
     this.bindPropertyInputs(node);
   }
+
+  /**
+   * "When does this run?" - the workflow's trigger.
+   *
+   * Every live workflow used to answer every message, so publishing a "where
+   * is my order?" flow stopped the bot answering anything else. Now each says
+   * which messages it is for, and the rest go to the assistant.
+   */
+  renderTriggerPanel() {
+    const trigger = this.workflow?.trigger || { type: 'always' };
+    const type = trigger.type || 'always';
+    const options = [
+      { value: 'intent', label: 'When the visitor wants something', hint: 'Decided by meaning, so "my parcel never came" counts as "where is my order".' },
+      { value: 'keywords', label: 'When a message mentions a word', hint: 'Whole words, any of them, ignoring case.' },
+      { value: 'always', label: 'For every message', hint: 'Answers everything before the assistant. Only one live workflow can do this.' }
+    ];
+
+    return `
+      <div class="wf-workflow-settings wf-trigger" id="wf-trigger">
+        <h6>When does this run?</h6>
+        ${options.map(option => `
+          <div class="form-check">
+            <input class="form-check-input" type="radio" name="wf-trigger-type"
+                   id="wf-trigger-type-${option.value}" value="${option.value}" ${option.value === type ? 'checked' : ''}>
+            <label class="form-check-label small" for="wf-trigger-type-${option.value}">
+              ${escapeHtml(option.label)}
+              <span class="d-block text-muted">${escapeHtml(option.hint)}</span>
+            </label>
+          </div>`).join('')}
+
+        ${type === 'intent' ? `
+          <label class="form-label mt-2 small" for="wf-trigger-description">The visitor wants…</label>
+          <input class="form-control form-control-sm" id="wf-trigger-description" maxlength="200"
+                 value="${escapeHtml(trigger.description || '')}"
+                 placeholder="e.g. to know where their order is">
+          <div class="form-text">A short phrase, as the visitor would put it.</div>` : ''}
+
+        ${type === 'keywords' ? `
+          <label class="form-label mt-2 small" for="wf-trigger-keywords">Keywords</label>
+          <input class="form-control form-control-sm" id="wf-trigger-keywords"
+                 value="${escapeHtml((trigger.keywords || []).join(', '))}"
+                 placeholder="e.g. refund, return, exchange">
+          <div class="form-text">Separated by commas.</div>` : ''}
+
+        <div class="form-text mt-2">
+          Messages no live workflow takes go to your assistant, which answers from your knowledge.
+          A visitor part-way through this workflow stays in it until it ends.
+        </div>
+      </div>`;
+  }
+
+  bindTriggerPanel() {
+    const panel = this.el.properties.querySelector('#wf-trigger');
+    if (!panel) {
+      return;
+    }
+
+    const trigger = () => {
+      this.workflow.trigger = { type: 'always', description: '', keywords: [], ...(this.workflow.trigger || {}) };
+      return this.workflow.trigger;
+    };
+
+    panel.querySelectorAll('input[name="wf-trigger-type"]').forEach(radio => {
+      radio.addEventListener('change', () => {
+        trigger().type = radio.value;
+        this.markDirty();
+        this.renderProperties();
+        this.renderHeader();
+        if (feather) {
+          feather.replace();
+        }
+      });
+    });
+
+    panel.querySelector('#wf-trigger-description')?.addEventListener('input', event => {
+      trigger().description = event.target.value;
+      this.markDirty();
+    });
+
+    panel.querySelector('#wf-trigger-keywords')?.addEventListener('input', event => {
+      trigger().keywords = event.target.value.split(',').map(word => word.trim()).filter(Boolean);
+      this.markDirty();
+    });
+  }
+
 
   renderField(node, field) {
     const value = getPath(node.data, field.key);
@@ -1974,6 +2092,14 @@ class WorkflowEditor {
         setPath(node.data, e.target.dataset.field, value);
         this.markDirty();
 
+        // An edited persona is this workflow's own; until then it defers to
+        // the Persona screen (see NODE_DEFAULTS).
+        if (node.type === 'persona' && node.data.inheritPersona &&
+            ['prompt', 'tone', 'personality'].includes(e.target.dataset.field)) {
+          delete node.data.inheritPersona;
+          this.el.properties.querySelector('#wf-persona-inherits')?.remove();
+        }
+
         // Only the fields that change the node's appearance need a repaint.
         if (['label', 'sourceType', 'prompt', 'template', 'message', 'strictness',
           'url', 'method', 'question', 'variable', 'left', 'operator', 'right',
@@ -1984,7 +2110,7 @@ class WorkflowEditor {
           }
         }
         // Changing the method shows or hides the request body field.
-        if (['sourceType', 'method', 'operator', 'capability'].includes(e.target.dataset.field)) {
+        if (['sourceType', 'method', 'operator', 'capability', 'offerAsChoices'].includes(e.target.dataset.field)) {
           this.renderProperties();
         }
 
@@ -2301,6 +2427,7 @@ class WorkflowEditor {
 
   restartPreview() {
     this.previewState = null;
+    this.previewHistory = [];
     this.el.previewTranscript.innerHTML = '';
     this.clearPath();
     this.addPreviewNote('Started again from the top.');
@@ -2380,7 +2507,7 @@ class WorkflowEditor {
     this.lastPath = path;
 
     path.forEach((nodeId, index) => {
-      const el = this.el.nodeLayer.querySelector(`[data-node-id="${nodeId}"]`);
+      const el = this.el.nodeLayer.querySelector(`[data-node-id="${CSS.escape(String(nodeId))}"]`);
       if (el) {
         el.classList.add(index === path.length - 1 ? 'wf-visited-last' : 'wf-visited');
       }
@@ -2463,7 +2590,10 @@ class WorkflowEditor {
           nodes: this.nodes,
           edges: this.edges,
           message,
-          state: this.previewState || {}
+          state: this.previewState || {},
+          // What has been said so far, so an AI Reply step answers in context
+          // as it would in a real conversation. The server keeps the last ten.
+          history: this.previewHistory
         })
       });
 
@@ -2476,6 +2606,11 @@ class WorkflowEditor {
 
       this.addPreviewMessage(result.response || '(the flow ended without saying anything)', 'bot');
       this.previewState = result.state;
+      this.previewHistory = [
+        ...this.previewHistory,
+        { role: 'user', content: message },
+        ...(result.response ? [{ role: 'assistant', content: result.response }] : [])
+      ].slice(-20);
 
       (result.simulated || []).forEach(note => {
         this.addPreviewNote(`Would have: ${note.description}${note.detail ? ` — ${note.detail}` : ''}`);
@@ -2572,7 +2707,10 @@ class WorkflowEditor {
    * once the page has moved on.
    */
   async applyTemplate(id) {
-    if (this.nodes.length > 0 && !(await confirmDialog({
+    // Nothing to lose on an empty canvas or the untouched starter, so no
+    // question to answer either.
+    const untouched = this.nodes.length === 0 || (!this.workflowId && !this.dirty);
+    if (!untouched && !(await confirmDialog({
       title: 'Replace the canvas?',
       message: 'This template replaces everything on the canvas. Anything unsaved is lost.',
       confirmLabel: 'Use the template',
@@ -2610,6 +2748,15 @@ class WorkflowEditor {
         this.workflow.name = template.name;
         this.el.title.textContent = template.name;
       }
+
+      // When it runs comes with it: "Where is my order?" answers order
+      // questions, not every message.
+      this.workflow.trigger = {
+        type: 'always',
+        description: '',
+        keywords: [],
+        ...(template.trigger || {})
+      };
 
       this.el.templatePicker.hidden = true;
       this.selectedNodeId = null;
@@ -2653,6 +2800,7 @@ class WorkflowEditor {
 
     on('wf-save', () => this.save());
     on('wf-publish', () => this.publish());
+    on('wf-unpublish', () => this.unpublish());
     on('wf-validate', () => this.validate(true));
     on('wf-versions', () => this.showVersions());
     on('wf-duplicate', () => this.duplicateWorkflow());
@@ -2687,8 +2835,21 @@ class WorkflowEditor {
         this.save();
         return;
       }
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') {
+      if ((e.metaKey || e.ctrlKey) && (e.key.toLowerCase() === 'z' || e.key.toLowerCase() === 'y')) {
+        // Inside a text field, undo means the text: the browser does it, and
+        // taking it over threw away a whole canvas step instead of a typo.
+        // A select or a radio has no text to undo, so the canvas's is used.
+        const active = document.activeElement;
+        const editingText = active && (active.tagName === 'TEXTAREA' ||
+          (active.tagName === 'INPUT' && !['radio', 'checkbox', 'range', 'button', 'submit'].includes(active.type)));
+        if (editingText) {
+          return;
+        }
         e.preventDefault();
+        if (e.key.toLowerCase() === 'y') {
+          this.redo();
+          return;
+        }
         if (e.shiftKey) {
           this.redo();
         } else {
@@ -2799,6 +2960,7 @@ class WorkflowEditor {
       const payload = {
         name: this.workflow.name,
         description: this.workflow.description || '',
+        trigger: this.workflow.trigger || { type: 'always' },
         ...this.serialise()
       };
 
@@ -2811,15 +2973,30 @@ class WorkflowEditor {
       this.workflowId = result.workflow._id;
       this.markSaved();
       this.render();
-      this.toast('Workflow saved', 'success');
+
+      // A half-built draft saves; what it still needs is listed rather than
+      // refused, so an evening's work is never lost to a missing question.
+      this.applyReport(result);
+      const toFix = (result.problems || []).filter(problem => problem.level === 'error').length;
+
+      if (result.workflow.status === 'published' && result.workflow.hasUnpublishedChanges) {
+        this.toast('Saved as a draft. Visitors keep getting the live version until you publish.', 'success', 6000);
+      } else if (toFix > 0) {
+        this.toast(`Saved. ${toFix} thing${toFix === 1 ? '' : 's'} to fix before it can be published — see Problems.`, 'warning', 6000);
+      } else {
+        this.toast('Workflow saved', 'success');
+      }
 
       if (isNew) {
         // Put the id in the URL so a refresh reopens the same workflow.
         history.replaceState({}, '', `?id=${encodeURIComponent(this.workflowId)}`);
-        this.loadWorkflowList();
       }
+      this.loadWorkflowList();
       return true;
     } catch (error) {
+      if (error.body && error.body.problems) {
+        this.applyReport(error.body);
+      }
       this.toast(`Save failed: ${error.message}`, 'danger');
       return false;
     } finally {
@@ -2831,19 +3008,10 @@ class WorkflowEditor {
     try {
       const result = await this.api('/validate', {
         method: 'POST',
-        body: JSON.stringify(this.serialise())
+        body: JSON.stringify({ ...this.serialise(), trigger: this.workflow?.trigger || { type: 'always' } })
       });
 
-      this.validationErrors = (result.errors || []).map(message => ({
-        message,
-        nodeId: this.nodes.find(n => message.includes(n.data.label) || message.includes(n.id))?.id || null
-      }));
-
-      this.renderProblems(result);
-      this.renderNodes();
-      if (feather) {
-        feather.replace();
-      }
+      this.applyReport(result);
 
       if (result.valid && showSuccess) {
         this.toast('Workflow is valid', 'success');
@@ -2855,10 +3023,37 @@ class WorkflowEditor {
     }
   }
 
-  renderProblems(result) {
-    const errors = result.errors || [];
-    const warnings = result.warnings || [];
-    const total = errors.length + warnings.length;
+  /**
+   * Show a validation report: the Problems panel, and the nodes outlined.
+   *
+   * The server says which node each problem is about. Matching the message
+   * text against node labels used to highlight the wrong node whenever two
+   * shared a word, and none at all when a message named the internal id.
+   */
+  applyReport(result) {
+    const problems = Array.isArray(result.problems)
+      ? result.problems
+      : [
+        ...(result.errors || []).map(message => ({ message, nodeId: null, level: 'error' })),
+        ...(result.warnings || []).map(message => ({ message, nodeId: null, level: 'warning' }))
+      ];
+
+    this.validationErrors = problems
+      .filter(problem => problem.level === 'error' && problem.nodeId)
+      .map(problem => ({ message: problem.message, nodeId: problem.nodeId }));
+    this.lastProblems = problems;
+
+    this.renderProblems(problems);
+    this.renderNodes();
+    if (feather) {
+      feather.replace();
+    }
+  }
+
+  renderProblems(problems) {
+    const errors = problems.filter(problem => problem.level === 'error');
+    const warnings = problems.filter(problem => problem.level !== 'error');
+    const total = problems.length;
 
     this.el.problemCount.textContent = total;
     this.el.problemCount.className = `badge ${errors.length ? 'bg-danger' : warnings.length ? 'bg-warning text-dark' : 'bg-success'}`;
@@ -2868,10 +3063,73 @@ class WorkflowEditor {
       return;
     }
 
-    this.el.problems.innerHTML = [
-      ...errors.map(e => `<div class="wf-problem error"><i data-feather="alert-circle"></i>${escapeHtml(e)}</div>`),
-      ...warnings.map(w => `<div class="wf-problem warning"><i data-feather="alert-triangle"></i>${escapeHtml(w)}</div>`)
-    ].join('');
+    const row = problem => `
+      <div class="wf-problem ${problem.level === 'error' ? 'error' : 'warning'}"
+           ${problem.nodeId && this.nodeById(problem.nodeId) ? `data-problem-node="${escapeHtml(problem.nodeId)}" role="button" tabindex="0"` : ''}>
+        <i data-feather="${problem.level === 'error' ? 'alert-circle' : 'alert-triangle'}"></i>${escapeHtml(problem.message)}
+      </div>`;
+
+    this.el.problems.innerHTML = [...errors.map(row), ...warnings.map(row)].join('');
+
+    // A problem about a step takes you to the step.
+    this.el.problems.querySelectorAll('[data-problem-node]').forEach(item => {
+      const open = () => {
+        this.selectedNodeId = item.dataset.problemNode;
+        this.selectedEdgeId = null;
+        this.render();
+        this.followRun(this.selectedNodeId);
+      };
+      item.addEventListener('click', open);
+      item.addEventListener('keydown', event => {
+        if (event.key === 'Enter') {
+          open();
+        }
+      });
+    });
+  }
+
+  /**
+   * What publishing will do, in words: which messages it answers, what happens
+   * to everything else, and what it costs against the plan. The dialog used
+   * to say it answered "ahead of your assistant" and "replaced any workflow
+   * that is live now", which stopped being true once workflows had triggers.
+   */
+  publishSummary() {
+    const wf = this.workflow || {};
+    const trigger = wf.trigger || { type: 'always' };
+    const lines = [];
+
+    if (trigger.type === 'intent') {
+      lines.push(`It will answer messages where the visitor wants: ${trigger.description}.`);
+      lines.push('Everything else still goes to your other live workflows or your assistant.');
+    } else if (trigger.type === 'keywords') {
+      lines.push(`It will answer messages that mention ${(trigger.keywords || []).map(word => `"${word}"`).join(', ')}.`);
+      lines.push('Everything else still goes to your other live workflows or your assistant.');
+    } else {
+      lines.push('It will answer every message your bot gets, before your assistant.');
+      lines.push('Workflows with their own trigger still take the messages they match.');
+    }
+
+    lines.push('A visitor part-way through it stays in it until it ends.');
+
+    // Warnings do not stop a publish, so they are said here, where the
+    // decision is made, rather than only in a panel that may be closed.
+    const warnings = (this.lastProblems || []).filter(problem => problem.level === 'warning');
+    if (warnings.length) {
+      lines.push('');
+      lines.push('Worth a look first:');
+      warnings.slice(0, 3).forEach(warning => lines.push(`• ${warning.message}`));
+    }
+
+    if (wf.status === 'published') {
+      lines.push('');
+      lines.push(`Visitors now get version ${wf.liveVersion || wf.version}; they will get version ${wf.version}.`);
+    } else if (this.liveUsage && this.liveUsage.limit !== null && this.liveUsage.limit !== undefined) {
+      lines.push('');
+      lines.push(`Live workflows on your plan: ${this.liveUsage.used + 1} of ${this.liveUsage.limit} after this.`);
+    }
+
+    return lines.join('\n');
   }
 
   async publish() {
@@ -2890,31 +3148,97 @@ class WorkflowEditor {
       return;
     }
 
-    // Publishing swaps the workflow serving live conversations, so validate
-    // first rather than letting a broken graph reach visitors.
+    // Publishing changes what visitors are answered by, so the full checks
+    // a draft is spared on save run now.
     const valid = await this.validate();
     if (!valid) {
+      document.getElementById('wf-problems-body')?.classList.add('show');
       this.toast('Fix the problems listed before publishing', 'warning');
       return;
     }
 
+    await this.loadWorkflowList();
+
     if (!(await confirmDialog({
-      title: 'Publish this workflow?',
-      message: 'It starts answering customers straight away, ahead of your assistant, and replaces any workflow that is live now. Anything it does not handle still goes to the assistant.',
+      title: this.workflow?.status === 'published' ? 'Publish your changes?' : 'Publish this workflow?',
+      message: this.publishSummary(),
       confirmLabel: 'Publish'
+    }))) {
+      return;
+    }
+
+    await this.sendPublish(false);
+  }
+
+  /** The publish request, and the one follow-up question it can raise. */
+  async sendPublish(replace) {
+    this.setBusy(true);
+    try {
+      const result = await this.api(`/${encodeURIComponent(this.workflowId)}/publish`, {
+        method: 'POST',
+        body: JSON.stringify(replace ? { replace: true } : {})
+      });
+      this.workflow = result.workflow;
+      this.render();
+      this.toast(result.message || 'Workflow published', 'success');
+      this.loadWorkflowList();
+    } catch (error) {
+      const body = error.body || {};
+
+      if (error.status === 409 && body.code === 'ALWAYS_CONFLICT' && body.conflict) {
+        this.setBusy(false);
+        const yes = await confirmDialog({
+          title: `Replace "${body.conflict.name}"?`,
+          message: `"${body.conflict.name}" already answers every message, and only one live workflow can.\n\n` +
+            'Publishing this one takes it offline. It stays as a draft you can publish again. ' +
+            'Or cancel, and give this workflow its own trigger under "When does this run?".',
+          confirmLabel: `Replace "${body.conflict.name}"`,
+          danger: true
+        });
+        if (yes) {
+          await this.sendPublish(true);
+        }
+        return;
+      }
+
+      if (body.problems) {
+        this.applyReport(body);
+        document.getElementById('wf-problems-body')?.classList.add('show');
+      }
+      this.toast(`Publish failed: ${error.message}`, 'danger', error.status === 402 ? 10000 : 4000);
+    } finally {
+      this.setBusy(false);
+    }
+  }
+
+  /**
+   * Take this workflow off live. The messages it answered go back to the
+   * assistant (or another live workflow); the workflow stays as a draft.
+   */
+  async unpublish() {
+    if (!this.workflowId || this.workflow?.status !== 'published') {
+      return;
+    }
+
+    if (!(await confirmDialog({
+      title: 'Unpublish this workflow?',
+      message: `"${this.workflow.name}" stops answering visitors from their next message. ` +
+        'Visitors part-way through it are answered by your assistant instead. It stays here as a draft.',
+      confirmLabel: 'Unpublish',
+      danger: true
     }))) {
       return;
     }
 
     this.setBusy(true);
     try {
-      const result = await this.api(`/${encodeURIComponent(this.workflowId)}/publish`, { method: 'POST' });
+      const result = await this.api(`/${encodeURIComponent(this.workflowId)}/unpublish`, { method: 'POST' });
       this.workflow = result.workflow;
       this.render();
-      this.toast(result.message || 'Workflow published', 'success');
+      this.toast(result.message || 'Unpublished', 'success');
       this.loadWorkflowList();
     } catch (error) {
-      this.toast(`Publish failed: ${error.message}`, 'danger');
+      this.toast(`Unpublish failed: ${error.message}`, 'danger');
     } finally {
       this.setBusy(false);
     }
@@ -2959,7 +3283,9 @@ class WorkflowEditor {
   async rollback(version) {
     if (!(await confirmDialog({
       title: `Restore version ${version}?`,
-      message: 'The canvas is replaced with that version.',
+      message: this.workflow?.status === 'published'
+        ? 'The canvas is replaced with that version, as a draft. Visitors keep the live version until you publish.'
+        : 'The canvas is replaced with that version.',
       confirmLabel: 'Restore',
       danger: true
     }))) {
@@ -2981,14 +3307,20 @@ class WorkflowEditor {
       return;
     }
     try {
-      const result = await this.api('', {
-        method: 'POST',
-        body: JSON.stringify({
-          name: `${this.workflow.name} (copy)`,
-          description: this.workflow.description || '',
-          ...this.serialise()
-        })
-      });
+      // A saved, unchanged workflow is copied on the server, which keeps its
+      // saved credentials (the editor never holds them). Unsaved changes are
+      // copied from the canvas.
+      const result = this.workflowId && !this.dirty
+        ? await this.api(`/${encodeURIComponent(this.workflowId)}/duplicate`, { method: 'POST' })
+        : await this.api('', {
+          method: 'POST',
+          body: JSON.stringify({
+            name: `${this.workflow.name} (copy)`,
+            description: this.workflow.description || '',
+            trigger: this.workflow.trigger || { type: 'always' },
+            ...this.serialise()
+          })
+        });
       this.toast('Workflow duplicated', 'success');
       // The copy holds everything on the canvas, so leaving is not losing
       // work; clear the flag or beforeunload asks anyway.
@@ -3001,6 +3333,11 @@ class WorkflowEditor {
 
   async deleteWorkflow() {
     if (!this.workflowId) {
+      return;
+    }
+    if (this.workflow?.status === 'published') {
+      // Deleting what visitors are talking to would cut them off mid-question.
+      this.toast('This workflow is live. Unpublish it first, then delete it.', 'warning', 8000);
       return;
     }
     if (!(await confirmDialog({

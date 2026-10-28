@@ -45,7 +45,9 @@ const EVENTS = [
   { id: 'operator.assigned', label: 'A conversation was assigned to someone' },
   { id: 'contact.created', label: 'A new person was seen' },
   { id: 'contact.identified', label: 'A person was verified' },
-  { id: 'task.created', label: 'A task was raised' }
+  { id: 'task.created', label: 'A task was raised' },
+  { id: 'booking.created', label: 'An appointment was booked' },
+  { id: 'booking.cancelled', label: 'An appointment was cancelled' }
 ];
 
 const EVENT_IDS = new Set(EVENTS.map(event => event.id));
@@ -372,10 +374,33 @@ async function sendTest(hook) {
   return { ...result, deliveryId: delivery._id };
 }
 
+/**
+ * Send a delivery again, by hand, after the endpoint has been fixed.
+ *
+ * A new row rather than a rewrite of the old one: the failed attempt is the
+ * record of what went wrong, and the retry is a separate fact with its own
+ * response. Same event, same payload - the receiver sees exactly what it
+ * missed, under a new delivery id it has not seen before.
+ */
+async function redeliver(hook, delivery) {
+  const fresh = await WebhookDelivery.create({
+    webhook: hook._id,
+    company: delivery.company,
+    event: delivery.event,
+    payload: delivery.payload,
+    status: 'pending',
+    nextAttemptAt: new Date()
+  });
+
+  const result = await attempt(hook, fresh);
+  return { ...result, deliveryId: fresh._id };
+}
+
 module.exports = {
   dispatch,
   processPending,
   sendTest,
+  redeliver,
   sign,
   generateSecret,
   attempt,

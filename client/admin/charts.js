@@ -1,5 +1,8 @@
 /**
  * The charts on Reports, and the overview numbers on Home.
+ *
+ * One request fills both, for one window: the range buttons on Reports move
+ * every number and chart together, and each title says which window it is.
  */
 
 import Chart from 'chart.js/auto';
@@ -46,6 +49,37 @@ function chartBaseOptions() {
  */
 let lastAnalyticsData = null;
 
+/** A day key (`2026-10-22`) as a short label in the reader's own words. */
+function dayLabel(day) {
+  const [year, month, date] = String(day).split('-').map(Number);
+  return new Date(year, month - 1, date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+/**
+ * Say "nothing yet" over an empty chart. An empty axis is indistinguishable
+ * from a broken one, and a reader should not have to guess which.
+ */
+function setEmpty(canvas, empty, text) {
+  if (!canvas) {
+    return;
+  }
+  let label = canvas.parentElement.querySelector('.chart-empty-state');
+  if (empty) {
+    if (!label) {
+      label = document.createElement('p');
+      label.className = 'chart-empty-state text-muted text-center mb-0 py-4';
+      canvas.parentElement.appendChild(label);
+    }
+    label.textContent = text;
+    canvas.style.display = 'none';
+    return;
+  }
+  if (label) {
+    label.remove();
+  }
+  canvas.style.display = '';
+}
+
 /**
  * Build the charts that live in the Analytics section.
  *
@@ -66,13 +100,20 @@ function initializeTrendCharts() {
     return;
   }
 
+  const stacked = chartBaseOptions();
+  stacked.scales.x = { stacked: true };
+  stacked.scales.y.stacked = true;
+
   chatVolumeChart = new Chart(volumeCanvas.getContext('2d'), {
     type: 'bar',
     data: {
       labels: [],
-      datasets: [{ label: 'Number of Chats', data: [], backgroundColor: '#0d6efd' }]
+      datasets: [
+        { label: 'The bot alone', data: [], backgroundColor: '#20c997' },
+        { label: 'Reached a person', data: [], backgroundColor: '#0d6efd' }
+      ]
     },
-    options: chartBaseOptions()
+    options: stacked
   });
 
   responseTimeChart = new Chart(responseCanvas.getContext('2d'), {
@@ -80,21 +121,15 @@ function initializeTrendCharts() {
     data: {
       labels: [],
       datasets: [{
-        label: 'Response Time (seconds)', data: [],
-        borderColor: '#28a745', tension: 0.1, fill: false
+        label: 'First response from a person (seconds)', data: [],
+        borderColor: '#28a745', tension: 0.1, fill: false, spanGaps: true
       }]
     },
     options: chartBaseOptions()
   });
 
-  // Apply whatever the dashboard already fetched.
   if (lastAnalyticsData) {
-    if (lastAnalyticsData.chatVolumeOverTime) {
-      updateChatVolumeChart(lastAnalyticsData.chatVolumeOverTime);
-    }
-    if (lastAnalyticsData.responseTimeOverTime) {
-      updateResponseTimeChart(lastAnalyticsData.responseTimeOverTime);
-    }
+    applyTrends(lastAnalyticsData);
   }
 }
 
@@ -103,14 +138,19 @@ function initializeOverviewCharts() {
     return;
   }
 
-  const activityCtx = document.getElementById('chat-activity-chart').getContext('2d');
-  chatActivityChart = new Chart(activityCtx, {
+  const activityCanvas = document.getElementById('chat-activity-chart');
+  const sourcesCanvas = document.getElementById('topics-chart');
+  if (!activityCanvas || !sourcesCanvas) {
+    return;
+  }
+
+  chatActivityChart = new Chart(activityCanvas.getContext('2d'), {
     type: 'line',
     data: {
-      labels: ['Day 1', 'Day 2', 'Day 3', 'Day 4', 'Day 5', 'Day 6', 'Day 7'],
+      labels: [],
       datasets: [{
-        label: 'Number of Chats',
-        data: [0, 0, 0, 0, 0, 0, 0],
+        label: 'Conversations',
+        data: [],
         borderColor: '#007bff',
         tension: 0.1,
         fill: false
@@ -122,8 +162,7 @@ function initializeOverviewCharts() {
   // Traffic sources. This slot used to hold a "Common Topics" doughnut with
   // four hardcoded categories (Properties/Mortgages/Payments/Other) that
   // nothing ever populated, so it permanently displayed an empty ring.
-  const sourcesCtx = document.getElementById('topics-chart').getContext('2d');
-  topSourcesChart = new Chart(sourcesCtx, {
+  topSourcesChart = new Chart(sourcesCanvas.getContext('2d'), {
     type: 'doughnut',
     data: {
       labels: [],
@@ -141,170 +180,122 @@ function initializeOverviewCharts() {
   });
 
   if (lastAnalyticsData) {
-    if (lastAnalyticsData.chatVolumePerDay) {
-      updateChatActivityChart(lastAnalyticsData.chatVolumePerDay);
+    applyOverviewCharts(lastAnalyticsData);
+  }
+}
+
+function applyOverviewCharts(data) {
+  const perDay = data.chatVolumePerDay || [];
+
+  if (chatActivityChart) {
+    const empty = perDay.every(day => !day.count);
+    setEmpty(document.getElementById('chat-activity-chart'), empty, 'No conversations in this period.');
+    chatActivityChart.data.labels = perDay.map(day => dayLabel(day.date));
+    chatActivityChart.data.datasets[0].data = perDay.map(day => day.count);
+    chatActivityChart.update();
+  }
+
+  if (topSourcesChart) {
+    const sources = data.topSources || [];
+    setEmpty(document.getElementById('topics-chart'), sources.length === 0,
+      'No conversations in this period. Once the widget is on your site, this shows which pages they start on.');
+    topSourcesChart.data.labels = sources.map(source => source.label);
+    topSourcesChart.data.datasets[0].data = sources.map(source => source.count);
+    topSourcesChart.update();
+  }
+}
+
+function applyTrends(data) {
+  const perDay = data.chatVolumePerDay || [];
+  const responses = data.firstResponseOverTime || [];
+
+  if (chatVolumeChart) {
+    setEmpty(document.getElementById('chat-volume-chart'), perDay.every(day => !day.count),
+      'No conversations in this period.');
+    chatVolumeChart.data.labels = perDay.map(day => dayLabel(day.date));
+    chatVolumeChart.data.datasets[0].data = perDay.map(day => day.botOnly);
+    chatVolumeChart.data.datasets[1].data = perDay.map(day => day.reachedPerson);
+    chatVolumeChart.update();
+  }
+
+  if (responseTimeChart) {
+    setEmpty(document.getElementById('response-time-chart'), responses.every(day => day.avgSeconds === null),
+      'Nobody asked for a person in this period, or nobody has replied yet.');
+    responseTimeChart.data.labels = responses.map(day => dayLabel(day.date));
+    responseTimeChart.data.datasets[0].data = responses.map(day => day.avgSeconds);
+    responseTimeChart.update();
+  }
+}
+
+/** A change between periods; "new" when there was nothing to compare with. */
+function formatChange(value) {
+  if (value === null || value === undefined) {
+    return 'new';
+  }
+  return `${value > 0 ? '+' : ''}${value}%`;
+}
+
+function updateConversationMetrics(data) {
+  const metrics = data.conversationMetrics;
+  if (!metrics || !document.getElementById('conv-total-current')) {
+    return;
+  }
+
+  const days = data.range ? data.range.days : 7;
+  const set = (id, value) => {
+    const element = document.getElementById(id);
+    if (element) {
+      element.textContent = value;
     }
-    updateTopSourcesChart(lastAnalyticsData.topSources);
-  }
+  };
+
+  set('conv-col-current', `Last ${days} days`);
+  set('conv-col-previous', `The ${days} days before`);
+
+  const current = metrics.current || {};
+  const previous = metrics.previous || {};
+  const change = metrics.change || {};
+
+  set('conv-total-current', current.total || 0);
+  set('conv-total-previous', previous.total || 0);
+  set('conv-total-change', formatChange(change.total));
+  set('conv-duration-current', `${current.avgDurationMinutes || 0} min`);
+  set('conv-duration-previous', `${previous.avgDurationMinutes || 0} min`);
+  set('conv-duration-change', formatChange(change.duration));
+  set('conv-msgs-current', current.avgMessages || 0);
+  set('conv-msgs-previous', previous.avgMessages || 0);
+  set('conv-msgs-change', formatChange(change.messages));
 }
 
-// Update the Response Time chart using analytics data
-function updateResponseTimeChart(rtData) {
-  if (!responseTimeChart) {
-    return;
+/** Seconds as something a person reads at a glance. */
+export function formatSeconds(seconds) {
+  if (seconds === null || seconds === undefined) {
+    return '—';
   }
-
-  const labels = [];
-  const dataPoints = [];
-
-  if (Array.isArray(rtData)) {
-    rtData.forEach(record => {
-      const date = new Date(record._id.year, record._id.month - 1);
-      const label = date.toLocaleDateString(undefined, {
-        month: 'short',
-        year: 'numeric'
-      });
-      labels.push(label);
-      dataPoints.push(record.avg);
-    });
+  if (seconds < 60) {
+    return `${Math.round(seconds)}s`;
   }
-
-  responseTimeChart.data.labels = labels;
-  responseTimeChart.data.datasets[0].data = dataPoints;
-  responseTimeChart.update();
-}
-
-// Update the Chat Activity chart using analytics data
-function updateChatActivityChart(volumeData) {
-  if (!chatActivityChart) {
-    return;
+  if (seconds < 3600) {
+    return `${Math.round(seconds / 60)}m`;
   }
-
-  const labels = [];
-  const dataPoints = [];
-  const today = new Date();
-
-  for (let i = 6; i >= 0; i--) {
-    const date = new Date(today);
-    date.setDate(today.getDate() - i);
-
-    const label = date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-    labels.push(label);
-
-    const record = volumeData.find(v =>
-      v._id.year === date.getFullYear() &&
-      v._id.month === date.getMonth() + 1 &&
-      v._id.day === date.getDate()
-    );
-
-    dataPoints.push(record ? record.count : 0);
-  }
-
-  chatActivityChart.data.labels = labels;
-  chatActivityChart.data.datasets[0].data = dataPoints;
-  chatActivityChart.update();
-}
-
-// Update the Chat Volume chart using analytics data
-function updateChatVolumeChart(volumeData) {
-  if (!chatVolumeChart) {
-    return;
-  }
-
-  const labels = [];
-  const dataPoints = [];
-
-  if (Array.isArray(volumeData)) {
-    volumeData.forEach(record => {
-      const date = new Date(record._id.year, record._id.month - 1);
-      const label = date.toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
-      labels.push(label);
-      dataPoints.push(record.count);
-    });
-  }
-
-  chatVolumeChart.data.labels = labels;
-  chatVolumeChart.data.datasets[0].data = dataPoints;
-  chatVolumeChart.update();
-}
-
-// Update the traffic-sources doughnut
-function updateTopSourcesChart(sources) {
-  if (!topSourcesChart) {
-    return;
-  }
-
-  const canvas = document.getElementById('topics-chart');
-  const empty = !Array.isArray(sources) || sources.length === 0;
-
-  // An empty doughnut is indistinguishable from a broken one, so say so.
-  let emptyLabel = canvas.parentElement.querySelector('.chart-empty-state');
-  if (empty) {
-    if (!emptyLabel) {
-      emptyLabel = document.createElement('p');
-      emptyLabel.className = 'chart-empty-state text-muted text-center mb-0 py-4';
-      emptyLabel.textContent = 'No conversations yet - install the widget to start collecting data.';
-      canvas.parentElement.appendChild(emptyLabel);
-    }
-    canvas.style.display = 'none';
-    return;
-  }
-
-  if (emptyLabel) {
-    emptyLabel.remove();
-  }
-  canvas.style.display = '';
-
-  topSourcesChart.data.labels = sources.map(s => s.label);
-  topSourcesChart.data.datasets[0].data = sources.map(s => s.count);
-  topSourcesChart.update();
-}
-
-// Update conversation metrics table
-function updateConversationMetrics(metrics) {
-  if (!metrics) {
-    return;
-  }
-
-  if (!document.getElementById('conv-total-today')) {
-    return;
-  }
-
-  const total = metrics.totalConversations || {};
-  document.getElementById('conv-total-today').textContent = total.today || 0;
-  document.getElementById('conv-total-week').textContent = total.thisWeek || 0;
-  document.getElementById('conv-total-month').textContent = total.thisMonth || 0;
-  document.getElementById('conv-total-change').textContent =
-    (total.change ?? 0) + '%';
-
-  const dur = metrics.averageDuration || {};
-  document.getElementById('conv-duration-today').textContent =
-    (dur.today || 0) + ' min';
-  document.getElementById('conv-duration-week').textContent =
-    (dur.thisWeek || 0) + ' min';
-  document.getElementById('conv-duration-month').textContent =
-    (dur.thisMonth || 0) + ' min';
-  document.getElementById('conv-duration-change').textContent =
-    (dur.change ?? 0) + '%';
-
-  const msgs = metrics.messagesPerConversation || {};
-  document.getElementById('conv-msgs-today').textContent =
-    Math.round(msgs.today || 0);
-  document.getElementById('conv-msgs-week').textContent =
-    Math.round(msgs.thisWeek || 0);
-  document.getElementById('conv-msgs-month').textContent =
-    Math.round(msgs.thisMonth || 0);
-  document.getElementById('conv-msgs-change').textContent =
-    (msgs.change ?? 0) + '%';
+  return `${(seconds / 3600).toFixed(1)}h`;
 }
 
 /**
- * The headline numbers and chart data, from one request. Home shows the
- * numbers; Reports' charts are filled in whenever they exist.
+ * The headline numbers and chart data for one window, from one request.
+ * Home shows the numbers; Reports' charts are filled in whenever they exist.
+ *
+ * @param {object} [options]
+ * @param {number} [options.days=7]
+ * @param {string} [options.companyId] a superadmin's chosen tenant
  */
-export async function loadOverview() {
+export async function loadOverview({ days = 7, companyId = '' } = {}) {
   try {
-    const data = await api('/api/admin/analytics');
+    const query = new URLSearchParams({ days: String(days) });
+    if (companyId) {
+      query.set('companyId', companyId);
+    }
+    const data = await api(`/api/admin/analytics?${query.toString()}`);
     lastAnalyticsData = data;
 
     const set = (id, value) => {
@@ -314,23 +305,20 @@ export async function loadOverview() {
       }
     };
     set('total-chats-today', data.totalChatsToday || '0');
-    set('avg-response-time', data.avgResponseTime ? `${data.avgResponseTime}s` : '—');
+    set('home-waiting-count', data.waitingForPerson || '0');
+    set('avg-response-time', formatSeconds(data.avgFirstResponseSeconds));
+    set('avg-response-detail', data.firstResponseCount
+      ? `average over ${data.firstResponseCount} conversation${data.firstResponseCount === 1 ? '' : 's'}, last ${days} days`
+      : `nobody asked for a person in the last ${days} days`);
+    set('chart-activity-title', `Conversations, last ${days} days`);
 
-    if (data.chatVolumePerDay) {
-      updateChatActivityChart(data.chatVolumePerDay);
-    }
-    if (data.chatVolumeOverTime) {
-      updateChatVolumeChart(data.chatVolumeOverTime);
-    }
-    if (data.responseTimeOverTime) {
-      updateResponseTimeChart(data.responseTimeOverTime);
-    }
-    if (data.conversationMetrics) {
-      updateConversationMetrics(data.conversationMetrics);
-    }
-    updateTopSourcesChart(data.topSources);
+    applyOverviewCharts(data);
+    applyTrends(data);
+    updateConversationMetrics(data);
+    return data;
   } catch (error) {
     logger.error('Error loading the overview:', error);
+    return null;
   }
 }
 
@@ -342,8 +330,8 @@ export async function loadOverview() {
 export function initializeReportCharts() {
   initializeOverviewCharts();
   initializeTrendCharts();
-  if (lastAnalyticsData && lastAnalyticsData.conversationMetrics) {
-    updateConversationMetrics(lastAnalyticsData.conversationMetrics);
+  if (lastAnalyticsData) {
+    updateConversationMetrics(lastAnalyticsData);
   }
 }
 

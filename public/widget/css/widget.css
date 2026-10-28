@@ -255,27 +255,33 @@
   color: rgba(255, 255, 255, 0.8);
 }
 
-/* Message read status */
+/* Message status: inside the visitor's bubble, beside the time. It used to
+   hang outside the bubble, where the scrollbar clipped it. One tick is sent
+   or delivered, two is read by a person; the colour only says how sure. */
 .message-status {
   position: absolute;
-  right: -20px;
-  bottom: 2px;
+  right: 10px;
+  bottom: 7px;
   display: flex;
   align-items: center;
+}
+
+.message.user .message-timestamp {
+  padding-right: 18px;
 }
 
 .status-icon {
   width: 14px;
   height: 14px;
-  fill: #999;
+  fill: rgba(255, 255, 255, 0.85);
 }
 
 .status-icon.sent {
-  fill: #bbb;
+  fill: rgba(255, 255, 255, 0.55);
 }
 
 .status-icon.read {
-  fill: var(--primary-color);
+  fill: #fff;
 }
 
 /* Typing indicator */
@@ -319,28 +325,35 @@
   background-color: #fff;
   border-top: 1px solid rgba(0, 0, 0, 0.1);
   display: flex;
-  align-items: center;
+  align-items: flex-end;
 }
 
-.chat-input-area input[type="text"] {
+/* A textarea, one line high until more is typed (the script grows it to a
+   few lines), so Shift+Enter can start a new line. */
+.chat-input-area textarea {
   flex: 1;
   min-width: 0;
+  min-height: 40px;
+  max-height: 120px;
   padding: 10px;
   border: 1px solid rgba(0, 0, 0, 0.1);
   border-radius: var(--border-radius);
   outline: none;
   font-size: 14px;
   font-family: inherit;
+  line-height: 1.4;
   color: var(--text-color);
   background: #fff;
+  resize: none;
+  overflow-y: auto;
 }
 
-.chat-input-area input[type="text"]:focus {
+.chat-input-area textarea:focus {
   border-color: var(--primary-color);
   box-shadow: 0 0 0 2px var(--secondary-color);
 }
 
-.chat-input-area input[type="text"]:disabled {
+.chat-input-area textarea:disabled {
   background: #f1f3f5;
   color: #868e96;
 }
@@ -535,9 +548,11 @@
 
   /* 16px is the size below which iOS zooms the page when a field is
      focused, and a zoomed page is one the visitor has to zoom back out of. */
-  .chat-input-area input[type="text"],
+  .chat-input-area textarea,
   .user-details-field input,
-  .chat-rating-comment textarea {
+  .chat-rating-comment textarea,
+  .chat-followup input,
+  .chat-followup textarea {
     font-size: 16px;
   }
 
@@ -960,8 +975,410 @@
   border-radius: 6px;
 }
 
-/* Right-to-left languages mirror the bubbles. */
+/* Right-to-left languages mirror the bubbles, and the ticks and timestamps
+   that hang off them. */
 .chatbot-widget-container[dir="rtl"] .message.user {
   margin-left: 0;
   margin-right: auto;
+  border-bottom-right-radius: 18px;
+  border-bottom-left-radius: 4px;
+}
+
+.chatbot-widget-container[dir="rtl"] .message.bot {
+  border-bottom-left-radius: 18px;
+  border-bottom-right-radius: 4px;
+}
+
+.chatbot-widget-container[dir="rtl"] .message.user .message-sender,
+.chatbot-widget-container[dir="rtl"] .message-timestamp {
+  text-align: left;
+}
+
+.chatbot-widget-container[dir="rtl"] .message.bot .message-sender {
+  text-align: right;
+}
+
+.chatbot-widget-container[dir="rtl"] .message-status {
+  right: auto;
+  left: 10px;
+}
+
+.chatbot-widget-container[dir="rtl"] .message.user .message-timestamp {
+  padding-right: 0;
+  padding-left: 18px;
+}
+
+.chatbot-widget-container[dir="rtl"] .chat-input-area .send-button {
+  margin-left: 0;
+  margin-right: 10px;
+}
+
+.chatbot-widget-container[dir="rtl"] .file-upload-button {
+  margin-right: 0;
+  margin-left: 5px;
+}
+
+/* ----------------------------------------------------------------- header
+   Who the visitor is talking to: the business, or the person who joined,
+   with a quieter line underneath. */
+
+.chat-header-text {
+  min-width: 0;
+}
+
+.chat-header-subtitle {
+  font-size: 11px;
+  opacity: 0.85;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Links in answers: underlined so they read as links on any accent. */
+.message-content a {
+  text-decoration: underline;
+  word-break: break-word;
+}
+
+/* ------------------------------------------------------- answer feedback */
+
+.message-feedback {
+  display: flex;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.message-feedback-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* Small to look at, comfortable to tap. */
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: #868e96;
+  fill: currentColor;
+  cursor: pointer;
+}
+
+.message-feedback-button:hover {
+  color: var(--primary-color);
+  background: rgba(255, 255, 255, 0.6);
+}
+
+.message-feedback-button[aria-pressed="true"] {
+  color: var(--primary-color);
+  border-color: var(--primary-color);
+  background: #fff;
+}
+
+.message-feedback-button:focus-visible,
+.chat-inline-action:focus-visible,
+.suggested-question:focus-visible,
+.quick-reply:focus-visible,
+.proactive-bubble button:focus-visible,
+.chat-followup button:focus-visible {
+  outline: 2px solid var(--primary-color);
+  outline-offset: 2px;
+}
+
+/* -------------------------------------------- inline actions and choices */
+
+.chat-inline-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 12px;
+  font-size: 12px;
+  color: #6c757d;
+}
+
+.chat-inline-action,
+.suggested-question {
+  padding: 6px 12px;
+  border: 1px solid var(--primary-color);
+  border-radius: 16px;
+  background: #fff;
+  color: var(--primary-color);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  text-align: start;
+}
+
+.chat-inline-action:hover,
+.suggested-question:hover {
+  background: var(--primary-color);
+  color: #fff;
+}
+
+.suggested-questions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0 0 12px;
+}
+
+/* Choices the conversation has moved past: what was offered, not buttons. */
+.quick-replies-spent {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: #868e96;
+}
+
+/* ------------------------------------------------- leave a message, consent */
+
+.chat-followup {
+  align-self: stretch;
+  margin: 4px 0 12px;
+  padding: 12px;
+  border: 1px solid #e3e6ea;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.chat-followup-title {
+  margin-bottom: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #212529;
+}
+
+.chat-followup form {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.chat-followup label {
+  font-size: 12px;
+  color: #495057;
+}
+
+.chat-followup .optional {
+  color: #868e96;
+}
+
+.chat-followup input[type="email"],
+.chat-followup textarea {
+  width: 100%;
+  padding: 7px 8px;
+  margin-bottom: 4px;
+  border: 1px solid #ced4da;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text-color);
+  background: #fff;
+  resize: vertical;
+}
+
+.chat-followup input[type="email"]:focus,
+.chat-followup textarea:focus {
+  outline: none;
+  border-color: var(--primary-color);
+  box-shadow: 0 0 0 2px var(--secondary-color);
+}
+
+.chat-followup button[type="submit"] {
+  align-self: flex-start;
+  margin-top: 4px;
+  padding: 6px 16px;
+  border: none;
+  border-radius: 6px;
+  background: var(--primary-color);
+  color: #fff;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.chat-followup button[type="submit"]:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.chat-followup-error,
+.chat-consent-error {
+  min-height: 1em;
+  font-size: 12px;
+  color: #b02a37;
+}
+
+.chat-followup-done {
+  font-size: 13px;
+  color: #198754;
+}
+
+/* The consent line: a real checkbox with the tenant's words as its label. */
+.chat-consent {
+  padding: 8px 15px 0;
+  background: #fff;
+  border-top: 1px solid rgba(0, 0, 0, 0.1);
+}
+
+.chat-consent-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 4px 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #495057;
+}
+
+.chat-consent-line input {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  margin-top: 1px;
+  accent-color: var(--primary-color);
+}
+
+.chat-consent-line a {
+  color: var(--primary-color);
+}
+
+/* With the consent bar above it, the composer needs no second rule. */
+.chat-consent + .chat-input-area {
+  border-top: none;
+}
+
+.chat-consent[hidden] + .chat-input-area {
+  border-top: 1px solid rgba(0, 0, 0, 0.1);
+}
+
+/* ------------------------------------------------------- proactive message
+   A short note above the launcher. Sits where the window would open, and
+   is only ever shown while the window is closed. */
+
+.proactive-bubble {
+  position: absolute;
+  bottom: 72px;
+  right: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  width: max-content;
+  max-width: 260px;
+  padding: 10px 6px 10px 14px;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+  animation: proactive-in 0.25s ease-out;
+}
+
+.position-left .proactive-bubble {
+  right: auto;
+  left: 0;
+}
+
+.proactive-bubble-text {
+  flex: 1;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.4;
+  color: var(--text-color);
+  text-align: start;
+  cursor: pointer;
+}
+
+.proactive-bubble-dismiss {
+  flex-shrink: 0;
+  min-width: 24px;
+  min-height: 24px;
+  border: none;
+  border-radius: 50%;
+  background: none;
+  color: #868e96;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.proactive-bubble-dismiss:hover {
+  background: #f1f3f5;
+}
+
+@keyframes proactive-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .proactive-bubble {
+    animation: none;
+  }
+}
+
+@media (max-width: 480px) {
+  .proactive-bubble {
+    bottom: 62px;
+    max-width: calc(100vw - 40px);
+  }
+
+  .chat-consent {
+    padding-left: calc(15px + env(safe-area-inset-left, 0));
+    padding-right: calc(15px + env(safe-area-inset-right, 0));
+  }
+}
+
+/* ---- P2D: verify an email address with a code ---- */
+
+/* The same panel as "leave a message"; these are only what it lacks. */
+.chat-verify-intro {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: #495057;
+}
+
+.chat-followup input.chat-verify-code {
+  width: 100%;
+  padding: 7px 8px;
+  margin-bottom: 4px;
+  border: 1px solid #ced4da;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 18px;
+  letter-spacing: 0.3em;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-color);
+  background: #fff;
+}
+
+.chat-followup input.chat-verify-code:focus {
+  outline: none;
+  border-color: var(--primary-color);
+  box-shadow: 0 0 0 2px var(--secondary-color);
+}
+
+.chat-verify-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin-top: 6px;
+}
+
+.chat-verify-link {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--primary-color);
+  font: inherit;
+  font-size: 12px;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.chat-verify-link:disabled {
+  opacity: 0.6;
+  cursor: default;
 }

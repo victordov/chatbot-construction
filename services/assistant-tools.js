@@ -9,10 +9,19 @@
  * lets it decide when one answers the question. This does the same, with the
  * guardrails enforced here rather than requested in a prompt:
  *
- *   - Offered tools: every enabled saved Action whose mode is `auto`, plus each
- *     connector capability when the tenant's connector is on. An action that
- *     needs a verified customer is not even offered to an unverified one —
- *     the model cannot call what it cannot see.
+ *   - Offered tools: every enabled saved Action whose mode is `auto`, each
+ *     connector capability when the tenant's connector is on, and every MCP
+ *     tool switched on as automatic on one of the tenant's MCP servers
+ *     (models/mcp-server.js), named `mcp_<server>_<tool>`. An action or tool
+ *     that needs a verified customer is not even offered to an unverified
+ *     one — the model cannot call what it cannot see.
+ *   - MCP tools are the server's own description and schema, as stored when
+ *     the admin last refreshed them, with the schema cut down to what a
+ *     model's function parameters accept (services/mcp-client.js). Whether one
+ *     changes data is the server's `readOnlyHint`; whether the visitor is
+ *     asked first is the admin's per-tool switch, on by default for anything
+ *     not read-only. A tool that may change data counts as the turn's one
+ *     write and never runs in a test, whatever that switch says.
  *   - Verified inputs are filled from the conversation's verified contact,
  *     never from the model's arguments (services/actions.js#resolveInputs).
  *   - Writes need confirmation. The rule, kept deliberately mechanical:
@@ -43,8 +52,10 @@
 const crypto = require('crypto');
 
 const Action = require('../models/action');
+const McpServer = require('../models/mcp-server');
 const actions = require('./actions');
 const connector = require('./connector');
+const mcpClient = require('./mcp-client');
 const capabilityContract = require('../config/capabilities');
 const audit = require('./audit');
 const usageService = require('./usage');
@@ -62,6 +73,11 @@ const RECENT_RESULTS_KEPT = 3;
 const RECENT_RESULT_BYTES = 1500;
 const RECENT_RESULT_TTL_MS = 30 * 60 * 1000;
 const CAPABILITY_PREFIX = 'connector_';
+// Each tool definition is context the model reads on every turn; past this
+// many, the ones switched on first are offered.
+const MAX_MCP_TOOLS = 32;
+const MCP_RESULT_BYTES = 4000;
+const MCP_ARGS_BYTES = 16 * 1024;
 
 const AFFIRMATIVE = /^(y|yes|yeah|yep|yup|sure|ok|okay|confirm|confirmed|correct|go ahead|go for it|please do|do it|book it|that'?s right|sounds good|absolutely|definitely|yes please)\b/;
 const NEGATION = /\b(no|not|don'?t|do not|cancel|wait|stop|never|change|instead)\b/;
@@ -201,6 +217,76 @@ function capabilityTool(capability) {
         description: `${capability.label}. ${capability.description} For example: ${capability.example}` +
           (write ? ' This changes data, so the visitor must confirm before it runs.' : ''),
         parameters: { type: 'object', properties, required, additionalProperties: false }
+      }
+    }
+  };
+}
+
+/** The name of the tool that asks a visitor to verify their email. */
+const VERIFY_TOOL_NAME = 'verify_visitor_email';
+
+/**
+ * Offered only when the visitor is not yet verified and some action the
+ * tenant marked "email verification is enough" would then become available.
+ * Calling it does not verify anybody: it puts the verification form in front
+ * of the visitor (the widget's two-step email code), and the action runs on a
+ * later turn once they have.
+ */
+function verifyTool() {
+  return {
+    name: VERIFY_TOOL_NAME,
+    kind: 'verify',
+    write: false,
+    label: 'Verify the visitor\'s email',
+    definition: {
+      type: 'function',
+      function: {
+        name: VERIFY_TOOL_NAME,
+        description: 'Ask the visitor to confirm their email address with a one-time code sent to it. ' +
+          'Use this when they ask about something of their own (a booking, an order, their account) that ' +
+          'needs a verified customer and they have not verified yet. Then tell them to enter the code they receive.',
+        parameters: { type: 'object', properties: {}, additionalProperties: false }
+      }
+    }
+  };
+}
+
+/**
+ * One MCP tool as the model sees it.
+ *
+ * `write` is "may change data": anything the server does not mark read-only.
+ * `confirm` is the admin's switch. They differ only when an admin has said a
+ * write may run without asking, which still leaves it the turn's one write
+ * and keeps it out of test runs.
+ *
+ * @returns {object|null} null when the schema cannot be offered to a model
+ */
+function mcpTool(server, tool, name) {
+  const offered = mcpClient.modelSchema(tool.inputSchema);
+  if (!offered.ok) {
+    return null;
+  }
+
+  const write = !tool.readOnlyHint;
+  const confirm = tool.needsConfirmation !== false;
+  const label = tool.title || tool.name;
+
+  return {
+    name,
+    kind: 'mcp',
+    write,
+    confirm,
+    server: { _id: server._id, name: server.name },
+    toolName: tool.name,
+    schema: offered.schema,
+    label,
+    definition: {
+      type: 'function',
+      function: {
+        name,
+        description: truncate(`${label}. ${tool.description || ''}` +
+          (confirm ? ' The visitor must confirm before it runs.' : ''), 1024),
+        parameters: offered.schema
       }
     }
   };
@@ -361,6 +447,10 @@ class ToolSession {
     }
     this.calls += 1;
 
+    if (tool.kind === 'verify') {
+      return this.offerVerification(tool);
+    }
+
     let args;
     try {
       args = call.function.arguments ? JSON.parse(call.function.arguments) : {};
@@ -375,7 +465,9 @@ class ToolSession {
     // Only what the model is allowed to supply takes part in the hash and the
     // pending record: an extra key it made up cannot change what runs, so it
     // must not change whether a confirmation matches either.
-    const supplied = tool.kind === 'action' ? visitorArgs(tool.action, args) : capabilityArgs(tool.capability, args);
+    const supplied = tool.kind === 'action' ? visitorArgs(tool.action, args)
+      : tool.kind === 'mcp' ? mcpArgs(tool.schema, args)
+        : capabilityArgs(tool.capability, args);
     if (supplied.error) {
       this.toolCalls.push({ name, status: 'bad_arguments' });
       return errorLine(supplied.error);
@@ -402,13 +494,21 @@ class ToolSession {
         this.toolCalls.push({ name, status: 'simulated' });
         return `NOT EXECUTED: this is a test run, so nothing is changed. Tell the tester you would now ${summarise(tool, supplied.values)}.`;
       }
+    }
 
+    // Writes ask first. So does an MCP tool whose admin wants a read
+    // confirmed too — except in a test run, where a read is safe to make.
+    const confirm = tool.confirm !== undefined ? tool.confirm : tool.write;
+    if (confirm && !this.simulate) {
       const gate = this.confirmationGate(tool, supplied.values);
       if (gate) {
         return gate;
       }
     }
 
+    if (tool.kind === 'mcp') {
+      return this.runMcp(tool, supplied.values);
+    }
     return tool.kind === 'action'
       ? this.runAction(tool, supplied.values)
       : this.runCapability(tool, supplied.values);
@@ -483,7 +583,13 @@ class ToolSession {
 
   async runCapability(tool, values) {
     const capability = tool.capability;
-    const result = await connector.call(this.companyId, capability.id, values, { maxItems: 10 });
+    // The conversation goes along so a booking is linked to it: the
+    // per-conversation cap, the double-tap guard and cancelling from the same
+    // chat all rely on it.
+    const result = await connector.call(this.companyId, capability.id, values, {
+      maxItems: 10,
+      sessionId: this.conversation && this.conversation.sessionId
+    });
     const status = result.ok ? 'ok' : 'error';
     this.toolCalls.push({ name: tool.name, status });
     this.audit(tool, status, {});
@@ -517,6 +623,78 @@ class ToolSession {
     return fenced;
   }
 
+  /**
+   * Call an MCP tool.
+   *
+   * The server is loaded again, with its credential and scoped to this
+   * company, rather than carried from `prepare`: the secret stays out of the
+   * session, and a tool switched off since the turn began does not run.
+   */
+  async runMcp(tool, values) {
+    const server = await McpServer.findOne({ _id: tool.server._id, company: this.companyId })
+      .select('+auth.secret')
+      .lean();
+    const stored = server && (server.tools || []).find(entry =>
+      entry.name === tool.toolName && entry.enabled && entry.available !== false);
+
+    if (!stored) {
+      this.toolCalls.push({ name: tool.name, status: 'error' });
+      return errorLine('That tool has been switched off.');
+    }
+
+    const result = await mcpClient.callTool(server, stored, values);
+    const status = !result.ok ? 'error' : (result.isError ? 'tool_error' : 'ok');
+    this.toolCalls.push({ name: tool.name, status: status === 'ok' ? 'ok' : 'error' });
+    this.auditMcp(tool, server, status, result.durationMs, Object.keys(values));
+
+    McpServer.updateOne(
+      { _id: server._id, company: this.companyId },
+      { $set: { 'tools.$[tool].lastCalledAt': new Date() } },
+      { arrayFilters: [{ 'tool.name': stored.name }] }
+    ).catch(() => {});
+
+    if (!result.ok) {
+      return errorLine(result.error);
+    }
+
+    const fenced = fence(tool.name, truncate(result.text || '(the tool returned nothing)', MCP_RESULT_BYTES));
+
+    if (result.isError) {
+      // The tool's own complaint (a bad date, an unknown order) is something
+      // the model may be able to fix, so it is passed on — still as data.
+      return 'ERROR: the tool reported a problem, below. If the arguments were wrong you may correct them ' +
+        `and call it again; otherwise apologise and offer a colleague.\n${fenced}`;
+    }
+
+    this.remember(tool.name, fenced);
+    return fenced;
+  }
+
+  /** `mcp.tool_called`: which tool, how it went, how long. Never the arguments' values or the result. */
+  auditMcp(tool, server, status, durationMs, argumentNames) {
+    audit.record({
+      company: this.companyId,
+      actor: { displayName: 'Assistant', role: 'assistant' },
+      action: 'mcp.tool_called',
+      target: {
+        type: 'conversation',
+        id: this.conversation && this.conversation._id ? String(this.conversation._id) : undefined,
+        label: tool.name
+      },
+      details: {
+        server: server.name,
+        serverId: String(server._id),
+        tool: tool.toolName,
+        status,
+        durationMs,
+        write: tool.write,
+        simulated: this.simulate,
+        argumentNames: argumentNames.slice(0, 20)
+      },
+      outcome: status === 'ok' ? 'success' : 'failure'
+    });
+  }
+
   audit(tool, status, extra) {
     audit.record({
       company: this.companyId,
@@ -540,6 +718,24 @@ class ToolSession {
   }
 
   /** What reply.generate adds to its result. Only keys that have something. */
+  /** Put the email-code form in front of the visitor with this reply. */
+  offerVerification(tool) {
+    let choice = null;
+    try {
+      choice = require('./visitor-verification').verifyEmailChoice();
+    } catch {
+      choice = null;
+    }
+    if (!choice) {
+      this.toolCalls.push({ name: tool.name, status: 'error' });
+      return errorLine('Email verification is not available here.');
+    }
+    this.choices = [...(this.choices || []), choice];
+    this.toolCalls.push({ name: tool.name, status: 'ok' });
+    return fence(tool.name, 'The visitor now sees a button to verify their email with a code. ' +
+      'Tell them to use it, and that you can help with their request once they have.');
+  }
+
   outcome() {
     const result = {};
     if (this.cards) {
@@ -571,6 +767,39 @@ function visitorArgs(action, args) {
   return { values };
 }
 
+/**
+ * An MCP tool's arguments, as far as we check them.
+ *
+ * The server validates its own input; this keeps what the model may change
+ * to what the schema declares, so an invented key can neither reach the
+ * server nor change whether a confirmation matches, and catches a missing
+ * required argument before the visitor is asked to confirm anything.
+ */
+function mcpArgs(schema, args) {
+  const declared = Object.keys(schema.properties || {});
+  const values = {};
+
+  if (declared.length > 0) {
+    declared.forEach(key => {
+      if (args[key] !== undefined) {
+        values[key] = args[key];
+      }
+    });
+  } else if (schema.additionalProperties !== false) {
+    Object.assign(values, args);
+  }
+
+  const missing = (schema.required || []).filter(key =>
+    values[key] === undefined || values[key] === null || values[key] === '');
+  if (missing.length > 0) {
+    return { error: `Missing: ${missing.join(', ')}` };
+  }
+  if (Buffer.byteLength(JSON.stringify(values)) > MCP_ARGS_BYTES) {
+    return { error: 'The arguments are too large.' };
+  }
+  return { values };
+}
+
 function capabilityArgs(capability, args) {
   const checked = capabilityContract.validateInput(capability.id, args);
   return checked.ok ? { values: checked.value } : { error: checked.errors.join(', ') };
@@ -579,7 +808,7 @@ function capabilityArgs(capability, args) {
 /** What the visitor is being asked to agree to, in one line. */
 function summarise(tool, values) {
   const details = Object.entries(values)
-    .map(([key, value]) => `${key}: ${truncate(String(value), 80)}`)
+    .map(([key, value]) => `${key}: ${truncate(value && typeof value === 'object' ? JSON.stringify(value) : String(value), 80)}`)
     .join(', ');
   return truncate(details ? `${tool.label} (${details})` : tool.label, 400);
 }
@@ -593,12 +822,91 @@ async function loadContact(conversation) {
   try {
     const Contact = require('../models/contact');
     return await Contact.findById(conversation.contact)
-      .select('name email phone externalId identityLevel company')
+      .select('name email phone externalId identityLevel verifiedBy company')
       .lean();
   } catch {
     // Unknown identity is treated as unverified.
     return null;
   }
+}
+
+/**
+ * Whether a contact is verified enough for a requirement.
+ *
+ * services/visitor-verification.js, where it exists, knows the difference
+ * between an identity the tenant's site signed and an emailed code, and which
+ * requirement each satisfies (`signed`, `email`). Where it does not, the
+ * contact's `identityLevel` is all there is, and only `verified` counts.
+ *
+ * @returns {Function} requirement => boolean
+ */
+function verificationCheck(contact, sameTenant) {
+  let isVerifiedEnough = null;
+  try {
+    const verification = require('./visitor-verification');
+    if (typeof verification.isVerifiedEnough === 'function') {
+      isVerifiedEnough = verification.isVerifiedEnough;
+    }
+  } catch {
+    // Not installed: fall back to the identity level.
+  }
+
+  return (requirement = 'signed') => {
+    if (!contact || !sameTenant) {
+      return false;
+    }
+    if (isVerifiedEnough) {
+      try {
+        return Boolean(isVerifiedEnough(contact, requirement));
+      } catch {
+        return false;
+      }
+    }
+    return contact.identityLevel === 'verified';
+  };
+}
+
+/**
+ * The tenant's MCP tools the assistant may use in this conversation.
+ *
+ * Names are made unique across servers and against the tools already
+ * offered: a saved Action someone happened to call `mcp_shop_search` keeps
+ * its name, and the MCP tool gets a hashed one.
+ */
+async function loadMcpTools(companyId, verifiedEnough, taken) {
+  const servers = await McpServer.find({ company: companyId, 'tools.enabled': true })
+    .select('name slug tools')
+    .sort({ createdAt: 1 })
+    .limit(10)
+    .lean();
+  const tools = [];
+
+  for (const server of servers) {
+    for (const tool of server.tools || []) {
+      if (tools.length >= MAX_MCP_TOOLS) {
+        return tools;
+      }
+      if (!tool.enabled || tool.mode !== 'automatic' || tool.available === false) {
+        continue;
+      }
+      if (tool.verifiedOnly && !verifiedEnough('signed')) {
+        continue;
+      }
+
+      let name = mcpClient.assistantToolName(server.slug, tool.name);
+      if (taken.has(name)) {
+        const hash = crypto.createHash('sha256').update(`${server._id}:${tool.name}`).digest('hex').slice(0, 8);
+        name = `${name.slice(0, 55)}_${hash}`;
+      }
+      const offered = mcpTool(server, tool, name);
+      if (offered && !taken.has(name)) {
+        taken.add(name);
+        tools.push(offered);
+      }
+    }
+  }
+
+  return tools;
 }
 
 /**
@@ -610,19 +918,37 @@ async function loadContact(conversation) {
  * @returns {Promise<ToolSession|null>} null when there is no model client or
  *          nothing to offer
  */
-async function prepare({ conversation, companyId, client, message, simulate = false }) {
+/** Whether verifying by email would unlock an action here (visitor-verification). */
+async function wouldUnlock(companyId, contact) {
+  try {
+    const verification = require('./visitor-verification');
+    return typeof verification.wouldUnlock === 'function'
+      ? Boolean(await verification.wouldUnlock(companyId, contact))
+      : false;
+  } catch {
+    return false;
+  }
+}
+
+async function prepare({ conversation, companyId, client, message, simulate = false, contact: standIn = null }) {
   if (!client || !companyId) {
     return null;
   }
 
   try {
-    const contact = await loadContact(conversation);
+    // A stand-in contact is how "test as a verified customer" lets an admin
+    // see the verified-only actions offered. Only in a simulated run, where
+    // every write is declined anyway; a live conversation is always the
+    // person it belongs to.
+    const contact = simulate && standIn ? standIn : await loadContact(conversation);
     // A contact from another tenant cannot vouch for anybody here.
-    const sameTenant = contact && (!contact.company || String(contact.company) === String(companyId));
+    const sameTenant = Boolean(contact && (!contact.company || String(contact.company) === String(companyId)));
     const verified = Boolean(sameTenant && contact.identityLevel === 'verified');
+    const verifiedEnough = verificationCheck(contact, sameTenant);
     const tools = [];
+    const actionsIncluded = await usageService.hasFeature(companyId, 'actions');
 
-    if (await usageService.hasFeature(companyId, 'actions')) {
+    if (actionsIncluded) {
       const saved = await Action.find({ company: companyId, enabled: true, mode: 'auto' })
         .select('+request.auth.value')
         .sort({ createdAt: 1 })
@@ -630,7 +956,7 @@ async function prepare({ conversation, companyId, client, message, simulate = fa
         .lean();
 
       saved
-        .filter(action => verified || !actions.needsVerified(action))
+        .filter(action => !actions.needsVerified(action) || verifiedEnough(action.verification || 'signed'))
         .forEach(action => tools.push(actionTool(action)));
     }
 
@@ -639,6 +965,18 @@ async function prepare({ conversation, companyId, client, message, simulate = fa
       capabilityContract.CAPABILITIES
         .filter(capability => settings.capabilities.length === 0 || settings.capabilities.includes(capability.id))
         .forEach(capability => tools.push(capabilityTool(capability)));
+    }
+
+    // MCP tools come with the Actions feature, and count against its limit.
+    if (actionsIncluded) {
+      const taken = new Set(tools.map(tool => tool.name));
+      tools.push(...await loadMcpTools(companyId, verifiedEnough, taken));
+    }
+
+    // An anonymous visitor who could unlock an action by proving their email
+    // is offered the way to, rather than told "I can't help with that".
+    if (actionsIncluded && !simulate && !verifiedEnough('email') && await wouldUnlock(companyId, sameTenant ? contact : null)) {
+      tools.push(verifyTool());
     }
 
     if (tools.length === 0) {
@@ -670,6 +1008,8 @@ module.exports = {
   actionTool,
   capabilityTool,
   capabilityToolName,
+  mcpTool,
+  verificationCheck,
   MAX_CALLS_PER_TURN,
   MAX_WRITES_PER_TURN,
   CONFIRMATION_TTL_MS

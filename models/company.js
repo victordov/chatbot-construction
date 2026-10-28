@@ -75,7 +75,13 @@ const CompanySchema = new mongoose.Schema({
     fromAddress: { type: String, trim: true, lowercase: true },
     inboundSecret: { type: String, select: false },
     /** Appended to every outbound reply. */
-    signature: { type: String, trim: true }
+    signature: { type: String, trim: true },
+    /**
+     * When the inbound webhook last accepted a message. The settings screen
+     * shows it, because "is my forwarding set up?" is otherwise a question
+     * nobody can answer without sending themselves an email and waiting.
+     */
+    lastInboundAt: { type: Date }
   },
 
   /**
@@ -103,7 +109,25 @@ const CompanySchema = new mongoose.Schema({
       type: String,
       trim: true,
       default: 'We are closed right now. Leave your details and we will get back to you.'
-    }
+    },
+    /**
+     * Whole days off - bank holidays, a training day - as `YYYY-MM-DD` in the
+     * company's own timezone. Closed all day whatever the weekly schedule says.
+     */
+    closedDates: [{
+      _id: false,
+      date: { type: String, match: /^\d{4}-\d{2}-\d{2}$/ },
+      label: { type: String, trim: true, maxlength: 80 }
+    }]
+  },
+
+  /**
+   * How Reports values the bot's work. A person answering one of these
+   * conversations would have spent this many minutes on it; the value report
+   * turns resolved conversations into hours with it.
+   */
+  reports: {
+    minutesPerConversation: { type: Number, min: 1, max: 240 }
   },
 
   /**
@@ -148,7 +172,13 @@ const CompanySchema = new mongoose.Schema({
      * Assign a conversation the moment it starts, rather than when the visitor
      * asks for a person. Suits teams with no bot in front.
      */
-    assignOnStart: { type: Boolean, default: false }
+    assignOnStart: { type: Boolean, default: false },
+    /**
+     * Minutes somebody may wait for a person before the team is alerted
+     * again, louder: a notification to every admin and to whoever is taking
+     * chats. 0 turns it off. Five minutes is long in a chat window.
+     */
+    escalateAfterMinutes: { type: Number, default: 5, min: 0, max: 240 }
   },
 
   /**
@@ -191,13 +221,90 @@ const CompanySchema = new mongoose.Schema({
     // over both. See config/widget-languages.js.
     language: { type: String, enum: WIDGET_LANGUAGE_SETTINGS, default: 'auto' },
     // Pre-chat form: which contact details a visitor must give before
-    // chatting. Phone is optional by default; asking for it up front costs
-    // more conversations than it is worth for most tenants.
-    requireName: { type: Boolean, default: true },
-    requireEmail: { type: Boolean, default: true },
+    // chatting. Off by default: a form in front of the first answer loses
+    // more conversations than it gains. The widget asks for an email when it
+    // hands over instead, which is when an address is actually needed.
+    requireName: { type: Boolean, default: false },
+    requireEmail: { type: Boolean, default: false },
     requirePhone: { type: Boolean, default: false },
-    // Linked from the pre-chat form; defaults to this server's own policy page.
-    privacyPolicyUrl: { type: String, trim: true }
+    // Linked from the pre-chat form and the consent line. The tenant is the
+    // data controller, so this should be their policy, not ours.
+    privacyPolicyUrl: { type: String, trim: true },
+    // Up to four questions shown as buttons when the chat opens.
+    suggestedQuestions: [{ type: String, trim: true, maxlength: 120 }],
+    // Ask the visitor to agree before the first message is stored.
+    consentRequired: { type: Boolean, default: false },
+    consentText: { type: String, trim: true, maxlength: 300 },
+    // A short note above the launcher after a delay, on the pages whose
+    // path contains `pathContains` (all pages when empty). Shown once per
+    // visit and dismissible; validated by routes/company.js.
+    proactive: {
+      enabled: { type: Boolean, default: false },
+      text: { type: String, trim: true, maxlength: 200 },
+      delaySeconds: { type: Number, min: 5, max: 120, default: 20 },
+      pathContains: { type: String, trim: true, maxlength: 200 }
+    }
+  },
+  /**
+   * Where and when the widget was last loaded from a real page. Lets the
+   * dashboard say "seen on bloomdental.com 4 minutes ago" instead of assuming
+   * it is installed because a conversation exists.
+   */
+  widgetSeen: {
+    at: { type: Date },
+    origin: { type: String },
+    origins: [{ type: String }]
+  },
+  /**
+   * Which usage warnings have gone out this billing period, so an owner gets
+   * one email at 80% and one at 100% per meter rather than one per request.
+   */
+  usageAlerts: {
+    period: { type: String },
+    warned80: [{ type: String }],
+    warned100: [{ type: String }]
+  },
+  /** Setup progress that is not visible from the data alone. */
+  onboarding: {
+    botTestedAt: { type: Date }
+  },
+  // ---- P2F: agencies and white-label ----
+  /**
+   * Agencies set up and run support desks for their own clients.
+   *
+   * `isAgency` is switched on by a superadmin, never by the company itself.
+   * `parent` is set on a client: the agency that manages it, whose admins may
+   * open its dashboard and whose brand it wears. `clientLimit` caps how many
+   * clients one agency may hold (unset: the platform default).
+   */
+  agency: {
+    isAgency: { type: Boolean, default: false },
+    parent: { type: mongoose.Schema.Types.ObjectId, ref: 'Company', index: true },
+    clientLimit: { type: Number, min: 0 },
+    /** When this company became the parent's client, for the agency's list. */
+    attachedAt: { type: Date },
+    /** The last agency it left, so a superadmin can see where it came from. */
+    detachedFrom: { type: mongoose.Schema.Types.ObjectId, ref: 'Company' },
+    detachedAt: { type: Date }
+  },
+  /**
+   * An agency's own brand, shown instead of the product's on its clients'
+   * dashboards, sign-in pages reached from their invitations, and the mail
+   * the platform sends them. Needs the `customBranding` plan feature. The
+   * widget carries no product brand at all, so it has nothing to replace.
+   */
+  branding: {
+    productName: { type: String, trim: true, maxlength: 60 },
+    // https only, checked by routes/agency.js.
+    logoUrl: { type: String, trim: true },
+    primaryColor: { type: String, trim: true },
+    supportEmail: { type: String, trim: true, lowercase: true }
+  },
+  /** How the company came to exist: created by us, or signed up itself. */
+  createdVia: {
+    type: String,
+    enum: ['superadmin', 'signup'],
+    default: 'superadmin'
   },
   isActive: {
     type: Boolean,

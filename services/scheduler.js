@@ -6,6 +6,11 @@ const cron = require('node-cron');
 const NotificationService = require('./notification');
 const webhookService = require('./webhooks');
 const TenantBackupService = require('./tenant-backup');
+const knowledgeCrawler = require('./knowledge-crawler');
+const usageAlerts = require('./usage-alerts');
+const resolutions = require('./resolutions');
+const sweeps = require('./conversation-sweeps');
+const booking = require('./booking');
 const Company = require('../models/company');
 const { logger } = require('./logging');
 const socketManager = require('../socketManager');
@@ -112,6 +117,54 @@ class SchedulerService {
 
     // Hourly sweep during working hours keeps due-today reminders timely.
     this.jobs.push(cron.schedule('0 8-18 * * *', () => this.runDeadlineCheck('hourly deadline check')));
+
+    // Knowledge sources and sites set to refresh weekly. Each run takes a few
+    // of whatever is due, so a tenant with a large site cannot hold up the
+    // others and the hour after a deploy is not one long crawl.
+    this.jobs.push(cron.schedule('15 * * * *', () => {
+      knowledgeCrawler.recrawlDue().catch(error =>
+        logger.error('Knowledge refresh sweep failed', { error: error.message }));
+    }));
+
+    // Usage warnings at 80% and 100% of a plan's limits. Each is claimed
+    // atomically per meter and period, so an hourly check sends one email,
+    // not one an hour.
+    this.jobs.push(cron.schedule('45 * * * *', () => {
+      usageAlerts.runAll().catch(error =>
+        logger.error('Usage warning sweep failed', { error: error.message }));
+    }));
+
+    // Appointment reminders, about a day ahead. Each booking is claimed
+    // before its email goes, so running often never sends two.
+    this.jobs.push(cron.schedule('*/15 * * * *', () => {
+      booking.sendDueReminders().catch(error =>
+        logger.error('Booking reminder sweep failed', { error: error.message }));
+    }));
+
+    // Somebody has waited too long for a person: tell the team again, once.
+    this.jobs.push(cron.schedule('* * * * *', () => {
+      sweeps.escalateLongWaits().catch(error =>
+        logger.error('Long-wait escalation failed', { error: error.message }));
+    }));
+
+    // Web chats nobody has written in for a day are ended, so they leave the
+    // queue and count as finished in reports.
+    this.jobs.push(cron.schedule('5 * * * *', () => {
+      sweeps.closeIdleConversations().catch(error =>
+        logger.error('Idle conversation sweep failed', { error: error.message }));
+    }));
+
+    // Resolutions for per-resolution pricing: counted nightly (a conversation
+    // only counts once it ended or sat idle for a day, so it cannot still
+    // turn into a handover), then reported to Stripe as that day's difference.
+    this.jobs.push(cron.schedule('15 1 * * *', () => {
+      resolutions.recordResolutions().catch(error =>
+        logger.error('Resolution count failed', { error: error.message }));
+    }));
+    this.jobs.push(cron.schedule('30 1 * * *', () => {
+      resolutions.reportResolutionsToStripe().catch(error =>
+        logger.error('Resolution report to Stripe failed', { error: error.message }));
+    }));
 
     // Nightly per-tenant backups. Opt-in, because writing every tenant's
     // documents to local disk is a decision about where data lives, and

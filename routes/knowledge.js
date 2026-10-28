@@ -10,30 +10,31 @@
  * workflow knowledge node searched an empty collection and found nothing,
  * silently, forever.
  *
- * These are the four things somebody needs: put something in, see what is in,
- * try a question against it, and take something out again. "Put something
- * in" is a URL, pasted text, an uploaded file, or a whole site crawled.
+ * These are the things somebody needs: put something in, see what is in and
+ * how much the bot uses it, try a question against it, correct it, keep it
+ * current, and take something out again. "Put something in" is a URL, pasted
+ * text, an uploaded file, or a whole site crawled in the background.
  */
 
 const express = require('express');
-const crypto = require('crypto');
 const path = require('path');
+const mongoose = require('mongoose');
 const multer = require('multer');
 const router = express.Router();
 
 const { auth, admin } = require('../middleware/auth');
 const { enforceLimit, requireFeature } = require('../middleware/quota');
-const KnowledgeConnectorService = require('../services/knowledge-connector');
-const { isPdfUrl } = require('../services/knowledge-connector');
 const { getVectorStore } = require('../services/vector-store');
 const KnowledgeChunk = require('../models/knowledge-chunk');
-const usageService = require('../services/usage');
+const KnowledgeSource = require('../models/knowledge-source');
+const KnowledgeCrawl = require('../models/knowledge-crawl');
+const Conversation = require('../models/conversation');
 const { logger } = require('../services/logging');
 const audit = require('../services/audit');
 const knowledgeFiles = require('../services/knowledge-files');
 const knowledgeCrawler = require('../services/knowledge-crawler');
-
-const connector = new KnowledgeConnectorService();
+const knowledgeText = require('../services/knowledge-text');
+const { toObjectId } = require('../utils/query');
 
 /**
  * The largest file a tenant may upload into the knowledge base. Separate from
@@ -42,6 +43,9 @@ const connector = new KnowledgeConnectorService();
  */
 const MAX_KNOWLEDGE_FILE_BYTES =
   parseInt(process.env.KNOWLEDGE_UPLOAD_MAX_BYTES, 10) || 10 * 1024 * 1024;
+
+/** The window "used in N answers" counts over. */
+const USAGE_WINDOW_DAYS = 30;
 
 /**
  * Held in memory, never written to disk: the file is read once into text and
@@ -102,48 +106,19 @@ function requireCompany(req, res) {
   return companyId;
 }
 
-/**
- * What kind of thing a URL points at.
- *
- * Only used to label the source. The loader makes the same call from the path
- * and, failing that, from the response's content type, so a PDF served from a
- * URL without the extension is still read as one.
- */
-function sourceTypeFor(url) {
-  return isPdfUrl(url) ? 'pdf' : 'url';
+/** A superadmin manages the platform and is not subject to a tenant's plan. */
+function quotaApplies(req) {
+  return req.user.role !== 'superadmin';
 }
 
-/**
- * Refuse an import that would take the tenant over their chunk allowance.
- *
- * The `enforceLimit` middleware on the route checks for room for one more
- * chunk before anything is fetched, which stops an exhausted tenant early but
- * says nothing about a 400-chunk PDF against a 50-chunk remainder. This runs
- * after chunking and before embedding - the expensive part - with the real
- * number. Chunks the same source already has are being replaced, so they do
- * not count against it.
- */
-async function assertRoomFor(req, companyId, sourceId, chunkCount) {
-  if (req.user.role === 'superadmin') {
-    return;
-  }
-
-  const replacing = await KnowledgeChunk.countDocuments({ company: companyId, sourceId });
-  const requested = Math.max(0, chunkCount - replacing);
-  const result = await usageService.check(companyId, 'knowledgeChunks', requested);
-
-  if (!result.allowed) {
-    await usageService.recordLimitHit(companyId);
-    const error = new Error(
-      `${result.reason || 'Knowledge limit reached.'} This import would add ${requested} chunk${requested === 1 ? '' : 's'}.`
-    );
-    error.status = 402;
-    error.code = 'PLAN_LIMIT_REACHED';
-    error.meter = 'knowledgeChunks';
-    error.limit = result.limit;
-    error.used = result.used;
-    throw error;
-  }
+/** Who did it, for audit entries a background job writes after the request. */
+function actorOf(req) {
+  return {
+    id: req.user.id,
+    username: req.user.username,
+    displayName: req.user.displayName || req.user.username,
+    role: req.user.role
+  };
 }
 
 /** Send a quota refusal in the same shape as the middleware, or a 400. */
@@ -160,7 +135,59 @@ function importFailed(res, error) {
 
   // The message is the tenant's to act on: a bad URL, a scanned PDF, a
   // site that refused us. A generic 500 would send them to us instead.
-  return res.status(400).json({ error: error.message });
+  return res.status(error.status && error.status < 500 ? error.status : 400).json({ error: error.message });
+}
+
+/**
+ * How many bot answers cited each source over the last month.
+ *
+ * Messages record their citations as `{title, url}` rather than a source id,
+ * because that is what the visitor is shown. So a web page is matched by its
+ * address and anything else by its title; two notes with the same title share
+ * one count, which is the price of not storing ids on every message. One
+ * aggregation for the whole list, not one per source.
+ *
+ * @returns {Promise<{byUrl: Map<string, number>, byTitle: Map<string, number>}>}
+ */
+async function answerCounts(companyId) {
+  const since = new Date(Date.now() - USAGE_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+  const byUrl = new Map();
+  const byTitle = new Map();
+
+  try {
+    const rows = await Conversation.aggregate([
+      { $match: { company: toObjectId(companyId), lastActivity: { $gte: since }, 'messages.sources.0': { $exists: true } } },
+      { $unwind: '$messages' },
+      {
+        $match: {
+          'messages.sender': 'bot',
+          'messages.timestamp': { $gte: since },
+          'messages.sources.0': { $exists: true }
+        }
+      },
+      { $unwind: '$messages.sources' },
+      {
+        $group: {
+          _id: { title: '$messages.sources.title', url: '$messages.sources.url' },
+          count: { $sum: 1 }
+        }
+      }
+    ]);
+
+    rows.forEach(row => {
+      const { title, url } = row._id || {};
+      if (url) {
+        byUrl.set(url, (byUrl.get(url) || 0) + row.count);
+      } else if (title) {
+        byTitle.set(title, (byTitle.get(title) || 0) + row.count);
+      }
+    });
+  } catch (error) {
+    // A count is a nicety; the list must still load without it.
+    logger.warn('Could not count knowledge use', { error: error.message });
+  }
+
+  return { byUrl, byTitle };
 }
 
 // What this tenant's bot can draw on.
@@ -172,10 +199,18 @@ router.get('/', auth, admin, async (req, res) => {
     }
 
     const store = getVectorStore();
-    const [stats, sources] = await Promise.all([
+    const [stats, sources, settings, sites, counts] = await Promise.all([
       store.stats(companyId),
-      store.sources(companyId)
+      store.sources(companyId),
+      KnowledgeSource.find({ company: companyId })
+        .select('sourceId refreshWeekly lastRefreshedAt lastError').lean(),
+      KnowledgeCrawl.find({ company: companyId }).sort({ createdAt: -1 }).lean(),
+      answerCounts(companyId)
     ]);
+
+    const settingsById = new Map(settings.map(row => [row.sourceId, row]));
+    const siteOf = new Map();
+    sites.forEach(site => (site.pages || []).forEach(sourceId => siteOf.set(sourceId, site.origin)));
 
     // `stats.sources` is a count and `sources` is the list. Spreading one over
     // the other left a single ambiguous field, which the dashboard duly
@@ -185,14 +220,36 @@ router.get('/', auth, admin, async (req, res) => {
     res.json({
       ...rest,
       sourceCount,
-      sources,
+      sources: sources.map(source => {
+        const setting = settingsById.get(source.sourceId) || {};
+        const usedInAnswers = source.url
+          ? (counts.byUrl.get(source.url) || 0)
+          : (counts.byTitle.get(source.title) || 0);
+        return {
+          ...source,
+          usedInAnswers,
+          editable: knowledgeText.isTextSource(source.sourceId),
+          refreshable: /^(url|pdf):/.test(source.sourceId),
+          refreshWeekly: Boolean(setting.refreshWeekly),
+          lastRefreshedAt: setting.lastRefreshedAt || null,
+          lastError: setting.lastError || null,
+          site: siteOf.get(source.sourceId) || null
+        };
+      }),
+      sites: sites.map(knowledgeCrawler.presentJob),
+      usageWindowDays: USAGE_WINDOW_DAYS,
       // Without an API key the embedding service falls back to hashed
       // bag-of-words, which matches words rather than meaning. Saying so here
       // is the difference between "search is poor" and a support ticket.
       note: stats.semantic
         ? null
         : 'No embedding model is configured, so matching is by wording rather ' +
-          'than meaning. Set OPENAI_API_KEY for semantic search.'
+          'than meaning. Set OPENAI_API_KEY for semantic search.',
+      // The Google Sheets import is kept while its place in the product is
+      // decided, and shown only where an operator has switched it on: the
+      // assistant does not answer from it yet, so it is not where anyone
+      // should start.
+      features: { googleSheets: process.env.GOOGLE_SHEETS_UI === 'true' }
     });
   } catch (error) {
     logger.error('Could not list knowledge sources', { error: error.message });
@@ -227,52 +284,161 @@ router.post(
       }
 
       if (url) {
-        const sourceType = sourceTypeFor(url);
-        const sourceId = `${sourceType}:${url}`;
-        const result = await connector.processKnowledgeSource(
-          { sourceType, config: { url }, sourceId },
-          companyId,
-          { beforeStore: documents => assertRoomFor(req, companyId, sourceId, documents.length) }
-        );
+        const result = await knowledgeCrawler.fetchSource({
+          companyId, url: String(url), enforceQuota: quotaApplies(req)
+        });
 
         await audit.record({ req, action: 'knowledge.imported', details: { sourceId: result.sourceId, url } });
 
-        return res.status(201).json({
-          sourceId: result.sourceId,
-          sourceType,
-          chunks: result.vectorResults ? result.vectorResults.stored : 0
-        });
+        return res.status(201).json(result);
       }
 
       // Pasted text takes the same chunking as a fetched document, so a long
       // policy is retrieved a paragraph at a time rather than whole.
-      //
-      // The id is random, not derived from the title. It used to be, so two
-      // notes both called "Opening hours" - one per branch, say - silently
-      // replaced each other. The title is kept as the display name.
-      const sourceId = `text:${crypto.randomUUID()}`;
-      const chunks = connector.splitIntoChunks(String(text), 1000);
+      const stored = await knowledgeText.storeText({
+        companyId,
+        text,
+        title: title || 'Note',
+        enforceQuota: quotaApplies(req),
+        by: req.user.id
+      });
 
-      await assertRoomFor(req, companyId, sourceId, chunks.length);
+      await audit.record({ req, action: 'knowledge.imported', details: { sourceId: stored.sourceId, title: stored.title } });
 
-      const stored = await getVectorStore().store(
-        chunks.map((content, index) => ({
-          content,
-          chunkIndex: index,
-          metadata: { title: title || 'Note', source: 'manual' }
-        })),
-        { companyId, sourceId, sourceType: 'manual' }
-      );
-
-      await audit.record({ req, action: 'knowledge.imported', details: { sourceId, title: title || 'Note' } });
-
-      res.status(201).json({ sourceId, sourceType: 'manual', chunks: stored.stored });
+      res.status(201).json({ sourceId: stored.sourceId, sourceType: 'manual', chunks: stored.chunks });
     } catch (error) {
       logger.error('Could not import a knowledge source', { error: error.message });
       importFailed(res, error);
     }
   }
 );
+
+/**
+ * A pasted note's text, for editing.
+ *
+ * Only notes: a web page or a file is edited where it lives and fetched again.
+ */
+router.get('/sources/:sourceId/text', auth, admin, async (req, res) => {
+  try {
+    const companyId = requireCompany(req, res);
+    if (!companyId) {
+      return;
+    }
+
+    if (!knowledgeText.isTextSource(req.params.sourceId)) {
+      return res.status(400).json({ error: 'Only pasted text can be edited here' });
+    }
+
+    const note = await knowledgeText.readText(companyId, req.params.sourceId);
+    if (!note) {
+      return res.status(404).json({ error: 'No such source' });
+    }
+
+    res.json(note);
+  } catch (error) {
+    logger.error('Could not read a knowledge note', { error: error.message });
+    res.status(500).json({ error: 'Could not read that note' });
+  }
+});
+
+/**
+ * Replace a pasted note's text.
+ *
+ * The new chunks are written before the old ones are removed, so the bot
+ * answers from one version or the other throughout, never from nothing.
+ */
+router.put('/sources/:sourceId', auth, admin, requireFeature('knowledgeBase'), async (req, res) => {
+  try {
+    const companyId = requireCompany(req, res);
+    if (!companyId) {
+      return;
+    }
+
+    const { sourceId } = req.params;
+    if (!knowledgeText.isTextSource(sourceId)) {
+      return res.status(400).json({ error: 'Only pasted text can be edited. Re-fetch a page or upload the file again.' });
+    }
+
+    const { text, title } = req.body;
+    if (!String(text || '').trim()) {
+      return res.status(400).json({ error: 'The note is empty. Remove the source instead.' });
+    }
+
+    // Scoped to this company: an id from another tenant is simply not found.
+    const exists = await KnowledgeChunk.exists({ company: companyId, sourceId });
+    if (!exists) {
+      return res.status(404).json({ error: 'No such source' });
+    }
+
+    const stored = await knowledgeText.storeText({
+      companyId,
+      sourceId,
+      text,
+      title,
+      enforceQuota: quotaApplies(req),
+      by: req.user.id
+    });
+
+    await audit.record({
+      req,
+      action: 'knowledge.updated',
+      target: { type: 'knowledge', id: sourceId, label: stored.title },
+      details: { sourceId, chunks: stored.chunks }
+    });
+
+    res.json({ sourceId, sourceType: 'manual', title: stored.title, chunks: stored.chunks });
+  } catch (error) {
+    logger.error('Could not update a knowledge note', { error: error.message });
+    importFailed(res, error);
+  }
+});
+
+/**
+ * Per-source settings: for now, whether to fetch a page again every week.
+ */
+router.patch('/sources/:sourceId', auth, admin, async (req, res) => {
+  try {
+    const companyId = requireCompany(req, res);
+    if (!companyId) {
+      return;
+    }
+
+    const { sourceId } = req.params;
+    if (!/^(url|pdf):/.test(sourceId)) {
+      return res.status(400).json({ error: 'Only a web page or a PDF link can be refreshed' });
+    }
+    if (typeof req.body.refreshWeekly !== 'boolean') {
+      return res.status(400).json({ error: 'Say whether to refresh it weekly (true or false)' });
+    }
+
+    const exists = await KnowledgeChunk.exists({ company: companyId, sourceId });
+    if (!exists) {
+      return res.status(404).json({ error: 'No such source' });
+    }
+
+    const setting = await KnowledgeSource.findOneAndUpdate(
+      { company: companyId, sourceId },
+      {
+        $set: { refreshWeekly: req.body.refreshWeekly, updatedBy: req.user.id, updatedAt: new Date() },
+        // The page was fetched when it was imported; the week starts then.
+        $setOnInsert: { company: companyId, sourceId, lastRefreshedAt: new Date() }
+      },
+      { upsert: true, new: true }
+    ).lean();
+
+    await audit.record({
+      req,
+      action: 'knowledge.updated',
+      target: { type: 'knowledge', id: sourceId },
+      details: { sourceId, refreshWeekly: setting.refreshWeekly }
+    });
+
+    res.json({ sourceId, refreshWeekly: setting.refreshWeekly, lastRefreshedAt: setting.lastRefreshedAt || null });
+  } catch (error) {
+    logger.error('Could not change a knowledge source', { error: error.message });
+    res.status(500).json({ error: 'Could not change that source' });
+  }
+});
 
 /**
  * Upload a document into the knowledge base.
@@ -310,7 +476,9 @@ router.post(
       const title = String(req.body.title || '').trim().slice(0, 200) || parsed.title || filename;
       const sourceId = `file:${filename}`;
 
-      await assertRoomFor(req, companyId, sourceId, parsed.chunks.length);
+      if (quotaApplies(req)) {
+        await knowledgeText.assertRoom(companyId, sourceId, parsed.chunks.length);
+      }
 
       const stored = await getVectorStore().store(
         parsed.chunks.map((chunk, index) => ({
@@ -346,13 +514,14 @@ router.post(
 );
 
 /**
- * Crawl a website into the knowledge base.
+ * Crawl a website into the knowledge base, in the background.
  *
- * `{ url, maxPages }`. Every page becomes its own `url:` source, exactly as if
- * it had been imported by hand, so each can be refreshed or removed on its own
- * and a second crawl replaces the pages rather than doubling them. Pages that
- * were imported and then pushed the tenant over their plan are reported as
- * skipped with the reason, not silently dropped.
+ * `{ url, maxPages, refreshWeekly? }` answers 202 with a job id straight away;
+ * `GET /crawl/:jobId` reports progress ("12 of 20 pages") and, once done, what
+ * was imported, skipped and removed. Every page becomes its own `url:` source,
+ * exactly as if it had been imported by hand, so each can be refreshed or
+ * removed on its own and a second crawl replaces the pages rather than
+ * doubling them - and drops the ones the site no longer has.
  */
 router.post(
   '/crawl',
@@ -367,70 +536,95 @@ router.post(
         return;
       }
 
-      const { url, maxPages } = req.body;
+      const { url, maxPages, refreshWeekly } = req.body;
       if (!url || typeof url !== 'string') {
         return res.status(400).json({ error: 'Provide the address of the site to read' });
       }
 
-      const { pages, skipped } = await knowledgeCrawler.crawl(url, { maxPages });
-      const store = getVectorStore();
-      const imported = [];
-      let quotaError = null;
-
-      for (const page of pages) {
-        if (quotaError) {
-          skipped.push({ url: page.url, reason: quotaError.message });
-          continue;
-        }
-
-        const sourceId = `url:${page.url}`;
-        const chunks = connector.splitIntoChunks(page.text, 1000);
-        const filename = new URL(page.url).hostname;
-
-        try {
-          await assertRoomFor(req, companyId, sourceId, chunks.length);
-
-          const stored = await store.store(
-            chunks.map((content, index) => ({
-              content,
-              chunkIndex: index,
-              metadata: {
-                source: 'web_url',
-                url: page.url,
-                filename,
-                ...(page.title ? { title: page.title } : {})
-              }
-            })),
-            { companyId, sourceId, sourceType: 'url' }
-          );
-
-          imported.push({ sourceId, title: page.title || page.url, url: page.url, chunks: stored.stored });
-        } catch (error) {
-          if (error.status === 402) {
-            // Everything after this would be refused too; say so for each.
-            quotaError = error;
-          }
-          skipped.push({ url: page.url, reason: error.message });
-        }
-      }
-
-      if (imported.length === 0 && quotaError) {
-        return importFailed(res, quotaError);
-      }
-
-      await audit.record({
-        req,
-        action: 'knowledge.imported',
-        details: { crawl: url, pages: imported.length, skipped: skipped.length }
+      const { job, alreadyRunning } = await knowledgeCrawler.startCrawl({
+        companyId,
+        url,
+        maxPages,
+        refreshWeekly: typeof refreshWeekly === 'boolean' ? refreshWeekly : undefined,
+        enforceQuota: quotaApplies(req),
+        actor: actorOf(req),
+        createdBy: req.user.id
       });
 
-      res.json({ imported, skipped });
+      res.status(202).json({
+        jobId: String(job._id),
+        alreadyRunning,
+        job: knowledgeCrawler.presentJob(job)
+      });
     } catch (error) {
-      logger.error('Could not crawl a site', { error: error.message });
+      logger.error('Could not start a site crawl', { error: error.message });
       importFailed(res, error);
     }
   }
 );
+
+/** Find a crawl record of this company's, or answer 404. */
+async function crawlOf(req, res, companyId) {
+  if (!mongoose.Types.ObjectId.isValid(req.params.jobId)) {
+    res.status(404).json({ error: 'No such crawl' });
+    return null;
+  }
+  const job = await KnowledgeCrawl.findOne({ _id: req.params.jobId, company: companyId });
+  if (!job) {
+    res.status(404).json({ error: 'No such crawl' });
+    return null;
+  }
+  return job;
+}
+
+// How a crawl is getting on.
+router.get('/crawl/:jobId', auth, admin, async (req, res) => {
+  try {
+    const companyId = requireCompany(req, res);
+    if (!companyId) {
+      return;
+    }
+    const job = await crawlOf(req, res, companyId);
+    if (job) {
+      res.json(knowledgeCrawler.presentJob(job));
+    }
+  } catch (error) {
+    logger.error('Could not read a crawl', { error: error.message });
+    res.status(500).json({ error: 'Could not read that crawl' });
+  }
+});
+
+// A site's settings: whether to read it again every week.
+router.patch('/crawl/:jobId', auth, admin, async (req, res) => {
+  try {
+    const companyId = requireCompany(req, res);
+    if (!companyId) {
+      return;
+    }
+    if (typeof req.body.refreshWeekly !== 'boolean') {
+      return res.status(400).json({ error: 'Say whether to refresh it weekly (true or false)' });
+    }
+    const job = await crawlOf(req, res, companyId);
+    if (!job) {
+      return;
+    }
+
+    job.refreshWeekly = req.body.refreshWeekly;
+    await job.save();
+
+    await audit.record({
+      req,
+      action: 'knowledge.updated',
+      target: { type: 'knowledge', id: job.origin },
+      details: { site: job.origin, refreshWeekly: job.refreshWeekly }
+    });
+
+    res.json(knowledgeCrawler.presentJob(job));
+  } catch (error) {
+    logger.error('Could not change a crawl', { error: error.message });
+    res.status(500).json({ error: 'Could not change that site' });
+  }
+});
 
 // Fetch a source again, in place, so a changed page updates rather than doubles.
 router.post('/sources/:sourceId/refresh', auth, admin, requireFeature('knowledgeBase'), async (req, res) => {
@@ -441,22 +635,17 @@ router.post('/sources/:sourceId/refresh', auth, admin, requireFeature('knowledge
     }
 
     const { sourceId } = req.params;
-    const [type, ...rest] = sourceId.split(':');
-    const target = rest.join(':');
-
-    if (type !== 'url' && type !== 'pdf') {
+    if (!/^(url|pdf):/.test(sourceId)) {
       return res.status(400).json({ error: 'Only a URL source can be refreshed' });
     }
 
-    const result = await connector.processKnowledgeSource(
-      { sourceType: type, config: { url: target }, sourceId },
-      companyId,
-      { beforeStore: documents => assertRoomFor(req, companyId, sourceId, documents.length) }
-    );
+    const result = await knowledgeCrawler.fetchSource({
+      companyId, sourceId, enforceQuota: quotaApplies(req)
+    });
 
     await audit.record({ req, action: 'knowledge.refreshed', details: { sourceId } });
 
-    res.json({ sourceId, chunks: result.vectorResults ? result.vectorResults.stored : 0 });
+    res.json({ sourceId, chunks: result.chunks });
   } catch (error) {
     logger.error('Could not refresh a knowledge source', { error: error.message });
     importFailed(res, error);
@@ -467,7 +656,8 @@ router.post('/sources/:sourceId/refresh', auth, admin, requireFeature('knowledge
  * Ask the knowledge base a question without involving a visitor.
  *
  * The point is to let somebody check what their bot will actually find before
- * they discover it from a customer.
+ * they discover it from a customer - and which source it came from, so a wrong
+ * passage can be traced to the page or note to fix.
  */
 router.post('/search', auth, admin, async (req, res) => {
   try {
@@ -489,12 +679,20 @@ router.post('/search', auth, admin, async (req, res) => {
 
     res.json({
       query,
-      results: results.map(result => ({
-        content: result.content,
-        score: Number(result.score.toFixed(3)),
-        sourceId: result.sourceId,
-        sourceType: result.sourceType
-      }))
+      results: results.map(result => {
+        const metadata = result.metadata instanceof Map
+          ? Object.fromEntries(result.metadata)
+          : (result.metadata || {});
+        const url = /^https?:\/\//i.test(String(metadata.url || '')) ? metadata.url : null;
+        return {
+          content: result.content,
+          score: Number(result.score.toFixed(3)),
+          sourceId: result.sourceId,
+          sourceType: result.sourceType,
+          title: metadata.title || metadata.filename || url || result.sourceId || 'Knowledge base',
+          url
+        };
+      })
     });
   } catch (error) {
     logger.error('Knowledge search failed', { error: error.message });
@@ -510,15 +708,23 @@ router.delete('/sources/:sourceId', auth, admin, async (req, res) => {
       return;
     }
 
-    const removed = await getVectorStore().deleteSource(companyId, req.params.sourceId);
+    const { sourceId } = req.params;
+    const removed = await getVectorStore().deleteSource(companyId, sourceId);
 
     if (removed === 0) {
       return res.status(404).json({ error: 'No such source' });
     }
 
-    await audit.record({ req, action: 'knowledge.deleted', details: { sourceId: req.params.sourceId, chunks: removed } });
+    // Its settings go with it, and a site stops counting it as one of its
+    // pages, so the next crawl brings it back only if the site still has it.
+    await Promise.all([
+      knowledgeText.forget(companyId, sourceId),
+      KnowledgeCrawl.updateMany({ company: companyId }, { $pull: { pages: sourceId } })
+    ]);
 
-    res.json({ sourceId: req.params.sourceId, removed });
+    await audit.record({ req, action: 'knowledge.deleted', details: { sourceId, chunks: removed } });
+
+    res.json({ sourceId, removed });
   } catch (error) {
     logger.error('Could not delete a knowledge source', { error: error.message });
     res.status(500).json({ error: 'Could not delete that source' });

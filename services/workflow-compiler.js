@@ -62,6 +62,58 @@ const BRANCHING_NODES = new Map([
 
 const MAX_EXECUTION_STEPS = 50;
 
+/**
+ * What the editor calls each node type, so a problem names the step the
+ * author can see ("Ask for the order number" or "Ask a Question") rather than
+ * an internal id like `ask_lq3k9_x81bz2` they have never seen.
+ */
+const NODE_LABELS = {
+  start: 'Start',
+  persona: 'Persona',
+  knowledge: 'Knowledge',
+  'knowledge-source': 'Knowledge',
+  llm: 'AI Reply',
+  response: 'Fixed Reply',
+  router: 'Router',
+  moderation: 'Moderation',
+  fallback: 'Fallback',
+  ask: 'Ask a Question',
+  buttons: 'Offer Choices',
+  condition: 'Check a Value',
+  set: 'Set a Value',
+  'business-hours': 'Open or Closed',
+  tag: 'Add a Tag',
+  task: 'Create a Task',
+  capability: 'Use Your Data',
+  notify: 'Email the Team',
+  action: 'Call an API',
+  'operator-handoff': 'Human Handoff'
+};
+
+/**
+ * Ids end up in the editor's HTML and in CSS selectors, so they are held to a
+ * shape that cannot carry markup. The editor's own ids and every template's
+ * already fit; this stops one arriving through the API that does not.
+ */
+const SAFE_ID = /^[A-Za-z0-9_-]{1,64}$/;
+
+/**
+ * Moderation "Strictness", made to mean something.
+ *
+ * The setting used to be stored and never read. Now:
+ *   low     only the categories nobody should ever receive (threats, sexual
+ *           content involving minors, self-harm instructions, graphic
+ *           violence) - for a business whose customers vent
+ *   medium  whatever the moderation model itself flags (the default)
+ *   high    that, plus anything scoring above STRICT_SCORE in any category -
+ *           for a children's service or a regulated one
+ */
+const SEVERE_CATEGORIES = [
+  'sexual/minors', 'hate/threatening', 'harassment/threatening',
+  'self-harm/intent', 'self-harm/instructions', 'violence/graphic', 'illicit/violent'
+];
+const STRICT_SCORE = 0.2;
+
 class WorkflowCompilerService {
   constructor() {
     this.openai = process.env.OPENAI_API_KEY
@@ -112,57 +164,149 @@ class WorkflowCompilerService {
     return (node.data && node.data.type) || node.type || 'unknown';
   }
 
+  /** The name an author knows a node by. */
+  nodeLabel(node) {
+    const type = this.nodeType(node);
+    return (node && node.data && String(node.data.label || '').trim()) || NODE_LABELS[type] || type;
+  }
+
   /**
-   * Validate workflow structure
+   * Problems that make a graph unsafe to store at all, as opposed to merely
+   * unfinished: ids that could carry markup, nodes with no id or no data,
+   * positions the editor cannot draw. A half-built draft may be saved; one of
+   * these may not.
+   *
+   * @returns {Array<{message: string, nodeId: string|null}>}
+   */
+  structuralProblems(nodes = [], edges = []) {
+    const problems = [];
+
+    if (!Array.isArray(nodes) || !Array.isArray(edges)) {
+      return [{ message: 'Nodes and edges must be lists', nodeId: null }];
+    }
+
+    nodes.forEach((node, index) => {
+      if (!node || typeof node !== 'object' || !node.data || typeof node.data !== 'object') {
+        problems.push({ message: `Step ${index + 1} has no configuration`, nodeId: null });
+        return;
+      }
+      if (!SAFE_ID.test(String(node.id || ''))) {
+        problems.push({
+          message: `"${this.nodeLabel(node)}" has an id that is not allowed. Ids are 1 to 64 letters, digits, "-" or "_".`,
+          nodeId: null
+        });
+      }
+      if (node.position !== undefined) {
+        const { x, y } = node.position || {};
+        if (typeof x !== 'number' || typeof y !== 'number') {
+          problems.push({ message: `"${this.nodeLabel(node)}" has no position on the canvas`, nodeId: SAFE_ID.test(String(node.id)) ? node.id : null });
+        }
+      }
+      // Choice and rule ids become output handles, which are drawn into the
+      // page exactly like node ids.
+      const handles = [
+        ...(Array.isArray(node.data.choices) ? node.data.choices : []),
+        ...(Array.isArray(node.data.conditions) ? node.data.conditions : [])
+      ];
+      handles.forEach(item => {
+        if (item && item.id !== undefined && item.id !== null && item.id !== '' && !SAFE_ID.test(String(item.id))) {
+          problems.push({
+            message: `"${this.nodeLabel(node)}" has an output with an id that is not allowed`,
+            nodeId: SAFE_ID.test(String(node.id)) ? node.id : null
+          });
+        }
+      });
+    });
+
+    edges.forEach((edge, index) => {
+      if (!edge || typeof edge !== 'object') {
+        problems.push({ message: `Connection ${index + 1} is not a connection`, nodeId: null });
+        return;
+      }
+      if (!SAFE_ID.test(String(edge.id || ''))) {
+        problems.push({ message: `Connection ${index + 1} has an id that is not allowed`, nodeId: null });
+      }
+      if (!SAFE_ID.test(String(edge.source || '')) || !SAFE_ID.test(String(edge.target || ''))) {
+        problems.push({ message: `Connection ${index + 1} joins steps with ids that are not allowed`, nodeId: null });
+      }
+      if (edge.sourceHandle !== undefined && edge.sourceHandle !== null && edge.sourceHandle !== '' &&
+          !SAFE_ID.test(String(edge.sourceHandle))) {
+        problems.push({ message: `Connection ${index + 1} leaves from an output that is not allowed`, nodeId: null });
+      }
+    });
+
+    return problems;
+  }
+
+  /**
+   * Validate workflow structure.
+   *
+   * Every rule is checked and every problem reported, so the editor can show
+   * the whole list at once. `errors` and `warnings` are the messages as
+   * strings, for the callers that only print them; `problems` carries the
+   * same messages with the node each one is about, so the editor highlights
+   * the right node rather than guessing from the text.
+   *
+   * @returns {{valid: boolean, errors: string[], warnings: string[],
+   *            problems: Array<{message: string, nodeId: string|null,
+   *                             level: 'error'|'warning'}>}}
    */
   validateWorkflow(nodes = [], edges = []) {
-    const errors = [];
-    const warnings = [];
+    const problems = [];
+    const error = (message, nodeId = null) => problems.push({ message, nodeId, level: 'error' });
+    const warning = (message, nodeId = null) => problems.push({ message, nodeId, level: 'warning' });
+    const report = () => {
+      const errors = problems.filter(p => p.level === 'error').map(p => p.message);
+      const warnings = problems.filter(p => p.level === 'warning').map(p => p.message);
+      return { valid: errors.length === 0, errors, warnings, problems };
+    };
 
     if (!Array.isArray(nodes) || nodes.length === 0) {
       // Report every applicable rule rather than short-circuiting, so the
       // editor can show a new user the full set of things to add.
-      return {
-        valid: false,
-        errors: [
-          'Workflow must contain at least one node',
-          'Workflow must include at least one Persona node'
-        ],
-        warnings
-      };
+      error('Workflow must contain at least one node');
+      error('Workflow must include at least one Persona node');
+      return report();
     }
 
     const nodeIds = new Set(nodes.map(n => n.id));
+    const byId = new Map(nodes.map(n => [n.id, n]));
     const types = nodes.map(n => this.nodeType(n));
 
     if (!types.includes('persona')) {
-      errors.push('Workflow must include at least one Persona node');
+      error('Workflow must include at least one Persona node');
     }
 
     const duplicateIds = nodes
       .map(n => n.id)
       .filter((id, index, all) => all.indexOf(id) !== index);
-    if (duplicateIds.length > 0) {
-      errors.push(`Duplicate node ids: ${[...new Set(duplicateIds)].join(', ')}`);
-    }
+    [...new Set(duplicateIds)].forEach(id => {
+      error(`Two steps share the same id ("${this.nodeLabel(byId.get(id))}"). Delete one and add it again.`, id);
+    });
 
     // Edges must reference nodes that exist, otherwise the executor walks off
     // the end of the graph at runtime.
     edges.forEach(edge => {
       if (!nodeIds.has(edge.source)) {
-        errors.push(`Edge "${edge.id || `${edge.source}->${edge.target}`}" starts at unknown node "${edge.source}"`);
+        error(
+          'A connection starts at a step that no longer exists' +
+            (byId.has(edge.target) ? ` (it leads to "${this.nodeLabel(byId.get(edge.target))}")` : ''),
+          byId.has(edge.target) ? edge.target : null
+        );
       }
       if (!nodeIds.has(edge.target)) {
-        errors.push(`Edge "${edge.id || `${edge.source}->${edge.target}`}" ends at unknown node "${edge.target}"`);
+        error(
+          `"${byId.has(edge.source) ? this.nodeLabel(byId.get(edge.source)) : 'A step'}" is connected to a step that no longer exists`,
+          byId.has(edge.source) ? edge.source : null
+        );
       }
     });
 
-    const unknownTypes = nodes.filter(n => {
+    nodes.forEach(n => {
       const type = this.nodeType(n);
-      return !FLOW_NODES.has(type) && !CONFIGURATION_NODES.has(type);
-    });
-    unknownTypes.forEach(n => {
-      warnings.push(`Node "${n.id}" has unrecognised type "${this.nodeType(n)}" and will be skipped at runtime`);
+      if (!FLOW_NODES.has(type) && !CONFIGURATION_NODES.has(type)) {
+        warning(`"${this.nodeLabel(n)}" is a kind of step this version does not know ("${type}") and will be skipped`, n.id);
+      }
     });
 
     // Orphan detection applies only to flow nodes, and only once there is more
@@ -175,51 +319,76 @@ class WorkflowCompilerService {
         connected.add(edge.target);
       });
 
-      const orphaned = flowNodes.filter(node => !connected.has(node.id));
-      if (orphaned.length > 0) {
-        errors.push(
-          `${orphaned.length} node(s) are not connected to anything: ${orphaned.map(n => n.data?.label || n.id).join(', ')}`
-        );
-      }
+      flowNodes
+        .filter(node => !connected.has(node.id))
+        .forEach(node => error(`"${this.nodeLabel(node)}" is not connected to anything`, node.id));
     }
 
-    // Only routers branch. Any other node with two outgoing edges is
-    // ambiguous - the executor would silently follow whichever happened to be
-    // first - so reject it at design time instead.
-    const outgoing = new Map();
+    // A node with one output may have one connection leaving it; a node with
+    // several (a router's rules, an action's Worked and Failed) may have one
+    // per output. Two leaving the same output is ambiguous - the executor
+    // would silently follow whichever happened to be first.
+    const perNode = new Map();
+    const perHandle = new Map();
     edges.forEach(edge => {
-      outgoing.set(edge.source, (outgoing.get(edge.source) || 0) + 1);
+      perNode.set(edge.source, (perNode.get(edge.source) || 0) + 1);
+      const handles = perHandle.get(edge.source) || new Map();
+      const handle = edge.sourceHandle || '';
+      handles.set(handle, (handles.get(handle) || 0) + 1);
+      perHandle.set(edge.source, handles);
     });
 
     nodes.forEach(node => {
       const type = this.nodeType(node);
-      const count = outgoing.get(node.id) || 0;
+      const name = this.nodeLabel(node);
 
-      if (!BRANCHING_NODES.has(type) && count > 1) {
-        errors.push(
-          `"${node.data?.label || node.id}" has ${count} outgoing connections. ` +
-          'Only Router and Action nodes can branch - use a Router to choose between paths.'
-        );
+      if (!BRANCHING_NODES.has(type)) {
+        const count = perNode.get(node.id) || 0;
+        if (count > 1) {
+          error(`"${name}" has ${count} outgoing connections but only one output. ` +
+            'Use a Router or a Check a Value step to choose between paths.', node.id);
+        }
+      } else {
+        const handles = perHandle.get(node.id) || new Map();
+        if ([...handles.values()].some(count => count > 1)) {
+          error(`"${name}" has two connections leaving the same output. Each output can lead to one step.`, node.id);
+        }
       }
 
       // An action node's destination is checked here, at design time, so a bad
       // URL is a validation error in the editor rather than a failed call in
       // front of a customer.
       if (type === 'action') {
-        errors.push(...this.validateActionNode(node, edges, warnings));
+        const actionWarnings = [];
+        this.validateActionNode(node, edges, actionWarnings).forEach(message => error(message, node.id));
+        actionWarnings.forEach(message => warning(message, node.id));
       }
 
       // Likewise every regular expression a tenant wrote: an invalid or
       // catastrophically slow one is refused here, with the node named, rather
       // than hanging the bot for whoever types the wrong thing.
-      errors.push(...this.validatePatterns(node));
+      this.validatePatterns(node).forEach(message => error(message, node.id));
     });
 
     if (this.detectCycles(nodes, edges)) {
-      errors.push('Workflow contains a cycle, which would loop forever at runtime');
+      error('Workflow contains a loop, which would run forever. Remove one of the connections that leads back.');
     }
 
-    return { valid: errors.length === 0, errors, warnings };
+    // The blank starter used to be Persona, Start and AI Reply with nothing in
+    // between, so publishing it stopped the bot reading the knowledge base it
+    // had been answering from. A workflow that writes its own answers and
+    // never looks anything up is almost always that mistake. A warning, not
+    // an error: a flow that only chats is allowed, just rarely meant.
+    const hasKnowledge = types.some(type => type === 'knowledge' || type === 'knowledge-source');
+    const speaks = types.some(type => ['response', 'fallback', 'operator-handoff', 'ask', 'buttons'].includes(type));
+    const writesFreely = types.includes('llm') || !speaks;
+    if (!hasKnowledge && writesFreely) {
+      const llm = nodes.find(n => this.nodeType(n) === 'llm');
+      warning('This workflow writes its own answers but has no Knowledge step, so it answers without ' +
+        'your knowledge base. Add a Knowledge step before the AI Reply.', llm ? llm.id : null);
+    }
+
+    return report();
   }
 
   /**
@@ -233,7 +402,7 @@ class WorkflowCompilerService {
   validateActionNode(node, edges = [], warnings = []) {
     const errors = [];
     const data = node.data || {};
-    const name = data.label || node.id;
+    const name = this.nodeLabel(node);
 
     if (data.actionId) {
       // A saved Action was validated when it was saved; only the reference
@@ -288,7 +457,7 @@ class WorkflowCompilerService {
   validatePatterns(node) {
     const errors = [];
     const data = node.data || {};
-    const name = data.label || node.id;
+    const name = this.nodeLabel(node);
     const type = this.nodeType(node);
 
     const check = (pattern, flags, where) => {
@@ -519,6 +688,9 @@ class WorkflowCompilerService {
    * node's prompt, then mirror the result back into the chain config's steps.
    */
   applyPromptHierarchyToNodes(executionPlan, chainConfig) {
+    // An inherited persona has no text of its own here: it is looked up when
+    // the workflow runs (see inheritedPersona), so a change on the Persona
+    // screen reaches the workflow without republishing it.
     const preamble = [
       this.rootSystemPrompt,
       chainConfig.prompts.persona ? chainConfig.prompts.persona.compiled.systemPrompt : null
@@ -545,6 +717,20 @@ class WorkflowCompilerService {
    */
   compilePersonaNode(node) {
     const { prompt, tone, personality } = node.data;
+
+    // The blank starter's persona says "You are a helpful assistant." It used
+    // to replace whatever the tenant wrote on the Persona screen the moment
+    // the starter was published. Until somebody edits it, it defers to that
+    // screen instead.
+    if (inheritsPersona(node.data)) {
+      return {
+        inherit: true,
+        userPrompt: null,
+        tone: null,
+        personality: null,
+        compiled: { systemPrompt: null }
+      };
+    }
 
     return {
       userPrompt: prompt || 'You are a helpful assistant.',
@@ -583,7 +769,7 @@ class WorkflowCompilerService {
 
     return {
       enabled: true,
-      level: strictness || 'medium',
+      level: ['low', 'medium', 'high'].includes(strictness) ? strictness : 'medium',
       customFilters: filters || [],
       useOpenAIModeration: true
     };
@@ -664,6 +850,16 @@ class WorkflowCompilerService {
 
       if (choice) {
         variables[awaiting.variable] = choice.value;
+
+        if (awaiting.next) {
+          // Results offered as buttons by a Use Your Data step: whichever was
+          // tapped, the flow carries on down one output, with the pick saved.
+          variables[`${awaiting.variable}_label`] = choice.label;
+          const onward = edges.find(edge => edge.handle === awaiting.next) ||
+            (edges.length === 1 && !edges[0].handle ? edges[0] : null);
+          return { nextId: onward ? onward.target : null };
+        }
+
         const named = edges.find(edge => edge.handle === choice.id);
         return { nextId: named ? named.target : (edges[0] && edges[0].target) || null };
       }
@@ -671,7 +867,7 @@ class WorkflowCompilerService {
       if (attempts >= maxAttempts) {
         // Stop asking. Somebody typing something else three times over is
         // telling you the buttons do not cover their problem.
-        const other = edges.find(edge => edge.handle === 'other');
+        const other = edges.find(edge => edge.handle === (awaiting.giveUp || 'other'));
         return { nextId: other ? other.target : null };
       }
 
@@ -724,7 +920,7 @@ class WorkflowCompilerService {
 
     // Input moderation
     if (moderation.enabled) {
-      const result = await this.moderateContent(userMessage);
+      const result = await this.moderateContent(userMessage, moderation.level);
       if (result.flagged) {
         return {
           success: true,
@@ -775,6 +971,20 @@ class WorkflowCompilerService {
       await retrieveKnowledge();
     }
 
+    // The tenant's own persona, for a workflow whose Persona step defers to
+    // the Persona screen. Looked up once per turn, and only if a model is
+    // about to be asked something.
+    let inheritedText;
+    const persona = async () => {
+      if (!(prompts.persona && prompts.persona.inherit)) {
+        return null;
+      }
+      if (inheritedText === undefined) {
+        inheritedText = await this.inheritedPersona(tenantId);
+      }
+      return inheritedText;
+    };
+
     // Variables carried over from earlier turns come first, so an answer
     // collected three messages ago is still available; the current message
     // always wins over a stale copy of itself.
@@ -806,6 +1016,17 @@ class WorkflowCompilerService {
     // render properly rather than describe in a sentence.
     let cards = null;
     let awaiting = null;
+    // Whether a model wrote any of the reply (metered) and whether the walk
+    // ended on "I don't know" (the unanswered-questions list). Fixed replies
+    // cost nothing and are not a gap.
+    let llmUsed = false;
+    let fellBack = false;
+    // Steps that failed. A tag or a task that could not be written degrades
+    // the conversation and the walk carries on; an answer that could not be
+    // written leaves nothing to send, which is a failed run. Either way the
+    // caller hears about it - this used to report success whatever happened.
+    const failures = [];
+    let fatal = null;
     const visited = [];
     const actionRuns = [];
     // What a preview run declined to do for real. Empty on a live run.
@@ -860,7 +1081,16 @@ class WorkflowCompilerService {
         break;
 
       case 'llm':
-        say(await this.runLlmNode(step, userMessage, chatHistory, await retrieveKnowledge(), variables));
+        try {
+          llmUsed = llmUsed || Boolean(this.openai);
+          say(await this.runLlmNode(
+            step, userMessage, chatHistory, await retrieveKnowledge(), variables, null, await persona()
+          ));
+        } catch (error) {
+          failures.push({ node: currentId, error: error.message });
+          fatal = fatal || error;
+          nextId = null;
+        }
         break;
 
       case 'router': {
@@ -937,6 +1167,10 @@ class WorkflowCompilerService {
           render: template => this.renderTemplate(template, variables)
         });
 
+        if (outcome.failed) {
+          failures.push({ node: currentId, error: outcome.failed });
+        }
+
         Object.assign(variables, outcome.variables || {});
 
         if (outcome.simulated) {
@@ -968,6 +1202,7 @@ class WorkflowCompilerService {
       }
 
       case 'fallback':
+        fellBack = true;
         say(this.renderTemplate(step.data.message, variables) ||
             routing.fallback?.message ||
             'I\'m not sure how to help with that.');
@@ -1003,27 +1238,64 @@ class WorkflowCompilerService {
       logger.warn('Workflow execution hit the step limit', { tenantId, visited: visited.length });
     }
 
+    if (fatal) {
+      // The answer itself could not be produced. The caller falls back to the
+      // assistant and clears the state, exactly as for a thrown error, so the
+      // visitor is not left with half a reply from a flow that broke.
+      logger.error('A workflow step failed and the reply could not be produced', {
+        tenantId, failures
+      });
+      return {
+        success: false,
+        error: fatal.message,
+        response,
+        escalation: escalate,
+        state: { awaiting: null, variables: this.persistableVariables(variables) },
+        metadata: { path: visited, failures, llmUsed, fellBack, tenantId }
+      };
+    }
+
     // Nothing produced a response: fall back to a plain LLM answer so the
     // visitor is never met with silence.
     if (response === null) {
       if (routing.fallback) {
+        fellBack = true;
         response = routing.fallback.message;
         escalate = routing.fallback.escalation;
       } else {
-        response = await this.runLlmNode(
-          { data: {} },
-          userMessage,
-          chatHistory,
-          await retrieveKnowledge(),
-          variables,
-          prompts
-        );
+        llmUsed = llmUsed || Boolean(this.openai);
+        try {
+          const inherited = await persona();
+          response = await this.runLlmNode(
+            { data: {} },
+            userMessage,
+            chatHistory,
+            await retrieveKnowledge(),
+            variables,
+            inherited
+              ? { ...prompts, persona: { compiled: { systemPrompt: `Persona: ${inherited}` } } }
+              : prompts
+          );
+        } catch (error) {
+          failures.push({ node: null, error: error.message });
+          logger.error('The workflow ended without a reply and the model could not write one', {
+            tenantId, error: error.message
+          });
+          return {
+            success: false,
+            error: error.message,
+            response: null,
+            escalation: escalate,
+            state: { awaiting: null, variables: this.persistableVariables(variables) },
+            metadata: { path: visited, failures, llmUsed, fellBack, tenantId }
+          };
+        }
       }
     }
 
     // Output moderation
     if (moderation.enabled && response) {
-      const result = await this.moderateContent(response);
+      const result = await this.moderateContent(response, moderation.level);
       if (result.flagged) {
         return {
           success: true,
@@ -1038,6 +1310,9 @@ class WorkflowCompilerService {
       success: true,
       response,
       escalation: escalate,
+      // Steps that failed without stopping the reply (a tag, a task, an
+      // email). Reported so the run can be counted as having had an error.
+      ...(failures.length ? { errors: failures } : {}),
       // Buttons for the widget to render, when the last node offered any.
       choices,
       cards,
@@ -1051,6 +1326,8 @@ class WorkflowCompilerService {
       },
       metadata: {
         knowledgeUsed: Boolean(knowledgeContext),
+        llmUsed,
+        fellBack,
         path: visited,
         // Surfaced so an operator picking up the conversation, and the
         // analytics view, can see the bot actually did something rather than
@@ -1090,7 +1367,26 @@ class WorkflowCompilerService {
       return (await handler(step, context)) || {};
     } catch (error) {
       logger.error('Workflow node failed', { type, error: error.message });
-      return {};
+      return { failed: error.message };
+    }
+  }
+
+  /**
+   * The persona on the tenant's Persona screen, for a workflow that defers
+   * to it. assistant-config ignores an inheriting workflow persona, so this
+   * cannot come back round to the workflow asking.
+   */
+  async inheritedPersona(tenantId) {
+    if (!tenantId) {
+      return null;
+    }
+    try {
+      const { resolve } = require('./assistant-config');
+      const resolved = await resolve(tenantId);
+      return resolved && resolved.persona ? String(resolved.persona) : null;
+    } catch (error) {
+      logger.warn('Could not read the tenant persona for a workflow', { tenantId, error: error.message });
+      return null;
     }
   }
 
@@ -1165,9 +1461,12 @@ class WorkflowCompilerService {
   /**
    * Run a single LLM node.
    */
-  async runLlmNode(step, userMessage, chatHistory, knowledgeContext, variables, prompts = null) {
+  async runLlmNode(step, userMessage, chatHistory, knowledgeContext, variables, prompts = null, inheritedPersona = null) {
     const systemPrompt = this.buildPromptHierarchy(
-      prompts || { rootSystem: step.data.systemPrompt || this.rootSystemPrompt, persona: null },
+      prompts || {
+        rootSystem: step.data.systemPrompt || this.rootSystemPrompt,
+        persona: inheritedPersona ? { compiled: { systemPrompt: `Persona: ${inheritedPersona}` } } : null
+      },
       knowledgeContext
     );
 
@@ -1272,7 +1571,7 @@ class WorkflowCompilerService {
   buildPromptHierarchy(prompts, knowledgeContext = '') {
     let systemPrompt = prompts.rootSystem || this.rootSystemPrompt;
 
-    if (prompts.persona) {
+    if (prompts.persona && prompts.persona.compiled && prompts.persona.compiled.systemPrompt) {
       systemPrompt += `\n\n${prompts.persona.compiled.systemPrompt}`;
     }
 
@@ -1360,24 +1659,43 @@ class WorkflowCompilerService {
   }
 
   /**
+   * Apply the node's strictness to a moderation result. Split out so the
+   * three levels can be tested without the API.
+   */
+  judgeModeration(result, level = 'medium') {
+    const categories = (result && result.categories) || {};
+    const scores = (result && result.category_scores) || {};
+    const raised = Object.keys(categories).filter(category => categories[category]);
+
+    let flagged;
+    if (level === 'low') {
+      flagged = Boolean(result && result.flagged) && raised.some(category => SEVERE_CATEGORIES.includes(category));
+    } else if (level === 'high') {
+      flagged = Boolean(result && result.flagged) ||
+        Object.values(scores).some(score => typeof score === 'number' && score >= STRICT_SCORE);
+    } else {
+      flagged = Boolean(result && result.flagged);
+    }
+
+    const strongest = Object.entries(scores).sort((a, b) => b[1] - a[1])[0];
+    return {
+      flagged,
+      reason: flagged ? (raised[0] || (strongest ? strongest[0] : 'policy')) : null,
+      categories
+    };
+  }
+
+  /**
    * Content moderation using OpenAI
    */
-  async moderateContent(content) {
+  async moderateContent(content, level = 'medium') {
     if (!this.openai) {
       return { flagged: false };
     }
 
     try {
       const moderation = await this.openai.moderations.create({ input: content });
-      const result = moderation.results[0];
-
-      return {
-        flagged: result.flagged,
-        reason: result.flagged
-          ? Object.keys(result.categories).find(cat => result.categories[cat])
-          : null,
-        categories: result.categories
-      };
+      return this.judgeModeration(moderation.results[0], level);
     } catch (error) {
       logger.error('Error in content moderation', { error: error.message });
       // Fail open: a moderation outage must not silence the bot entirely.
@@ -1386,4 +1704,17 @@ class WorkflowCompilerService {
   }
 }
 
+/**
+ * Whether a Persona step defers to the Persona screen. The flag is set on the
+ * blank starter and cleared by the editor as soon as the prompt is edited.
+ */
+function inheritsPersona(data) {
+  return Boolean(data) && (data.inheritPersona === true || data.inheritPersona === 'true');
+}
+
 module.exports = WorkflowCompilerService;
+module.exports.NODE_LABELS = NODE_LABELS;
+module.exports.SAFE_ID = SAFE_ID;
+module.exports.inheritsPersona = inheritsPersona;
+module.exports.SEVERE_CATEGORIES = SEVERE_CATEGORIES;
+module.exports.STRICT_SCORE = STRICT_SCORE;

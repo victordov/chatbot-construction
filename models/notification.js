@@ -3,13 +3,27 @@ const mongoose = require('mongoose');
 const NotificationSchema = new mongoose.Schema({
   type: {
     type: String,
-    enum: ['task_due_tomorrow', 'task_due_today', 'task_overdue'],
+    enum: [
+      'task_due_tomorrow', 'task_due_today', 'task_overdue', 'task_assigned',
+      'chat_assigned', 'chat_transferred', 'visitor_waiting', 'low_rating',
+      'usage_warning'
+    ],
     required: true
   },
+  // Task notifications point at a task; conversation ones at a session.
   taskId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Task',
-    required: true
+    required: function() {
+      return /^task_/.test(this.type);
+    }
+  },
+  sessionId: {
+    type: String
+  },
+  /** Where clicking the notification goes, as a dashboard section link. */
+  link: {
+    type: String
   },
   userId: {
     type: mongoose.Schema.Types.ObjectId,

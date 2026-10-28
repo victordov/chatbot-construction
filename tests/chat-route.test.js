@@ -17,7 +17,6 @@ const Company = require('../models/company');
 const Conversation = require('../models/conversation');
 const Subscription = require('../models/subscription');
 const replyService = require('../services/reply');
-const usageService = require('../services/usage');
 const sessionTokenService = require('../services/session-token');
 
 /** The cookie session, without the cookie: every request carries a fixed id. */
@@ -163,7 +162,8 @@ describe('REST chat', () => {
     expect((await request(app).post('/api/chat/message').send({ message: 'again' })).status).toBe(403);
   });
 
-  test('a tenant over their reply allowance gets the polite message and no model call', async () => {
+  test('a tenant over their reply allowance is handed to the team, with no model call', async () => {
+    // Changed on purpose: this used to answer "unavailable" and stop there.
     const capped = await Company.create({ name: 'Rest Chat Capped' });
     await Subscription.create({
       company: capped._id, planId: 'basic', status: 'active',
@@ -176,15 +176,16 @@ describe('REST chat', () => {
       .send({ message: 'hello', widgetKey: capped.widgetKey });
 
     expect(response.status).toBe(200);
-    expect(response.body.unavailable).toBe(true);
-    expect(response.body.message.content).toBe(usageService.UNAVAILABLE_MESSAGE);
+    expect(response.body.handoff).toMatchObject({ reason: 'quota', offline: true, followUpRequested: true });
+    expect(response.body.message).toMatchObject({ code: 'queued_offline', sender: 'bot' });
     expect(replyService.generate).not.toHaveBeenCalled();
+    expect((await Conversation.findOne({ sessionId })).handoff.reason).toBe('quota');
 
     await Subscription.deleteMany({ company: capped._id });
     await Company.deleteOne({ _id: capped._id });
   });
 
-  test('a failed reply is an apology, not a 500', async () => {
+  test('a failed reply hands over, never an error and never a 500', async () => {
     replyService.generate.mockRejectedValueOnce(new Error('model unavailable'));
     const sessionId = fresh();
 
@@ -194,8 +195,38 @@ describe('REST chat', () => {
 
     expect(response.status).toBe(200);
     expect(response.body.failed).toBe(true);
-    expect(response.body.message.content).toBe(usageService.REPLY_FAILED_MESSAGE);
+    expect(response.body.handoff.reason).toBe('model_error');
+    expect(response.body.message).toMatchObject({ code: 'reply_failed', path: 'handoff' });
     // The client still gets the token, or it could never come back.
     expect(response.body.sessionToken).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  test('a reply that came back empty is a failure too', async () => {
+    // What services/ai.js now returns when the model call fails.
+    replyService.generate.mockResolvedValueOnce({ text: null, source: 'assistant', path: 'fallback' });
+
+    const response = await request(buildApp(fresh()))
+      .post('/api/chat/message')
+      .send({ message: 'hello', widgetKey: acme.widgetKey });
+
+    expect(response.body.failed).toBe(true);
+    expect(response.body.handoff.reason).toBe('model_error');
+  });
+
+  test('a tenant that may not start a conversation gets the unavailable notice, and nothing is created', async () => {
+    const lapsed = await Company.create({ name: 'Rest Chat Lapsed' });
+    await Subscription.create({ company: lapsed._id, planId: 'basic', status: 'suspended' });
+    const sessionId = fresh();
+
+    const response = await request(buildApp(sessionId))
+      .post('/api/chat/message')
+      .send({ message: 'hello', widgetKey: lapsed.widgetKey });
+
+    expect(response.body.unavailable).toBe(true);
+    expect(response.body.message).toMatchObject({ code: 'unavailable', sender: 'bot' });
+    expect(await Conversation.findOne({ sessionId })).toBeNull();
+
+    await Subscription.deleteMany({ company: lapsed._id });
+    await Company.deleteOne({ _id: lapsed._id });
   });
 });

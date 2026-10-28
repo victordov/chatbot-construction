@@ -19,6 +19,7 @@ const Company = require('../models/company');
 const capabilities = require('../config/capabilities');
 const safeHttp = require('./safe-http');
 const secrets = require('./secrets');
+const booking = require('./booking');
 const { logger } = require('./logging');
 
 const CALL_TIMEOUT_MS = 8000;
@@ -97,11 +98,11 @@ function generateSecret() {
 }
 
 /**
- * The tenant's connector settings, with the secret decrypted.
+ * The tenant's hosted connector, with the secret decrypted.
  *
  * @returns {Promise<{url: string, secret: string, capabilities: string[]}|null>}
  */
-async function settingsFor(companyId) {
+async function hostedSettingsFor(companyId) {
   if (!companyId) {
     return null;
   }
@@ -120,6 +121,37 @@ async function settingsFor(companyId) {
     url: connector.url,
     secret: secrets.decrypt(connector.secret) || '',
     capabilities: connector.capabilities || []
+  };
+}
+
+/**
+ * What this company's systems can answer: its hosted connector, and a
+ * connected booking calendar (services/booking), which answers the
+ * availability capabilities without the tenant hosting anything.
+ *
+ * A calendar alone gives settings with no `url`; `capabilities` then lists
+ * only what the calendar answers. An empty list still means "everything the
+ * hosted connector was not asked about", as it always has.
+ *
+ * @returns {Promise<{url: string|null, secret: string, capabilities: string[], calendar?: boolean}|null>}
+ */
+async function settingsFor(companyId) {
+  const hosted = await hostedSettingsFor(companyId);
+  const calendar = await booking.capabilitiesFor(companyId);
+
+  if (calendar.length === 0) {
+    return hosted;
+  }
+  if (!hosted) {
+    return { url: null, secret: '', capabilities: calendar, calendar: true };
+  }
+
+  return {
+    ...hosted,
+    capabilities: hosted.capabilities.length > 0
+      ? [...new Set([...hosted.capabilities, ...calendar])]
+      : hosted.capabilities,
+    calendar: true
   };
 }
 
@@ -217,6 +249,12 @@ function explainAddress(error, url) {
  * Never throws: a connector being down is a branch a workflow takes, not an
  * exception that ends a conversation.
  *
+ * @param {object} [options]
+ * @param {boolean} [options.simulate] a preview: writes are not sent
+ * @param {number} [options.maxItems]
+ * @param {number} [options.timeoutMs]
+ * @param {string} [options.sessionId] the conversation asking, so a booking
+ *        made through a connected calendar is recorded against it
  * @returns {Promise<{ok: boolean, value?: *, error?: string, warnings?: string[]}>}
  */
 async function call(companyId, capabilityId, input = {}, options = {}) {
@@ -247,7 +285,17 @@ async function call(companyId, capabilityId, input = {}, options = {}) {
     return { ok: false, error: `Cannot call ${capabilityId}: ${checked.errors.join(', ')}` };
   }
 
-  const settings = await settingsFor(companyId);
+  // A connected booking calendar answers the availability capabilities in
+  // place of the hosted connector. It returns null when there is none, and the
+  // call carries on to the connector exactly as before.
+  if (booking.handles(capabilityId)) {
+    const answered = await booking.dispatch(companyId, capabilityId, checked.value, options);
+    if (answered) {
+      return answered;
+    }
+  }
+
+  const settings = await hostedSettingsFor(companyId);
 
   if (!settings) {
     return { ok: false, error: 'No connector is set up for this company' };
@@ -373,6 +421,7 @@ module.exports = {
   sign,
   generateSecret,
   settingsFor,
+  hostedSettingsFor,
   clearCache,
   CACHE_TTL_MS
 };

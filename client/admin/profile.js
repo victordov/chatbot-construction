@@ -3,9 +3,72 @@
  * apart from company configuration, which an operator cannot change anyway.
  */
 
+import { logoutEverywhere, showProfile } from './core.js';
 import { registerSection } from './nav.js';
 import { state } from './state.js';
-import { api, errorMessage, setAuthToken, setLoading, showToast } from './utils.js';
+import { api, errorMessage, escapeHtml, setAuthToken, setLoading, setStoredUser, showToast } from './utils.js';
+
+function browserZone() {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  } catch (error) {
+    return 'UTC';
+  }
+}
+
+/**
+ * The person's own name and timezone.
+ *
+ * The name is what colleagues see on notes and transfers and what a visitor
+ * sees when an operator joins, so it is theirs to get right; it used to be
+ * changeable only by an admin.
+ */
+function setupDetails() {
+  const form = document.getElementById('profile-form');
+  if (!form) {
+    return;
+  }
+
+  const user = state.currentUser || {};
+  const zones = typeof Intl.supportedValuesOf === 'function' ? Intl.supportedValuesOf('timeZone') : ['UTC'];
+  const chosen = user.timezone || '';
+  const select = document.getElementById('profile-timezone');
+  select.innerHTML = `<option value="">This browser's (${escapeHtml(browserZone())})</option>` +
+    (chosen && !zones.includes(chosen) ? [chosen, ...zones] : zones).map(zone =>
+      `<option value="${escapeHtml(zone)}" ${zone === chosen ? 'selected' : ''}>${escapeHtml(zone)}</option>`).join('');
+
+  document.getElementById('profile-display-name').value = user.displayName || user.username || '';
+  document.getElementById('profile-email-line').textContent = user.email
+    ? `You sign in as ${user.email}${user.username ? ` (or ${user.username})` : ''}. Ask an admin to change your address.`
+    : '';
+
+  form.addEventListener('submit', async event => {
+    event.preventDefault();
+    const button = document.getElementById('profile-save-btn');
+    const displayName = document.getElementById('profile-display-name').value.trim();
+
+    if (!displayName) {
+      showToast('Enter your name', 'warning');
+      return;
+    }
+
+    setLoading(button, true);
+    try {
+      const { user: updated } = await api('/api/auth/me', {
+        method: 'PUT',
+        body: { displayName, timezone: select.value || null }
+      });
+      state.currentUser = { ...state.currentUser, ...updated };
+      setStoredUser(state.currentUser);
+      showProfile(state.currentUser);
+      showToast('Saved', 'success');
+    } catch (error) {
+      showToast(errorMessage(error, 'Could not save your details'), 'danger');
+    } finally {
+      setLoading(button, false);
+    }
+  });
+}
 
 function readPreference(key, fallback) {
   try {
@@ -106,7 +169,9 @@ function setupPassword() {
 
 registerSection('profile', {
   setup() {
+    setupDetails();
     setupNotificationPreferences();
     setupPassword();
+    document.getElementById('profile-logout-everywhere')?.addEventListener('click', logoutEverywhere);
   }
 });

@@ -4,14 +4,20 @@
  * This is where a tenant tells the product what business they are in. Nothing
  * industry-specific ships with the platform any more, so a company that fills
  * in nothing here gets a generic assistant answering from its knowledge base.
+ *
+ * A blank persona box is hard to fill, so a few plain questions (the business,
+ * what it does, the tone, what never to guess at, when to hand over) can write
+ * it, or the model can draft one from the tenant's own website. Either way the
+ * text lands in the box for the admin to read and change before it is saved.
  */
 
 import * as bootstrap from 'bootstrap';
 import { registerSection } from './nav.js';
-import { api, confirmDialog, escapeHtml, logger, setLoading, showToast } from './utils.js';
+import {
+  api, confirmDialog, errorMessage, escapeHtml, formatRelativeTime, logger, setLoading, showToast
+} from './utils.js';
 
 let templates = [];
-
 
 const ROLE_LABELS = {
   greeting: 'Greeting',
@@ -20,25 +26,159 @@ const ROLE_LABELS = {
   handoff: 'Handoff'
 };
 
+/** What each role is for, shown beside its badge. */
+const ROLE_HINTS = {
+  greeting: 'The opening line',
+  fallback: 'Sent when the bot cannot answer',
+  offTopic: 'Sent for questions outside the scope',
+  handoff: 'Sent when handing over to a person'
+};
+
+const TONE_LINES = {
+  friendly: 'Be warm and friendly, and keep answers easy to read.',
+  professional: 'Be professional, precise and courteous.',
+  brief: 'Keep answers short: a sentence or two unless the customer asks for more.'
+};
+
+const $ = id => document.getElementById(id);
+
 // ---------------------------------------------------------------- persona
+
+function builderValues() {
+  return {
+    businessName: $('persona-business-name').value.trim(),
+    whatYouDo: $('persona-what-you-do').value.trim(),
+    tone: $('persona-tone').value,
+    neverGuess: [...document.querySelectorAll('#persona-never-guess input:checked')].map(input => input.value),
+    neverGuessOther: $('persona-never-other').value.trim(),
+    handover: $('persona-handover').value.trim()
+  };
+}
+
+function fillBuilder(builder = {}) {
+  $('persona-business-name').value = builder.businessName || '';
+  $('persona-what-you-do').value = builder.whatYouDo || '';
+  $('persona-tone').value = builder.tone || 'friendly';
+  document.querySelectorAll('#persona-never-guess input').forEach(input => {
+    input.checked = (builder.neverGuess || []).includes(input.value);
+  });
+  $('persona-never-other').value = builder.neverGuessOther || '';
+  $('persona-handover').value = builder.handover || '';
+}
+
+/** "a, b and c". */
+function listOf(items) {
+  return items.length <= 1 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
+}
+
+/**
+ * The persona the builder's answers amount to.
+ *
+ * Plain sentences in the second person, the form the model follows best, and
+ * nothing the admin did not say: a blank answer leaves its sentence out.
+ */
+function composePersona(values) {
+  const sentences = [];
+  const name = values.businessName;
+  const what = values.whatYouDo.replace(/\.\s*$/, '');
+
+  if (name && what) {
+    sentences.push(`You are the assistant for ${name}, ${what}.`);
+  } else if (name) {
+    sentences.push(`You are the assistant for ${name}.`);
+  } else if (what) {
+    sentences.push(`You are the assistant for ${what}.`);
+  } else {
+    sentences.push('You are the customer support assistant for this business.');
+  }
+
+  sentences.push(TONE_LINES[values.tone] || TONE_LINES.friendly);
+
+  const never = [...values.neverGuess, ...(values.neverGuessOther ? [values.neverGuessOther] : [])];
+  if (never.length) {
+    sentences.push(`Never guess at ${listOf(never)}: if the answer is not in the information you have, say so and offer to pass the question to the team.`);
+  } else {
+    sentences.push('If the answer is not in the information you have, say so rather than guessing.');
+  }
+
+  if (values.handover) {
+    sentences.push(`Offer to put the customer in touch with a person when ${values.handover.replace(/\.\s*$/, '')}.`);
+  }
+
+  return sentences.join(' ');
+}
+
+/** Put text in the persona box, asking first if it would replace something. */
+async function offerPersona(text, title) {
+  const box = $('assistant-persona');
+  const current = box.value.trim();
+  if (current && current !== text.trim()) {
+    const ok = await confirmDialog({
+      title,
+      message: 'This replaces the persona text below. Nothing is saved until you press Save assistant.',
+      confirmLabel: 'Replace'
+    });
+    if (!ok) {
+      return false;
+    }
+  }
+  box.value = text;
+  box.focus();
+  return true;
+}
+
+async function compose() {
+  if (await offerPersona(composePersona(builderValues()), 'Write the persona from your answers?')) {
+    $('persona-draft-note').textContent = 'Written from your answers. Read it, change anything, then save.';
+  }
+}
+
+async function draftFromWebsite() {
+  const button = $('persona-draft-btn');
+  const note = $('persona-draft-note');
+  setLoading(button, true);
+  note.textContent = 'Reading your knowledge base…';
+  try {
+    const result = await api('/api/bot/persona-draft', { method: 'POST', body: { builder: builderValues() } });
+    if (await offerPersona(result.persona, 'Use the drafted persona?')) {
+      note.textContent = result.basedOn && result.basedOn.length
+        ? `Drafted from ${result.basedOn.join(', ')}. Check every fact before saving.`
+        : 'Drafted from your knowledge base. Check every fact before saving.';
+    } else {
+      note.textContent = '';
+    }
+  } catch (error) {
+    note.textContent = '';
+    showToast(errorMessage(error, 'Could not draft a persona'), 'danger', 8000);
+  } finally {
+    setLoading(button, false);
+  }
+}
 
 async function loadAssistantConfig() {
   try {
     const config = await api('/api/templates/assistant/config');
 
-    document.getElementById('assistant-persona').value = config.persona || '';
-    document.getElementById('assistant-scope').value = config.scope || '';
+    $('assistant-persona').value = config.persona || '';
+    $('assistant-scope').value = config.scope || '';
+    fillBuilder(config.builder || {});
 
-    // A published workflow's Persona node overrides this field. Saying so
+    // A live workflow's own Persona step speaks for its answers. Saying so
     // avoids an admin editing here and wondering why nothing changed.
-    const note = document.getElementById('persona-source-note');
-    if (config.effective.source === 'workflow') {
+    const note = $('persona-source-note');
+    if (config.effective && config.effective.source === 'workflow') {
       note.classList.remove('d-none');
       note.innerHTML =
-        'Your published workflow defines a persona, and that takes precedence over this field. ' +
-        'Edit it in the <strong>Workflow Editor</strong>, or unpublish the workflow to use this instead.';
+        'A live workflow sets its own persona, and that is the one in effect. Edit it in the ' +
+        '<strong>workflow editor</strong>, or unpublish the workflow under ' +
+        '<a href="?section=workflows" data-section-link="workflows">Workflows</a> to use this one.';
     } else {
       note.classList.add('d-none');
+    }
+
+    // An open preview is out of date once the persona is reloaded.
+    if ($('persona-prompt-preview').open) {
+      loadPromptPreview();
     }
   } catch (error) {
     logger.error('Failed to load assistant config:', error);
@@ -54,8 +194,9 @@ async function saveAssistantConfig(event) {
     await api('/api/templates/assistant/config', {
       method: 'PUT',
       body: JSON.stringify({
-        persona: document.getElementById('assistant-persona').value,
-        scope: document.getElementById('assistant-scope').value
+        persona: $('assistant-persona').value,
+        scope: $('assistant-scope').value,
+        builder: builderValues()
       })
     });
     showToast('Assistant saved', 'success');
@@ -67,20 +208,70 @@ async function saveAssistantConfig(event) {
   }
 }
 
+/** The prompt the assistant is actually given, part by part. */
+async function loadPromptPreview() {
+  const body = $('persona-prompt-body');
+  body.innerHTML = '<span class="text-muted">Loading…</span>';
+  try {
+    const preview = await api('/api/bot/prompt-preview');
+    const roles = preview.cannedReplies.roles.map(role => ROLE_LABELS[role.role] || role.role);
+    const canned = `${preview.cannedReplies.triggered} matched by meaning` +
+      (roles.length ? `, roles: ${roles.join(', ')}` : '');
+    body.innerHTML = `
+      <ol class="ps-3 mb-3">
+        ${(preview.order || []).map(step => `<li>${escapeHtml(step)}</li>`).join('')}
+      </ol>
+      <div class="mb-1"><strong>Persona</strong> <span class="text-muted">from ${escapeHtml(preview.persona.sourceLabel)}</span></div>
+      <div class="mb-2"><strong>Scope</strong> <span class="text-muted">${escapeHtml(preview.scope.text || 'none')}</span>
+        <div class="text-muted">${escapeHtml(preview.scope.note)}</div></div>
+      <div class="mb-2"><strong>Canned replies</strong>
+        <span class="text-muted">${escapeHtml(canned)}</span>
+        <div class="text-muted">${escapeHtml(preview.cannedReplies.note)}</div></div>
+      <div class="mb-1"><strong>System prompt</strong> <span class="text-muted">(${escapeHtml(preview.strategy)} questions)</span></div>
+      <pre class="prompt-preview-text">${escapeHtml(preview.systemPrompt)}</pre>
+      <div class="mb-1"><strong>Then, when knowledge matches</strong> <span class="text-muted">${escapeHtml(preview.knowledge.note)}</span></div>
+      <pre class="prompt-preview-text">${escapeHtml(preview.knowledge.appended)}</pre>
+      <div class="text-muted">Platform safety rules are applied on top of all of this.</div>`;
+  } catch (error) {
+    body.innerHTML = `<span class="text-danger">${escapeHtml(errorMessage(error, 'Could not load the prompt'))}</span>`;
+  }
+}
+
 // -------------------------------------------------------------- templates
 
+function matchesSearch(template, query) {
+  if (!query) {
+    return true;
+  }
+  const haystack = [
+    template.name,
+    ROLE_LABELS[template.role] || '',
+    ...(template.triggers || []),
+    ...(template.responses || [])
+  ].join(' ').toLowerCase();
+  return haystack.includes(query);
+}
+
 function renderTemplates() {
-  const container = document.getElementById('template-list');
+  const container = $('template-list');
 
   if (templates.length === 0) {
     container.innerHTML = `
       <div class="text-center text-muted py-4">
         <p class="mb-1">No canned replies yet.</p>
         <p class="small mb-0">
-          Add one for the questions you answer most — they are returned instantly
-          and cost nothing to serve.
+          Add one for the questions you answer most — they are sent word for word,
+          instantly, and cost nothing to serve.
         </p>
       </div>`;
+    return;
+  }
+
+  const query = $('template-search').value.trim().toLowerCase();
+  const shown = templates.filter(template => matchesSearch(template, query));
+
+  if (shown.length === 0) {
+    container.innerHTML = `<div class="text-muted small py-3">No reply matches "${escapeHtml(query)}".</div>`;
     return;
   }
 
@@ -92,11 +283,12 @@ function renderTemplates() {
             <th>Name</th>
             <th>Triggered by</th>
             <th class="text-end">Used</th>
+            <th>Last used</th>
             <th></th>
           </tr>
         </thead>
         <tbody>
-          ${templates.map(template => `
+          ${shown.map(template => `
             <tr class="${template.enabled ? '' : 'opacity-50'}">
               <td>
                 <div class="fw-semibold">${escapeHtml(template.name)}</div>
@@ -106,11 +298,13 @@ function renderTemplates() {
               </td>
               <td>
                 ${template.role
-    ? `<span class="badge bg-info-subtle text-info-emphasis">${escapeHtml(ROLE_LABELS[template.role] || template.role)}</span>`
+    ? `<span class="badge bg-info-subtle text-info-emphasis">${escapeHtml(ROLE_LABELS[template.role] || template.role)}</span>
+       <div class="small text-muted">${escapeHtml(ROLE_HINTS[template.role] || '')}</div>`
     : `<span class="small text-muted">${escapeHtml((template.triggers || []).slice(0, 2).join(', '))}${(template.triggers || []).length > 2 ? '…' : ''}</span>`}
                 ${template.enabled ? '' : '<span class="badge bg-secondary ms-1">Disabled</span>'}
               </td>
-              <td class="text-end text-muted">${template.useCount || 0}</td>
+              <td class="text-end text-muted">${escapeHtml(template.useCount || 0)}</td>
+              <td class="small text-muted text-nowrap">${template.lastUsedAt ? escapeHtml(formatRelativeTime(template.lastUsedAt)) : 'Never'}</td>
               <td class="text-end text-nowrap">
                 <button class="btn btn-sm btn-outline-secondary edit-template-btn"
                         data-id="${escapeHtml(template._id)}">Edit</button>
@@ -137,13 +331,13 @@ async function loadTemplates() {
     renderTemplates();
   } catch (error) {
     logger.error('Failed to load templates:', error);
-    document.getElementById('template-list').innerHTML =
+    $('template-list').innerHTML =
       `<div class="text-danger">Could not load replies: ${escapeHtml(error.message)}</div>`;
   }
 }
 
 function renderVariables(variables = {}) {
-  const container = document.getElementById('template-variables');
+  const container = $('template-variables');
   const entries = Object.entries(variables);
 
   container.innerHTML = entries.map(([key, value], index) => `
@@ -174,48 +368,44 @@ function collectVariables() {
 
 /** A role fills a fixed slot, so example phrases do not apply to it. */
 function syncRoleVisibility() {
-  const hasRole = Boolean(document.getElementById('template-role').value);
-  document.getElementById('template-triggers-group').classList.toggle('d-none', hasRole);
-  document.getElementById('template-threshold-group').classList.toggle('d-none', hasRole);
+  const hasRole = Boolean($('template-role').value);
+  $('template-triggers-group').classList.toggle('d-none', hasRole);
+  $('template-threshold-group').classList.toggle('d-none', hasRole);
 }
 
 function openEditor(id = null) {
   const template = id ? templates.find(t => t._id === id) : null;
 
-  document.getElementById('templateModalLabel').textContent =
-    template ? 'Edit canned reply' : 'New canned reply';
-  document.getElementById('template-id').value = template ? template._id : '';
-  document.getElementById('template-name').value = template ? template.name : '';
-  document.getElementById('template-role').value = template ? (template.role || '') : '';
-  document.getElementById('template-triggers').value =
-    template ? (template.triggers || []).join('\n') : '';
-  document.getElementById('template-responses').value =
-    template ? (template.responses || []).join('\n') : '';
-  document.getElementById('template-threshold').value = template ? (template.threshold ?? 0.35) : 0.35;
-  document.getElementById('template-threshold-value').textContent =
-    document.getElementById('template-threshold').value;
-  document.getElementById('template-enabled').checked = template ? template.enabled !== false : true;
+  $('templateModalLabel').textContent = template ? 'Edit canned reply' : 'New canned reply';
+  $('template-id').value = template ? template._id : '';
+  $('template-name').value = template ? template.name : '';
+  $('template-role').value = template ? (template.role || '') : '';
+  $('template-triggers').value = template ? (template.triggers || []).join('\n') : '';
+  $('template-responses').value = template ? (template.responses || []).join('\n') : '';
+  $('template-threshold').value = template ? (template.threshold ?? 0.35) : 0.35;
+  $('template-threshold-value').textContent = $('template-threshold').value;
+  $('template-enabled').checked = template ? template.enabled !== false : true;
 
   renderVariables(template ? (template.variables || {}) : {});
   syncRoleVisibility();
 
-  bootstrap.Modal.getOrCreateInstance(document.getElementById('templateModal')).show();
+  bootstrap.Modal.getOrCreateInstance($('templateModal')).show();
 }
 
 async function save() {
-  const id = document.getElementById('template-id').value;
-  const button = document.getElementById('save-template-btn');
+  const id = $('template-id').value;
+  const button = $('save-template-btn');
 
   const splitLines = value => value.split('\n').map(line => line.trim()).filter(Boolean);
 
   const payload = {
-    name: document.getElementById('template-name').value,
-    role: document.getElementById('template-role').value || null,
-    triggers: splitLines(document.getElementById('template-triggers').value),
-    responses: splitLines(document.getElementById('template-responses').value),
+    name: $('template-name').value,
+    role: $('template-role').value || null,
+    triggers: splitLines($('template-triggers').value),
+    responses: splitLines($('template-responses').value),
     variables: collectVariables(),
-    threshold: parseFloat(document.getElementById('template-threshold').value),
-    enabled: document.getElementById('template-enabled').checked
+    threshold: parseFloat($('template-threshold').value),
+    enabled: $('template-enabled').checked
   };
 
   setLoading(button, true);
@@ -227,7 +417,7 @@ async function save() {
       body: JSON.stringify(payload)
     });
 
-    bootstrap.Modal.getOrCreateInstance(document.getElementById('templateModal')).hide();
+    bootstrap.Modal.getOrCreateInstance($('templateModal')).hide();
     showToast(id ? 'Reply updated' : 'Reply created', 'success');
     loadTemplates();
   } catch (error) {
@@ -261,8 +451,8 @@ async function remove(id) {
 // ---------------------------------------------------------------- preview
 
 async function preview() {
-  const input = document.getElementById('template-preview-input');
-  const result = document.getElementById('template-preview-result');
+  const input = $('template-preview-input');
+  const result = $('template-preview-result');
   const message = input.value.trim();
 
   if (!message) {
@@ -285,6 +475,7 @@ async function preview() {
            </div>
            <hr class="my-2">
            <div>${escapeHtml(outcome.response)}</div>
+           <div class="small text-muted mt-2">Sent word for word. Testing here does not count as a use.</div>
          </div>`
       : `<div class="alert alert-secondary mb-0">
            No canned reply matched — this message would be answered by the assistant
@@ -298,29 +489,37 @@ async function preview() {
 // ------------------------------------------------------------------ setup
 
 function setupAssistantSection() {
-  document.getElementById('assistant-config-form').addEventListener('submit', saveAssistantConfig);
-  document.getElementById('new-template-btn').addEventListener('click', () => openEditor());
-  document.getElementById('save-template-btn').addEventListener('click', save);
-  document.getElementById('template-role').addEventListener('change', syncRoleVisibility);
-  document.getElementById('template-preview-btn').addEventListener('click', preview);
+  $('assistant-config-form').addEventListener('submit', saveAssistantConfig);
+  $('persona-compose-btn').addEventListener('click', compose);
+  $('persona-draft-btn').addEventListener('click', draftFromWebsite);
+  $('persona-prompt-preview').addEventListener('toggle', event => {
+    if (event.target.open) {
+      loadPromptPreview();
+    }
+  });
 
-  document.getElementById('template-preview-input').addEventListener('keypress', event => {
+  $('new-template-btn').addEventListener('click', () => openEditor());
+  $('save-template-btn').addEventListener('click', save);
+  $('template-role').addEventListener('change', syncRoleVisibility);
+  $('template-preview-btn').addEventListener('click', preview);
+  $('template-search').addEventListener('input', renderTemplates);
+
+  $('template-preview-input').addEventListener('keypress', event => {
     if (event.key === 'Enter') {
       event.preventDefault();
       preview();
     }
   });
 
-  document.getElementById('template-threshold').addEventListener('input', event => {
-    document.getElementById('template-threshold-value').textContent = event.target.value;
+  $('template-threshold').addEventListener('input', event => {
+    $('template-threshold-value').textContent = event.target.value;
   });
 
-  document.getElementById('add-variable-btn').addEventListener('click', () => {
+  $('add-variable-btn').addEventListener('click', () => {
     const current = collectVariables();
     current[''] = '';
     renderVariables(current);
   });
-
 }
 
 registerSection('assistant', {

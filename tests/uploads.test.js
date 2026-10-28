@@ -185,6 +185,37 @@ describe('Uploads service', () => {
       expect(await Company.findById(leaving._id)).not.toBeNull();
     });
 
+    it('also removes every other row that carries the company, with what hangs off them', async () => {
+      const Workflow = require('../models/workflow');
+      const WorkflowVersion = require('../models/workflow-version');
+      const ChannelAccount = require('../models/channel-account');
+      const AuditLog = require('../models/audit-log');
+
+      // Inserted directly: what matters is that a row carries the company.
+      const [{ insertedId: flow }] = await Promise.all([
+        Workflow.collection.insertOne({ company: leaving._id, name: 'Leaving flow' }),
+        Workflow.collection.insertOne({ company: staying._id, name: 'Staying flow' }),
+        ChannelAccount.collection.insertOne({ company: leaving._id, provider: 'whatsapp', phoneNumberId: 'purge-1' }),
+        AuditLog.collection.insertOne({ company: leaving._id, action: 'test.kept', timestamp: new Date() })
+      ]);
+      await WorkflowVersion.collection.insertOne({ workflowId: flow, version: 1 });
+
+      const result = await uploads.purgeCompanyData(leaving._id);
+
+      expect(result.other).toMatchObject({ Workflow: 1, ChannelAccount: 1 });
+      expect(await Workflow.countDocuments({ company: leaving._id })).toBe(0);
+      expect(await WorkflowVersion.countDocuments({ workflowId: flow })).toBe(0);
+      expect(await ChannelAccount.countDocuments({ company: leaving._id })).toBe(0);
+      // The neighbour's flow stays, and so does the record of what happened.
+      expect(await Workflow.countDocuments({ company: staying._id })).toBe(1);
+      expect(await AuditLog.countDocuments({ company: leaving._id, action: 'test.kept' })).toBe(1);
+
+      await Promise.all([
+        Workflow.collection.deleteMany({ company: staying._id }),
+        AuditLog.collection.deleteMany({ action: 'test.kept' })
+      ]);
+    });
+
     it('refuses to purge without a company, which would mean the shared directory', async () => {
       await expect(uploads.purgeCompanyData(null)).rejects.toThrow(/company id/i);
     });

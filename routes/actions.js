@@ -15,6 +15,7 @@ const router = express.Router();
 const mongoose = require('mongoose');
 
 const Action = require('../models/action');
+const AuditLog = require('../models/audit-log');
 const actions = require('../services/actions');
 const audit = require('../services/audit');
 const { auth, admin } = require('../middleware/auth');
@@ -222,6 +223,74 @@ router.delete('/:id', async (req, res) => {
 });
 
 /**
+ * The action a "Run once" tries.
+ *
+ * With `config` in the body it is the form as it stands, saved or not: an
+ * admin changes the URL, presses Run once, and expects the new URL to be the
+ * one called. It used to run the saved copy, so the panel tested something
+ * other than what was on the screen.
+ *
+ * The saved credential is used only together with the saved address, the same
+ * rule as the workflow editor's test: otherwise anyone who can open the form
+ * could send a colleague's API key to an address of their choosing.
+ *
+ * @returns {Promise<{action?: object, status?: number, error?: string}>}
+ */
+async function actionToTry(req, companyId, id) {
+  const stored = id ? await actions.loadForRun(companyId, id) : null;
+  if (id && !stored) {
+    return { status: 404, error: 'Action not found' };
+  }
+
+  const config = req.body && req.body.config;
+  if (!config || typeof config !== 'object') {
+    return stored ? { action: stored } : { status: 400, error: 'Nothing to run: fill in the form first' };
+  }
+
+  // A test does not need a name or a title yet; everything else is checked
+  // exactly as a save would check it.
+  const normalised = actions.normalise({
+    ...config,
+    name: config.name || (stored && stored.name) || 'unsaved_action',
+    title: config.title || (stored && stored.title) || 'Unsaved action'
+  }, stored);
+  if (normalised.errors.length > 0) {
+    return { status: 400, error: normalised.errors[0] };
+  }
+
+  const value = normalised.value;
+  const auth = { ...value.request.auth };
+
+  if (auth.type !== 'none') {
+    if (normalised.credential) {
+      // Typed into the form and not saved: used for this one call, in memory.
+      auth.value = normalised.credential;
+    } else {
+      const storedAuth = stored && stored.request && stored.request.auth;
+      const storedUrl = stored && stored.request && stored.request.url;
+      if (!storedAuth || !storedAuth.value) {
+        return { status: 400, error: 'Enter the secret to try it' };
+      }
+      if (storedUrl !== value.request.url) {
+        return {
+          status: 400,
+          error: 'The address has changed, so the saved secret is not sent to it. Enter the secret again to try the new address.'
+        };
+      }
+      auth.value = storedAuth.value;
+    }
+  }
+
+  return {
+    action: {
+      ...value,
+      _id: stored ? stored._id : null,
+      request: { ...value.request, auth }
+    }
+  };
+}
+
+/**
  * Run an action once, for real, with sample inputs.
  *
  * The admin supplies a value for every input, verified ones included — this is
@@ -229,18 +298,22 @@ router.delete('/:id', async (req, res) => {
  * no visitor whose identity matters. It does send writes: the panel exists so
  * an action can be checked before the assistant is allowed to call it, and a
  * write that was never tried is the one most likely to be wrong.
+ *
+ * Body `{ inputs, config? }`: see actionToTry. `POST /test` (no id) tries an
+ * action that has never been saved.
  */
-router.post('/:id/test', async (req, res) => {
+async function runOnce(req, res) {
   try {
     const companyId = requireCompany(req, res);
-    if (!companyId || !validId(req, res)) {
+    if (!companyId || (req.params.id && !validId(req, res))) {
       return;
     }
 
-    const action = await actions.loadForRun(companyId, req.params.id);
-    if (!action) {
-      return res.status(404).json({ error: 'Action not found' });
+    const prepared = await actionToTry(req, companyId, req.params.id);
+    if (!prepared.action) {
+      return res.status(prepared.status).json({ error: prepared.error });
     }
+    const action = prepared.action;
 
     const resolved = actions.resolveInputs(action, (req.body && req.body.inputs) || {}, { trustArgs: true });
     if (!resolved.ok) {
@@ -252,18 +325,28 @@ router.post('/:id/test', async (req, res) => {
       maxBytes: Math.max((action.response && action.response.maxBytes) || 0, actions.DEFAULT_MAX_BYTES)
     });
 
-    audit.record({
-      req,
-      company: companyId,
-      action: 'action.tested',
-      target: { type: 'action', id: String(action._id), label: action.name },
-      details: { status: result.status, ok: result.ok },
-      outcome: result.ok ? 'success' : 'failure'
-    });
+    if (action._id) {
+      audit.record({
+        req,
+        company: companyId,
+        action: 'action.tested',
+        target: { type: 'action', id: String(action._id), label: action.name },
+        details: {
+          method: action.request.method,
+          httpStatus: result.status,
+          ok: result.ok,
+          durationMs: result.durationMs,
+          unsaved: Boolean(req.body && req.body.config),
+          ...(result.ok ? {} : { error: result.error })
+        },
+        outcome: result.ok ? 'success' : 'failure'
+      });
+    }
 
     res.json({
       status: result.status || null,
       ok: result.ok,
+      method: action.request.method,
       body: result.body !== undefined ? result.body : null,
       truncated: Boolean(result.truncated),
       extracted: result.extracted,
@@ -273,6 +356,74 @@ router.post('/:id/test', async (req, res) => {
   } catch (error) {
     logger.error('Failed to test action', { error: error.message });
     res.status(500).json({ error: 'Failed to run the action' });
+  }
+}
+
+router.post('/test', runOnce);
+router.post('/:id/test', runOnce);
+
+/** How many calls the run log shows. */
+const RUN_LOG_LIMIT = 20;
+
+/** One audit entry as a line in the run log. */
+function runEntry(entry) {
+  const details = entry.details || {};
+  const kind = entry.action === 'assistant.tool_called' ? 'assistant'
+    : entry.action === 'action.run' ? 'workflow'
+      : 'test';
+  // The assistant records 'ok' or 'error' as its status; the test and the
+  // workflow record whether it worked.
+  const ok = kind === 'assistant'
+    ? details.status === 'ok'
+    : details.ok === true;
+  const httpStatus = details.httpStatus || (kind === 'test' && typeof details.status === 'number' ? details.status : null);
+
+  return {
+    at: entry.at,
+    by: kind,
+    ok,
+    status: kind === 'assistant' ? (details.status || null) : (ok ? 'ok' : 'error'),
+    httpStatus: httpStatus || null,
+    durationMs: typeof details.durationMs === 'number' ? details.durationMs : null,
+    error: ok ? null : (details.error || (httpStatus ? `HTTP ${httpStatus}` : null))
+  };
+}
+
+/**
+ * The last calls of one action, whoever made them: the assistant, a workflow,
+ * or the Run once panel. Read from the audit log, which every one of them
+ * already writes, so there is no second record to keep in step.
+ */
+router.get('/:id/runs', async (req, res) => {
+  try {
+    const companyId = requireCompany(req, res);
+    if (!companyId || !validId(req, res)) {
+      return;
+    }
+
+    const action = await Action.findOne({ _id: req.params.id, company: companyId }).select('name').lean();
+    if (!action) {
+      return res.status(404).json({ error: 'Action not found' });
+    }
+
+    const entries = await AuditLog.find({
+      company: companyId,
+      $or: [
+        { action: 'assistant.tool_called', 'details.tool': action.name },
+        { action: { $in: ['action.run', 'action.tested'] }, 'target.id': String(action._id) }
+      ]
+    }).sort({ at: -1 }).limit(RUN_LOG_LIMIT).lean();
+
+    const runs = entries.map(runEntry);
+    const lastFailure = runs.find(run => !run.ok) || null;
+
+    res.json({
+      runs,
+      lastError: lastFailure ? { at: lastFailure.at, error: lastFailure.error || 'Failed', by: lastFailure.by } : null
+    });
+  } catch (error) {
+    logger.error('Failed to load action runs', { error: error.message });
+    res.status(500).json({ error: 'Failed to load the run log' });
   }
 });
 

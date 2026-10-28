@@ -1,6 +1,6 @@
 # Product overview
 
-_Written 2026-09-09 from the working tree on `production-readiness`; the baseline table and section 6 were updated on 2026-10-05 after the dashboard restructure. Companion documents: [FUNCTIONALITY_MAP.md](FUNCTIONALITY_MAP.md) (every endpoint, socket event, model and setting, read from the code), [research/market-landscape-2026-09.md](research/market-landscape-2026-09.md) (sixteen competing products, with sources) and [research/customer-data-connection-2026-09.md](research/customer-data-connection-2026-09.md) (how those products let an AI agent reach a customer's own systems, with sources)._
+_Written 2026-09-09 from the working tree on `production-readiness`; the baseline table and section 6 were updated on 2026-10-05 after the dashboard restructure, on 2026-10-22 after the launch-review pass, and again on 2026-10-22 after Phase 2 (booking, WhatsApp/Messenger/Instagram, the operator app with push, JWT identity and email codes, the WordPress plugin and Shopify snippet, MCP, agencies, per-resolution pricing), along with section 4's "Where we stand" and a status note in section 5. Sections 1 and 2 still describe the product as of 2026-09-09; [IMPLEMENTATION_STATUS.md](../IMPLEMENTATION_STATUS.md) says what changed since. Companion documents: [FUNCTIONALITY_MAP.md](FUNCTIONALITY_MAP.md) (every endpoint, socket event, model and setting, read from the code), [research/market-landscape-2026-09.md](research/market-landscape-2026-09.md) (sixteen competing products, with sources) and [research/customer-data-connection-2026-09.md](research/customer-data-connection-2026-09.md) (how those products let an AI agent reach a customer's own systems, with sources)._
 
 ## 1. What the product is
 
@@ -80,27 +80,29 @@ Full detail and sources: [research/market-landscape-2026-09.md](research/market-
 | Voiceflow, Botpress | Agencies and developers | Visual canvas or code, knowledge base, tool calling | Credits; Botpress passes AI cost through | Best builders; no inbox of their own |
 | Drift | B2B marketing | Web chat playbooks | From $2,500 a month | Being sunset in 2026 after an acquisition and a breach: the warning case for a narrow chat widget with leaky integrations |
 
+> **The Intercom row is out of date.** Web sources gathered on 2026-10-21 report that Intercom renamed itself Fin and was acquired by Salesforce in September 2026, after the research in [research/market-landscape-2026-09.md](research/market-landscape-2026-09.md) was written. That file has not been rewritten; read its Intercom entry, and the figures quoted from it here, as of September 2026.
+
 **Pricing anchors.** Per-resolution clusters at $0.50 (HubSpot), $0.99 (Intercom, ChatBot.com, Gorgias) and $1.50 to $2.00 (Zendesk, Sierra). The loudest complaints are stacked meters, double billing and hard stops. Every vendor's headline resolution rate lands far above independent measurements (Intercom claims 76%, tests find 38% to 53%), and reviewers blame knowledge quality, not the model.
 
 ### The feature baseline every successful product has
 
 | Baseline | Where we stand |
 |---|---|
-| Knowledge from many sources: crawl a site, import a help centre, upload files, commerce data; cite sources | Mostly. Site crawl, file upload (PDF, text, Markdown, CSV, HTML), single page or PDF by URL, pasted text, and citations in replies. No help-centre connectors; Sheets are imported but unread. |
-| AI agent with an explicit resolution definition, confidence fallback, handoff, resolution reporting | Partial. Handoff and deflection metric exist. No "verified resolution" concept, which is what the market now bills on. |
-| Actions the agent decides to use: order status, refunds, booking, custom REST | Mostly there (2026-10). Saved Actions and connector capabilities are offered to the assistant as tools, with a verified gate, confirmation before writes and per-turn caps; workflows can reference the same Actions. No dashboard form yet, no MCP. |
-| Omnichannel inbox: web, email, WhatsApp, Messenger, Instagram | Missing beyond web and email. |
-| Operator mobile apps | Missing. |
-| Proactive messages and campaigns with triggers | Missing. |
-| Agent copilot: suggestions, summaries, translation | Partial. Suggestions only. |
-| Multilingual by default | Partial. The model answers in any language; the widget and dashboard are English only. |
-| Integrations marketplace, Zapier, API and webhooks | Partial. Webhooks, presets and a read API exist. No Zapier, no marketplace. |
-| Platform plugins: Shopify app, WordPress plugin | Missing. This is how Tidio reached 300,000 businesses. |
-| SOC 2, GDPR, EU hosting option | Partial. GDPR tooling is real. No SOC 2, single region. |
-| Analytics and CSAT | Have. |
-| Team management: roles, routing, SLAs, macros | Partial. Routing and saved replies exist. No SLAs, skills or departments. |
-| Free tier or no-card trial | Partial. Fourteen-day trial, no free tier. |
-| Guardrails and observability: off-topic guard, QA scoring, spend caps | Partial. Scope guard, moderation node and quotas exist. No QA scoring or resolution audit. |
+| Knowledge from many sources: crawl a site, import a help centre, upload files, commerce data; cite sources | Mostly. Site crawl in the background with progress, a weekly re-read per site or page that drops vanished pages, file upload (PDF, text, Markdown, CSV, HTML), single page or PDF by URL, editable pasted text, citations in replies, and how many answers each source fed. Sign-up reads the customer's website straight away. No help-centre connectors; Sheets are imported but unread, and their card is hidden by default. |
+| AI agent with an explicit resolution definition, confidence fallback, handoff, resolution reporting | Have (2026-10). The value report counts "resolved by the bot" by a published, strict definition (visitor wrote, bot answered, nobody joined or was asked for, last answer not an "I don't know", not rated 1 or 2), with hours saved and cost per resolution. The assistant flags what it could not answer, and a failure, a spent allowance or an unanswerable question hands over or takes a message rather than ending in an apology. Since Phase 2 Professional can be paid per resolution on exactly that definition, counted only once a conversation has ended or sat idle a day, with a spending cap the tenant sets and past which the bot keeps answering; reported daily to a Stripe Billing Meter. Prices are placeholders, and the meter has not been tried against Stripe. |
+| Actions the agent decides to use: order status, refunds, booking, custom REST | Have (2026-10). Saved Actions (Bot → Actions, with Run once and a run log), connector capabilities and, since Phase 2, tools from any remote MCP server the tenant connects (switched on one by one: automatic or workflow only, verified customers only, ask before running) are offered to the assistant as tools, with a verified gate, confirmation before writes and per-turn caps; workflows can reference the same Actions. Native booking in Cal.com, Google Calendar or Calendly (on Calendly's free plan, a pre-filled link to finish). Workflows cannot call MCP tools yet, OAuth MCP servers cannot be connected, and no MCP server or calendar has been tried for real. |
+| Omnichannel inbox: web, email, WhatsApp, Messenger, Instagram | Have, untried against Meta (2026-10). WhatsApp Cloud API, Messenger and Instagram Direct arrive in the same inbox through the tenant's own Meta app, answered by the same bot and handed over the same way, with the 24-hour reply window shown and enforced (an approved WhatsApp template after it; the Human Agent tag to seven days where Meta approved it). Not yet: sending files to app customers, typing indicators, notices there in other languages. Plan feature on trial, Professional, Agency and Enterprise. |
+| Operator mobile apps | Mostly (2026-10). The dashboard installs as an app on Android, iPhone and iPad (iOS 16.4+) and desktop, and Web Push reaches a closed app: new chats and hand-overs, assignments, transfers, long waits, low ratings, tasks, usage warnings, with previews off unless a person turns them on. No native store apps; push not yet tried on a real phone. |
+| Proactive messages and campaigns with triggers | Partial (2026-10). One proactive message per tenant (delay, page filter, once per visit). No campaigns or audience rules. |
+| Agent copilot: suggestions, summaries, translation | Partial. Suggestions on every plan (Basic gained them). A hand-over now carries what the visitor asked (their last three messages), not a model's summary. No translation. |
+| Multilingual by default | Partial. The model answers in any language and the widget, including every notice, speaks eleven; the dashboard is English only. |
+| Integrations marketplace, Zapier, API and webhooks | Partial. Webhooks (with redelivery, now including bookings), presets, a read API, a widget JavaScript API, and an MCP client, through which Zapier's, Stripe's, Shopify's or HubSpot's own MCP servers can be connected. No Zapier app of our own, no marketplace. |
+| Platform plugins: Shopify app, WordPress plugin | Partial (2026-10). A WordPress plugin (settings page, hide-on paths, logged-in users signed in on the server) and a Shopify theme snippet (logged-in customers through an App Proxy token or a metafield hash), each downloadable pre-filled from the dashboard. Neither is listed in its store, and that listing is the distribution that made Tidio reach 300,000 businesses. |
+| SOC 2, GDPR, EU hosting option | Partial. GDPR tooling is real and now has a screen (export and erase from People), plus a consent checkbox in the widget and an AI disclosure. No SOC 2, single region. |
+| Analytics and CSAT | Have. Satisfaction is split bot against people, low ratings notify, and every ended chat can carry an outcome. |
+| Team management: roles, routing, SLAs, macros | Partial. Invitations, routing, transfer with presence, saved replies with placeholders, outcomes, an alert to the team when someone has waited too long for a person, and agencies running several client companies. No SLAs, skills or departments. |
+| Free tier or no-card trial | Partial. Self-serve sign-up starts a fourteen-day trial with no card. No free tier. |
+| Guardrails and observability: off-topic guard, QA scoring, spend caps | Partial. Scope guard, moderation node, quotas with warnings at 80% and 100%, a monthly spending cap on resolutions, an unanswered-questions list, visitor thumbs, and saved tests that re-run after every change taught. No QA scoring or resolution audit. |
 
 ### Distribution
 The winners are distributed through app stores and plugins, not search ads: Shopify and WordPress listings for Tidio and Gorgias, helpdesk marketplaces for the AI-only vendors, open source as a funnel for Chatwoot and Botpress. Templates, a free tier with a lifetime AI allowance, and guarantees (Intercom's 65% floor, Tidio's 50%) are the other recurring moves.
@@ -128,7 +130,9 @@ Every support vendor converged on the same shape. None of them imports OpenAPI; 
 - Unsigned attributes are treated as untrusted.
 
 ### Where we stand
-Our connector SDK is, almost feature for feature, what Crisp shipped as the "Hugo MCP API": a tenant-hosted server, HMAC-plus-timestamp signing, fixed result shapes, per-tool identity gates. The difference is that Crisp used MCP as the wire protocol, so any existing MCP server (Shopify, Stripe) plugs in. Our "Call an API" node is the flow-only pattern Zendesk and Tidio now label legacy. Our HMAC identity is the pattern Intercom and Chatbase have deprecated.
+Our connector SDK is, almost feature for feature, what Crisp shipped as the "Hugo MCP API": a tenant-hosted server, HMAC-plus-timestamp signing, fixed result shapes, per-tool identity gates. The difference is that Crisp used MCP as the wire protocol, so any existing MCP server (Shopify, Stripe) plugs in. Our "Call an API" node is the flow-only pattern Zendesk and Tidio now label legacy.
+
+Since Phase 2 (2026-10-22) the other two gaps this section named are closed in code. Saved Actions are the form-defined, model-chosen actions of steps 1 to 5, and an MCP client is the second on-ramp of step 7: register a remote server, discover its tools, enable them one by one with the verified gate. Identity follows the market: a short-lived signed JWT with signed attributes is recommended and the HMAC still accepted, and an anonymous visitor can verify with an in-chat email code (six digits, ten minutes, three attempts, as Intercom does) that unlocks only the actions a tenant marks as safe for it. What is still behind: signed attributes are shown but cannot yet feed an action's inputs, MCP tools cannot be called from workflows, OAuth-protected MCP servers and OAuth inside the chat are not supported, and none of it has met a real server yet.
 
 ## 5. Recommendations
 
@@ -147,19 +151,27 @@ Ranked by value. Each reuses what already exists.
 
 **Then, in order of distribution value:** a WordPress plugin and a Shopify app (they double as onboarding: crawl the site, import the catalogue); WhatsApp and Messenger into the inbox; a "verified resolution" definition with reporting, so pricing can move to one meter with a cap; operator mobile apps or at least a responsive inbox; SOC 2 and an EU region.
 
+> **Status, 2026-10-22.** Recommendations 1, 2 and 3 are built (saved Actions; JWT identity and in-chat email codes; an MCP client, though the connector itself still speaks its own protocol rather than MCP). Of the "then" list, the WordPress plugin and a Shopify theme snippet exist without store listings or catalogue import, WhatsApp, Messenger and Instagram are in the inbox, per-resolution pricing with a cap is built, and the operator app is an installable PWA with push. SOC 2 and an EU region are not started. The Google Sheets recommendation is still undecided. None of the Phase 2 integrations has yet been tried against the real service.
+
 ## 6. Known gaps and defects
 
-Owner-acknowledged items live in [todo.md](../todo.md). Additional items found while mapping the code on 2026-09-09, in rough order of customer impact (details in [FUNCTIONALITY_MAP.md](FUNCTIONALITY_MAP.md) section 6):
+Owner-acknowledged items, including everything the October launch review put in "the next ninety days" and "later" that is still open, live in [todo.md](../todo.md). Additional items found while mapping the code, still open on 2026-10-22 after Phase 2, in rough order of customer impact (details in [FUNCTIONALITY_MAP.md](FUNCTIONALITY_MAP.md) section 6):
 
+- None of Phase 2's integrations has been tried against the real service: Meta, Cal.com, Google Calendar, Calendly, Stripe's Billing Meter, MCP servers, push on a real phone, a WordPress or Shopify install. Each first real setup is its test ([INTEGRATIONS_SETUP.md](INTEGRATIONS_SETUP.md) has the steps).
+- An operator reply sent in the seconds before the server notices a visitor left goes to the chat, not by email.
+- Messaging apps: operators cannot send files to app customers, no typing indicator is sent, the notices sent there are English only, and two messages from one customer arriving at once on different instances are answered side by side rather than in turn.
+- An agency's clients beyond the included ones are counted but not billed.
+- Per-tenant backups carry every stored credential (encrypted where the database has it encrypted) and token hash, as a database dump does, so the backup directory needs the same protection as the database.
+- A JWT's signed attributes are shown but cannot feed action inputs; MCP tools set to "workflow only" are unused because workflows cannot call them; the REST fallback accepts HMAC identity but not a JWT.
 - Every workflow Knowledge step searches the tenant's knowledge base whatever its source type says. New nodes no longer offer `google_sheets`, `pdf` or `url`; old nodes keep the setting, labelled as an older one.
-- `conversation.started` is in the webhook catalogue but never fires; `conversation.ended` fires only for operator-ended chats; `task.created` fires only from the workflow node.
-- Response-template roles `fallback` and `handoff` are stored but never used by the assistant.
-- `Company.identitySecret`, the inbound email secret and Google OAuth tokens are not encrypted at rest (only hidden from default queries).
+- `Company.identitySecret`, the inbound email secret and Google OAuth tokens for the Sheets import are not encrypted at rest (only hidden from default queries). Integration credentials added in Phase 2 are encrypted.
 - Inbound email trusts the shared secret only; provider signatures are not verified.
-- Deleting a company removes only the company document; a purge helper exists but has no caller.
-- Company create, update and delete, operator creation, admin password resets and whole-database backups write no audit entries.
-- Workflow execution stats are never persisted, so the stats endpoint always returns zeros.
-- Write confirmation for Actions recognises English affirmatives only.
-- No Zapier, no operator invite by email, no widget JavaScript API beyond `init` and `preview`, and the dashboard is English only (the widget speaks eleven languages).
+- Whole-database backups write no audit entries.
+- Write confirmation for Actions and MCP tools recognises English affirmatives only; booking reminders are English only.
+- No Zapier app of our own, and the dashboard is English only (the widget speaks eleven languages).
 
 Fixed on 2026-10-05 with the dashboard restructure: the canned-reply save path, role gating (each screen is hidden from roles that cannot use it, and a superadmin has a Platform area instead of tenant screens), operator attachments in both directions, in-product checkout, and the editor's saved-action picker.
+
+Fixed on 2026-10-22 with the launch-review pass: `conversation.started` fires (on a visitor's first action, and for email) and `task.created` fires for tasks operators create; the `fallback` and `handoff` canned-reply roles are used; company create, update and delete, operator creation and removal, and admin password resets are audited; workflow run statistics are persisted; operators are invited by email; the widget has a JavaScript API. Also: page views no longer create conversations, a model failure or a spent allowance hands over instead of apologising, a tenant's widget runs only on that tenant's own domains, and seats count operators only.
+
+Fixed on 2026-10-22 with Phase 2: a hand-over carries what the visitor asked; long waits alert the team (`visitor_waiting` notifications); idle web chats end, so `conversation.ended` fires for conversations the bot handled alone; deleting a company deletes its data and files; the setup checklist's persona step follows the persona the assistant actually uses; task assignment is company-scoped in the service; forcing a colleague's chat closed needs an explicit confirmation the server checks; a new admin clicking quickly is no longer rate limited.

@@ -12,7 +12,9 @@
 import { Modal } from 'bootstrap';
 import feather from 'feather-icons';
 import { registerSection } from './nav.js';
-import { api, confirmDialog, errorMessage, escapeHtml, setLoading, showToast } from './utils.js';
+import {
+  api, confirmDialog, errorMessage, escapeHtml, formatRelativeTime, setLoading, showToast
+} from './utils.js';
 
 let actions = [];
 let presets = [];
@@ -93,6 +95,12 @@ async function load() {
       $('actions-unavailable').classList.remove('d-none');
       $('actions-list').innerHTML = '';
       $('action-new-btn').disabled = true;
+      // The templates menu would otherwise say "Loading…" for ever.
+      $('action-presets-menu').innerHTML = `
+        <li><span class="dropdown-item-text small text-muted">
+          Templates come with actions, which your plan does not include.
+          <a href="?section=billing" data-section-link="billing">See plans</a>
+        </span></li>`;
       return;
     }
     showToast(errorMessage(error, 'Could not load your actions'), 'danger');
@@ -207,7 +215,11 @@ function syncForm() {
   $('action-outputs-group').classList.toggle('d-none', raw);
   $('action-maxbytes-group').classList.toggle('d-none', !raw);
 
-  $('action-test-write-warning').classList.toggle('d-none', method === 'GET');
+  // The method in the form, not the saved one: Run once sends what the form
+  // says, so the warning has to as well.
+  const warning = $('action-test-write-warning');
+  warning.classList.toggle('d-none', method === 'GET');
+  warning.textContent = `This is a ${method}, not a GET: trying it really sends the request and may change data.`;
 }
 
 function renderTestInputs() {
@@ -222,6 +234,14 @@ function renderTestInputs() {
           <input type="text" class="form-control" data-test-input="${escapeHtml(name)}" aria-label="${escapeHtml(name)}">
         </div>`).join('')
     : '<div class="small text-muted">This action needs no inputs.</div>';
+}
+
+/** "Email verification is enough" only means something for a verified-only action. */
+function syncVerificationRow() {
+  const row = $('action-verification-email-row');
+  if (row) {
+    row.classList.toggle('d-none', !$('action-requires-verified').checked);
+  }
 }
 
 function fillForm(action) {
@@ -257,17 +277,74 @@ function fillForm(action) {
 
   document.getElementById(action.mode === 'workflow_only' ? 'action-mode-workflow' : 'action-mode-auto').checked = true;
   $('action-requires-verified').checked = Boolean(action.requiresVerified);
+  $('action-verification-email').checked = action.verification === 'email';
+  syncVerificationRow();
   $('action-enabled').checked = action.enabled !== false;
 
   $('action-delete-btn').classList.toggle('d-none', !editing);
-  $('action-test-btn').disabled = !editing;
-  $('action-test-hint').textContent = editing
-    ? 'Runs it once with these values, and shows what came back and what the bot would see.'
-    : 'Save first, then run it once with the values below.';
+  $('action-test-hint').textContent =
+    'Runs it once with what is in the form now, saved or not, and shows what came back and what the bot would see.';
   $('action-test-result').classList.add('d-none');
 
   syncForm();
   renderTestInputs();
+  loadRuns();
+}
+
+// --------------------------------------------------------------- run log
+
+const BY_LABELS = {
+  assistant: 'Assistant',
+  workflow: 'Workflow',
+  test: 'Run once'
+};
+
+/** The last calls of the action being edited, from the audit trail. */
+async function loadRuns() {
+  const card = $('action-runs-card');
+  const container = $('action-runs');
+
+  if (!editing) {
+    card.classList.add('d-none');
+    return;
+  }
+
+  card.classList.remove('d-none');
+  container.innerHTML = '<span class="text-muted">Loading…</span>';
+  const id = editing._id;
+
+  try {
+    const { runs, lastError } = await api(`/api/actions/${encodeURIComponent(id)}/runs`);
+    if (!editing || editing._id !== id) {
+      return;
+    }
+
+    if (!runs.length) {
+      container.innerHTML = '<span class="text-muted">Not called yet.</span>';
+      return;
+    }
+
+    container.innerHTML = `
+      ${lastError ? `
+        <div class="alert alert-danger py-1 px-2 mb-2">
+          Last error ${escapeHtml(formatRelativeTime(lastError.at))} (${escapeHtml(BY_LABELS[lastError.by] || lastError.by)}):
+          ${escapeHtml(lastError.error)}
+        </div>` : ''}
+      <ul class="list-unstyled mb-0 action-runs">
+        ${runs.map(run => `
+          <li class="d-flex gap-2 align-items-baseline">
+            <span class="${run.ok ? 'text-success' : 'text-danger'}">${run.ok ? '✓' : '✗'}</span>
+            <span class="text-muted text-nowrap">${escapeHtml(formatRelativeTime(run.at))}</span>
+            <span>${escapeHtml(BY_LABELS[run.by] || run.by)}</span>
+            <span class="text-muted ms-auto text-nowrap">
+              ${run.httpStatus ? `HTTP ${escapeHtml(run.httpStatus)}` : escapeHtml(run.status || '')}
+              ${run.durationMs !== null ? ` · ${escapeHtml(run.durationMs)} ms` : ''}
+            </span>
+          </li>`).join('')}
+      </ul>`;
+  } catch (error) {
+    container.innerHTML = `<span class="text-muted">${escapeHtml(errorMessage(error, 'Could not load the run log'))}</span>`;
+  }
 }
 
 function collectForm() {
@@ -315,6 +392,7 @@ function collectForm() {
       : { mode: 'paths', outputs: textToOutputs($('action-outputs').value) },
     mode: document.querySelector('input[name="action-mode"]:checked').value,
     requiresVerified: $('action-requires-verified').checked,
+    verification: $('action-requires-verified').checked && $('action-verification-email').checked ? 'email' : 'signed',
     enabled: $('action-enabled').checked
   };
 }
@@ -373,9 +451,12 @@ async function remove() {
 }
 
 async function runTest() {
-  if (!editing) {
+  const config = collectForm();
+  if (!config.request.url) {
+    showToast('Enter the URL to call first', 'warning');
     return;
   }
+
   const inputs = {};
   document.querySelectorAll('[data-test-input]').forEach(field => {
     inputs[field.dataset.testInput] = field.value;
@@ -385,9 +466,13 @@ async function runTest() {
   const output = $('action-test-result');
   setLoading(button, true);
   try {
-    const result = await api(`/api/actions/${encodeURIComponent(editing._id)}/test`, { method: 'POST', body: { inputs } });
+    // The form as it stands, saved or not: testing the saved copy while the
+    // admin looks at an edited one tells them nothing about the edit.
+    const path = editing ? `/api/actions/${encodeURIComponent(editing._id)}/test` : '/api/actions/test';
+    const result = await api(path, { method: 'POST', body: { inputs, config } });
     const lines = [
-      `${result.ok ? '✓' : '✗'} HTTP ${result.status || '-'}${result.durationMs ? ` in ${result.durationMs} ms` : ''}`,
+      // Shown as text, not HTML, so nothing here needs escaping.
+      `${result.ok ? '✓' : '✗'} ${result.method || ''} · HTTP ${result.status || '-'}${result.durationMs ? ` in ${result.durationMs} ms` : ''}`,
       result.error ? `Error: ${result.error}` : null,
       result.extracted && Object.keys(result.extracted).length
         ? `\nThe bot would see:\n${JSON.stringify(result.extracted, null, 2)}` : null,
@@ -395,6 +480,7 @@ async function runTest() {
     ].filter(Boolean);
     output.textContent = lines.join('\n');
     output.classList.remove('d-none');
+    loadRuns();
   } catch (error) {
     output.textContent = errorMessage(error, 'The test could not run');
     output.classList.remove('d-none');
@@ -419,6 +505,7 @@ async function toggle(id, enabled) {
 
 function setupActions() {
   $('action-new-btn').addEventListener('click', () => openEditor({ mode: 'auto', enabled: true, inputs: [] }));
+  $('action-requires-verified').addEventListener('change', syncVerificationRow);
 
   $('actions-section').addEventListener('click', event => {
     if (event.target.closest('[data-action-new]')) {

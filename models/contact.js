@@ -10,8 +10,12 @@ const mongoose = require('mongoose');
  *
  * Identity comes in three strengths, and the difference matters:
  *
- *   verified   the tenant vouched for who this is, via an HMAC of their own
- *              user id. Safe to show account data to.
+ *   verified   proven, and `verifiedBy` says how: the tenant vouched for
+ *              who this is (a signed token, `jwt`, or an HMAC of their own
+ *              user id, `hmac`), or the visitor proved they read an email
+ *              address by typing back a code sent to it (`email_code`). The
+ *              two are not equally strong - see
+ *              services/visitor-verification.js#isVerifiedEnough.
  *   claimed    the visitor typed an email address. Useful for threading,
  *              worthless as proof - anyone can type any address.
  *   anonymous  a browser session and nothing more.
@@ -35,6 +39,24 @@ const ContactSchema = new mongoose.Schema({
     type: String,
     enum: ['anonymous', 'claimed', 'verified'],
     default: 'anonymous'
+  },
+  // ---- P2D: how a verified identity was proven, and what was signed ----
+  /** How the identity was proven. Unset on contacts verified before it was recorded. */
+  verifiedBy: {
+    type: String,
+    enum: ['jwt', 'hmac', 'email_code']
+  },
+  verifiedAt: { type: Date },
+  /**
+   * The attributes the tenant signed into the visitor's token (`attrs`), as
+   * signed. They are also copied into `attributes` so the dashboard shows
+   * them, but that map can be edited by operators and filled from unsigned
+   * sources; this one is only ever written from a verified token, so it is
+   * the copy to trust.
+   */
+  signedAttributes: {
+    type: Map,
+    of: String
   },
   email: {
     type: String,

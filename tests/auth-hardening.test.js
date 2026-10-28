@@ -120,17 +120,44 @@ describe('Auth hardening', () => {
       expect((await whoami(legacy)).status).toBe(200);
     });
 
-    test('logging out ends every session, including the one that asked', async () => {
+    test('signing out ends this session only', async () => {
       const token = (await login('hard-olly')).body.token;
       const other = (await login('hard-olly')).body.token;
 
       const response = await request(app).post('/api/auth/logout').set('x-auth-token', token);
       expect(response.status).toBe(200);
+      expect(response.body.everywhere).toBe(false);
+
+      expect((await whoami(token)).status).toBe(401);
+      // The other browser carries on.
+      expect((await whoami(other)).status).toBe(200);
+    });
+
+    test('signing out everywhere ends every session, including the one that asked', async () => {
+      const token = (await login('hard-olly')).body.token;
+      const other = (await login('hard-olly')).body.token;
+
+      const response = await request(app).post('/api/auth/logout-everywhere').set('x-auth-token', token);
+      expect(response.status).toBe(200);
+      expect(response.body.everywhere).toBe(true);
 
       expect((await whoami(token)).status).toBe(401);
       expect((await whoami(other)).status).toBe(401);
       // Signing in again works, and the new token is current.
       expect((await whoami((await login('hard-olly')).body.token)).status).toBe(200);
+    });
+
+    test('a token from before tokens had ids is signed out everywhere, as before', async () => {
+      const olly = await User.findOne({ username: 'hard-olly' });
+      const legacy = jwt.sign(
+        { id: String(olly._id), username: olly.username, role: olly.role, company: String(acme._id), tv: olly.tokenVersion },
+        process.env.JWT_SECRET
+      );
+      const other = (await login('hard-olly')).body.token;
+
+      const response = await request(app).post('/api/auth/logout').set('x-auth-token', legacy);
+      expect(response.body.everywhere).toBe(true);
+      expect((await whoami(other)).status).toBe(401);
     });
   });
 

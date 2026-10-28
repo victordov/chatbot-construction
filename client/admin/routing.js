@@ -12,6 +12,7 @@ async function loadRoutingSettings() {
     const auto = document.getElementById('routing-auto-assign');
     const max = document.getElementById('routing-max-concurrent');
     const onStart = document.getElementById('routing-assign-on-start');
+    const escalate = document.getElementById('routing-escalate-minutes');
 
     if (auto) {
       auto.checked = Boolean(routing.autoAssign);
@@ -21,6 +22,9 @@ async function loadRoutingSettings() {
     }
     if (onStart) {
       onStart.checked = Boolean(routing.assignOnStart);
+    }
+    if (escalate) {
+      escalate.value = routing.escalateAfterMinutes ?? 5;
     }
   } catch (error) {
     showToast(errorMessage(error, 'Could not load the routing settings'), 'danger');
@@ -37,7 +41,8 @@ async function saveRoutingSettings() {
       body: JSON.stringify({
         autoAssign: document.getElementById('routing-auto-assign').checked,
         maxConcurrent: parseInt(document.getElementById('routing-max-concurrent').value, 10),
-        assignOnStart: document.getElementById('routing-assign-on-start').checked
+        assignOnStart: document.getElementById('routing-assign-on-start').checked,
+        escalateAfterMinutes: parseInt(document.getElementById('routing-escalate-minutes').value, 10)
       })
     });
 

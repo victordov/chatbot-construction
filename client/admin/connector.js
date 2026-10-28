@@ -7,9 +7,56 @@
  */
 
 import { registerSection } from './nav.js';
-import { api, confirmDialog, escapeHtml, formatRelativeTime, showToast } from './utils.js';
+import { api, confirmDialog, escapeHtml, formatRelativeTime, renderMarkdown, showToast } from './utils.js';
 
 let contract = [];
+
+/**
+ * The package to install and its guide, from the SDK that actually ships.
+ * The guide is the SDK's own README, rendered here rather than linked to a
+ * repository a tenant may not be able to see.
+ */
+async function loadSdk() {
+  const panel = document.getElementById('connector-sdk');
+  if (!panel || panel.dataset.loaded) {
+    return;
+  }
+
+  try {
+    const sdk = await api('/api/companies/me/connector/sdk');
+    panel.dataset.loaded = '1';
+    panel.innerHTML = `
+      <div class="d-flex align-items-center gap-2 flex-wrap">
+        <span class="small text-muted">Install</span>
+        <code class="user-select-all p-1 bg-light rounded">${escapeHtml(sdk.install)}</code>
+        <span class="small text-muted">version ${escapeHtml(sdk.version)}</span>
+        ${sdk.readme ? `
+          <button type="button" class="btn btn-sm btn-link p-0" data-bs-toggle="collapse"
+                  data-bs-target="#connector-sdk-guide" aria-expanded="false" aria-controls="connector-sdk-guide">
+            Read the guide
+          </button>` : ''}
+      </div>`;
+    document.getElementById('connector-sdk-guide-body').innerHTML = renderMarkdown(sdk.readme || '');
+  } catch (error) {
+    panel.innerHTML = '<div class="small text-muted">Install the connector SDK from npm and follow its README.</div>';
+  }
+}
+
+/**
+ * "Use it in conversations" stays off until a Check has reached the
+ * connector: a connector the bot cannot reach turns every catalogue question
+ * into an apology in front of a customer.
+ */
+function syncEnableSwitch(connector) {
+  const toggle = document.getElementById('connector-enabled');
+  const hint = document.getElementById('connector-enabled-hint');
+  const checkedOk = Boolean(connector.url && connector.lastCheckedAt && !connector.lastError);
+
+  toggle.disabled = !checkedOk && !connector.enabled;
+  hint.textContent = checkedOk || connector.enabled
+    ? ''
+    : 'Save the URL and press Check first. You can switch it on once it answers.';
+}
 
 
 /**
@@ -88,9 +135,11 @@ async function load() {
 
     document.getElementById('connector-url').value = connector.url || '';
     document.getElementById('connector-enabled').checked = Boolean(connector.enabled);
+    syncEnableSwitch(connector);
 
     renderCapabilities(connector.capabilities);
     renderStatus(connector);
+    loadSdk();
 
     document.getElementById('connector-secret-state').innerHTML = connector.hasSecret
       ? '<span class="text-success">A signing secret is set.</span>'

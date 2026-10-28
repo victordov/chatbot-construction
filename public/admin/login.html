@@ -3,66 +3,51 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Admin Login | Chatbot</title>
+    <title>Sign in</title>
     <link rel="stylesheet" href="/dist/base.css">
-    <style>
-        body {
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            background-color: #f5f5f5;
-        }
-        .login-container {
-            max-width: 400px;
-            padding: 15px;
-            margin: auto;
-        }
-        .form-signin {
-            width: 100%;
-            max-width: 330px;
-            padding: 15px;
-            margin: auto;
-        }
-        .form-signin .form-floating:focus-within {
-            z-index: 2;
-        }
-        .form-message {
-            display: none;
-            margin-bottom: 15px;
-        }
-        .form-links {
-            margin-top: 12px;
-            font-size: 0.9rem;
-        }
-    </style>
+    <link rel="stylesheet" href="/dist/auth.css">
 </head>
 <body>
     <div class="container">
-        <div class="login-container">
+        <div class="auth-container">
             <div class="text-center mb-4">
-                <h1 class="h3 mb-3 fw-normal">Chatbot Admin</h1>
-                <p id="page-subtitle">Please sign in to access the admin dashboard</p>
+                <!-- An agency's logo, when the page wears its brand. -->
+                <img class="auth-brand-logo mb-3" data-brand-logo hidden alt="">
+                <h1 class="h3 mb-3 fw-normal" data-product-name>Support Desk</h1>
+                <p id="page-subtitle">Sign in to answer your customers and run your bot.</p>
             </div>
 
             <!-- Sign in -->
             <section id="login-panel" hidden>
                 <div id="login-error" class="form-message text-center" role="alert" aria-live="assertive"></div>
 
-                <form id="login-form" class="form-signin" novalidate>
+                <form id="login-form" class="auth-form" novalidate>
                     <div class="form-floating mb-3">
                         <input type="text" class="form-control" id="username" name="username"
-                               placeholder="Username" autocomplete="username" autocapitalize="none"
+                               placeholder="Email or username" autocomplete="username" autocapitalize="none"
                                spellcheck="false" required>
-                        <label for="username">Username</label>
+                        <label for="username">Email or username</label>
                     </div>
-                    <div class="form-floating mb-3">
-                        <input type="password" class="form-control" id="password" name="password"
-                               placeholder="Password" autocomplete="current-password" required>
-                        <label for="password">Password</label>
+                    <div class="input-group mb-3">
+                        <div class="form-floating">
+                            <input type="password" class="form-control" id="password" name="password"
+                                   placeholder="Password" autocomplete="current-password" required>
+                            <label for="password">Password</label>
+                        </div>
+                        <button class="btn btn-outline-secondary" type="button" data-toggle-password="password"
+                                aria-label="Show password" aria-pressed="false">Show</button>
                     </div>
                     <button class="w-100 btn btn-lg btn-primary" type="submit">Sign in</button>
+
+                    <a class="w-100 btn btn-outline-secondary mt-3" id="google-signin" href="/api/auth/google/start" hidden>
+                        Sign in with Google
+                    </a>
+
                     <div class="form-links text-center">
                         <a href="#" id="forgot-link">Forgot password?</a>
+                    </div>
+                    <div class="form-links text-center" id="signup-link" hidden>
+                        New here? <a href="/admin/signup.html">Start a free trial</a>
                     </div>
                 </form>
             </section>
@@ -71,7 +56,7 @@
             <section id="forgot-panel" hidden>
                 <div id="forgot-message" class="form-message text-center" role="status" aria-live="polite"></div>
 
-                <form id="forgot-form" class="form-signin" novalidate>
+                <form id="forgot-form" class="auth-form" novalidate>
                     <p class="text-muted small">
                         Enter the email address on your account and we will send a link to choose a new password.
                     </p>
@@ -91,13 +76,18 @@
             <section id="reset-panel" hidden>
                 <div id="reset-message" class="form-message text-center" role="alert" aria-live="assertive"></div>
 
-                <form id="reset-form" class="form-signin" novalidate>
+                <form id="reset-form" class="auth-form" novalidate>
                     <p class="text-muted small">Choose a new password for your account.</p>
-                    <div class="form-floating mb-3">
-                        <input type="password" class="form-control" id="reset-password" name="new-password"
-                               placeholder="New password" autocomplete="new-password" minlength="8" required>
-                        <label for="reset-password">New password</label>
+                    <div class="input-group mb-1">
+                        <div class="form-floating">
+                            <input type="password" class="form-control" id="reset-password" name="new-password"
+                                   placeholder="New password" autocomplete="new-password" minlength="8" required>
+                            <label for="reset-password">New password</label>
+                        </div>
+                        <button class="btn btn-outline-secondary" type="button" data-toggle-password="reset-password"
+                                aria-label="Show password" aria-pressed="false">Show</button>
                     </div>
+                    <div class="form-text mb-3" id="reset-length-hint">At least 8 characters.</div>
                     <div class="form-floating mb-3">
                         <input type="password" class="form-control" id="reset-password-confirm" name="confirm-password"
                                placeholder="Confirm new password" autocomplete="new-password" minlength="8" required>

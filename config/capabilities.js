@@ -49,7 +49,12 @@ const TYPES = {
     id: 'string',
     startsAt: 'date',
     reference: 'string?',
-    status: 'string?'
+    status: 'string?',
+    // What the widget's card says ("Booked: Tue 21 Oct, 09:15"), and, when
+    // the status is `link`, the page where the visitor finishes booking -
+    // Calendly on its free plan cannot book through its API.
+    title: 'string?',
+    url: 'url?'
   }
 };
 
@@ -97,6 +102,15 @@ const CAPABILITIES = [
     input: { slotId: 'string', name: 'string?', email: 'string?', phone: 'string?', notes: 'string?' },
     returns: { one: 'Booking' },
     example: 'The visitor picked a time and gave their details.'
+  },
+  {
+    id: 'availability.cancel',
+    label: 'Cancel an appointment',
+    kind: 'write',
+    description: 'Cancel a booking by its reference. The visitor must be in the conversation it was booked from, or give the email it was booked under.',
+    input: { reference: 'string', email: 'string?' },
+    returns: { one: 'Booking' },
+    example: 'A visitor says "I can\'t make it on Thursday, please cancel BK-7F3K2Q".'
   }
 ];
 

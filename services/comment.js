@@ -2,10 +2,21 @@
  * Comment service for handling comment-related operations
  */
 
+const mongoose = require('mongoose');
 const Comment = require('../models/comment');
 const Task = require('../models/task');
 const ActivityService = require('./activity');
 const { logger } = require('./logging');
+
+/**
+ * "Not found" and "not authorised" are answers the route turns into a 404 and
+ * a 403; only anything else is a failure.
+ */
+function rethrowExpected(error) {
+  if (error && /^(Comment not found|Not authorized to )/.test(error.message || '')) {
+    throw error;
+  }
+}
 
 class CommentService {
   constructor() {
@@ -92,25 +103,64 @@ class CommentService {
   }
 
   /**
-   * Update a comment
+   * Find a comment the requester may change.
+   *
+   * Two things made editing and deleting fail with a 500 every time: the
+   * author check compared a string with an ObjectId, so nobody was ever the
+   * author, and the catch below it relabelled "not found" and "not
+   * authorised" as a generic failure the route could not tell apart. The
+   * comment must also belong to the task in the URL, which the route has
+   * already scoped to the caller's company - otherwise a comment id from
+   * another tenant's task could be edited through one of your own.
+   *
+   * @param {string} commentId
+   * @param {object} requester `{id, role}`, or a bare user id
+   * @param {string} [taskId] the task the comment must belong to
+   * @param {object} [options]
+   * @param {boolean} [options.adminMayAct] admins may act on others' comments
+   */
+  async findOwnComment(commentId, requester, taskId, options = {}) {
+    if (!mongoose.Types.ObjectId.isValid(String(commentId))) {
+      throw new Error('Comment not found');
+    }
+
+    const query = { _id: commentId };
+    if (taskId) {
+      query.taskId = taskId;
+    }
+
+    const comment = await Comment.findOne(query);
+    if (!comment) {
+      throw new Error('Comment not found');
+    }
+
+    const userId = requester && typeof requester === 'object' ? requester.id : requester;
+    const role = requester && typeof requester === 'object' ? requester.role : null;
+    const isAuthor = comment.author && String(comment.author) === String(userId);
+    const isAdmin = role === 'company_admin' || role === 'superadmin';
+
+    if (!isAuthor && !(options.adminMayAct && isAdmin)) {
+      throw new Error(options.action === 'delete'
+        ? 'Not authorized to delete this comment'
+        : 'Not authorized to update this comment');
+    }
+
+    return comment;
+  }
+
+  /**
+   * Update a comment. Only its author may: putting words in a colleague's
+   * mouth is not an edit.
+   *
    * @param {string} commentId - Comment ID
    * @param {Object} updateData - Data to update
-   * @param {string} userId - User ID of the requester
+   * @param {object|string} requester - The requesting user (`{id, role}`) or id
+   * @param {string} [taskId] - The task the comment must belong to
    * @returns {Promise<Object>} - Updated comment
    */
-  async updateComment(commentId, updateData, userId) {
+  async updateComment(commentId, updateData, requester, taskId) {
     try {
-      // Find the comment
-      const comment = await Comment.findById(commentId);
-
-      if (!comment) {
-        throw new Error('Comment not found');
-      }
-
-      // Check if user is the author of the comment
-      if (comment.author.toString() !== userId) {
-        throw new Error('Not authorized to update this comment');
-      }
+      const comment = await this.findOwnComment(commentId, requester, taskId, { action: 'update' });
 
       // Update comment data
       if (updateData.content) {
@@ -128,39 +178,36 @@ class CommentService {
       await comment.save();
 
       // Populate author information
-      await comment.populate('author', 'username email');
+      await comment.populate('author', 'username email displayName');
 
       return comment;
     } catch (error) {
+      rethrowExpected(error);
       logger.error(`Error updating comment with ID ${commentId}`, { error });
       throw new Error('Failed to update comment');
     }
   }
 
   /**
-   * Delete a comment
+   * Delete a comment: its author, or an admin tidying up.
+   *
    * @param {string} commentId - Comment ID
-   * @param {string} userId - User ID of the requester
+   * @param {object|string} requester - The requesting user (`{id, role}`) or id
+   * @param {string} [taskId] - The task the comment must belong to
    * @returns {Promise<boolean>} - Success status
    */
-  async deleteComment(commentId, userId) {
+  async deleteComment(commentId, requester, taskId) {
     try {
-      // Find the comment
-      const comment = await Comment.findById(commentId);
+      const comment = await this.findOwnComment(commentId, requester, taskId, {
+        action: 'delete',
+        adminMayAct: true
+      });
 
-      if (!comment) {
-        throw new Error('Comment not found');
-      }
-
-      // Check if user is the author of the comment
-      if (comment.author.toString() !== userId) {
-        throw new Error('Not authorized to delete this comment');
-      }
-
-      await Comment.findByIdAndDelete(commentId);
+      await Comment.deleteOne({ _id: comment._id });
 
       return true;
     } catch (error) {
+      rethrowExpected(error);
       logger.error(`Error deleting comment with ID ${commentId}`, { error });
       throw new Error('Failed to delete comment');
     }

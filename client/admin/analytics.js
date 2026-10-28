@@ -1,34 +1,23 @@
 /**
- * Advanced analytics.
+ * Reports.
  *
- * Renders the metrics a support manager acts on: whether the bot is deflecting
- * work, whether anyone is being left unanswered, when cover is needed, and who
- * is carrying the load.
+ * At the top, what the bot is worth, on every plan. Below it the metrics a
+ * support manager acts on: whether the bot is deflecting work, whether anyone
+ * is being left unanswered, when cover is needed, and who is carrying the
+ * load. One window for all of it, chosen with the 7/30/90 buttons.
  */
 
-import { initializeReportCharts, loadOverview, overviewData, resizeChartsIn } from './charts.js';
-import { registerSection } from './nav.js';
-import { authToken, escapeHtml, logger } from './utils.js';
+import { formatSeconds, initializeReportCharts, loadOverview, overviewData, resizeChartsIn } from './charts.js';
+import { registerSection, showSection } from './nav.js';
+import { state } from './state.js';
+import { api, apiFetch, downloadFile, errorMessage, escapeHtml, logger, showToast } from './utils.js';
 
 const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 let currentRange = 7;
+// A superadmin's chosen tenant; empty means every tenant together.
+let currentCompany = '';
 
-
-/**
- * Seconds as something a person reads at a glance.
- */
-function formatDuration(seconds) {
-  if (!seconds) {
-    return '—';
-  }
-  if (seconds < 60) {
-    return `${Math.round(seconds)}s`;
-  }
-  if (seconds < 3600) {
-    return `${Math.round(seconds / 60)}m`;
-  }
-  return `${(seconds / 3600).toFixed(1)}h`;
-}
+const UNAVAILABLE = '<span class="stat-unavailable">unavailable</span>';
 
 function setStat(id, value, detail) {
   const valueEl = document.getElementById(id);
@@ -41,28 +30,149 @@ function setStat(id, value, detail) {
   }
 }
 
+/**
+ * A metric the server could not compute. Said as such: a failure shown as 0%
+ * is a lie that looks like a result.
+ */
+function setUnavailable(id) {
+  const valueEl = document.getElementById(id);
+  const detailEl = document.getElementById(`${id}-detail`);
+  if (valueEl) {
+    valueEl.className = 'stat-value';
+    valueEl.innerHTML = UNAVAILABLE;
+  }
+  if (detailEl) {
+    detailEl.textContent = 'could not be worked out just now';
+  }
+}
+
+function query(extra = {}) {
+  const params = new URLSearchParams({ days: String(currentRange), ...extra });
+  if (currentCompany) {
+    params.set('companyId', currentCompany);
+  }
+  return params.toString();
+}
+
+// ------------------------------------------------------------ value report
+
+let valueDefinitions = null;
+
+function renderValue(report) {
+  const percent = report.resolutionRate === null ? '' : ` (${report.resolutionRate}%)`;
+
+  setStat('value-resolved', report.botResolved.toLocaleString(),
+    report.conversations
+      ? `of ${report.conversations.toLocaleString()} conversations${percent}`
+      : 'no conversations in this period');
+  setStat('value-handed', report.handedOver.toLocaleString(), 'reached or asked for a person');
+  setStat('value-hours', String(report.hoursSaved),
+    `at ${report.minutesPerConversation} min a conversation`);
+  setStat('value-cost',
+    report.costPerResolution === null ? '—' : `$${report.costPerResolution.toFixed(2)}`,
+    report.costPerResolution === null
+      ? (report.monthlyPrice ? 'nothing resolved yet' : 'no plan price to divide')
+      : 'your plan, per conversation resolved');
+  setStat('value-ai', report.aiReplies.toLocaleString());
+
+  const bot = report.csatBot && report.csatBot.rated ? `${report.csatBot.csat}%` : '—';
+  const person = report.csatHuman && report.csatHuman.rated ? `${report.csatHuman.csat}%` : '—';
+  setStat('value-csat', `${bot} / ${person}`,
+    `${(report.csatBot && report.csatBot.rated) || 0} and ${(report.csatHuman && report.csatHuman.rated) || 0} ratings`);
+
+  document.getElementById('value-title').textContent = `What the bot did, last ${report.days} days`;
+
+  valueDefinitions = report.definition || {};
+  const labels = {
+    botResolved: 'Resolved by the bot',
+    handedOver: 'Handed to a person',
+    hoursSaved: 'Hours saved',
+    costPerResolution: 'Cost per resolution',
+    aiReplies: 'AI replies'
+  };
+  document.getElementById('value-definition-list').innerHTML = Object.entries(labels)
+    .filter(([key]) => valueDefinitions[key])
+    .map(([key, label]) => `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(valueDefinitions[key])}</dd>`)
+    .join('');
+
+  const minutes = document.getElementById('value-minutes');
+  if (minutes && document.activeElement !== minutes) {
+    minutes.value = report.minutesPerConversation;
+  }
+}
+
+async function loadValue() {
+  try {
+    renderValue(await api(`/api/admin/analytics/value?${query()}`));
+  } catch (error) {
+    logger.error('Failed to load the value report:', error);
+    ['value-resolved', 'value-handed', 'value-hours', 'value-cost', 'value-ai', 'value-csat'].forEach(setUnavailable);
+  }
+}
+
+async function saveMinutes() {
+  const input = document.getElementById('value-minutes');
+  const minutes = parseInt(input.value, 10);
+  if (!Number.isInteger(minutes) || minutes < 1 || minutes > 240) {
+    showToast('Choose a whole number of minutes between 1 and 240', 'warning');
+    return;
+  }
+  try {
+    await api('/api/admin/analytics/settings', { method: 'PUT', body: { minutesPerConversation: minutes } });
+    showToast('Saved. Hours saved now counts that many minutes a conversation.', 'success');
+    loadValue();
+  } catch (error) {
+    showToast(errorMessage(error, 'Could not save the minutes'), 'danger');
+  }
+}
+
+// ------------------------------------------------------- advanced metrics
+
 function renderHeadline(data) {
-  setStat('stat-deflection', `${data.deflection.rate}%`,
-    `${data.deflection.deflected} of ${data.deflection.eligible} handled by the bot alone`);
+  const missing = new Set(data.unavailable || []);
 
-  setStat('stat-escalated', String(data.deflection.escalated),
-    'conversations reached an operator');
-
-  const abandonEl = document.getElementById('stat-abandoned');
-  setStat('stat-abandoned', `${data.abandonment.rate}%`,
-    `${data.abandonment.unanswered} of ${data.abandonment.total} never got a reply`);
-
-  // Anything above one in twenty going unanswered is worth flagging rather
-  // than leaving as a neutral number.
-  if (abandonEl) {
-    abandonEl.className = `stat-value ${data.abandonment.rate > 5 ? 'text-danger' : ''}`;
+  if (data.deflection && !missing.has('deflection')) {
+    setStat('stat-deflection', `${data.deflection.rate}%`,
+      `${data.deflection.deflected} of ${data.deflection.eligible} handled by the bot alone` +
+      (data.deflection.unmetHandoffs ? ` · ${data.deflection.unmetHandoffs} asked for a person and got nobody` : ''));
+    setStat('stat-escalated', String(data.deflection.escalated), 'conversations a person joined');
+  } else {
+    setUnavailable('stat-deflection');
+    setUnavailable('stat-escalated');
   }
 
-  renderSatisfaction(data.satisfaction);
+  const abandonEl = document.getElementById('stat-abandoned');
+  if (data.abandonment && !missing.has('abandonment')) {
+    setStat('stat-abandoned', `${data.abandonment.rate}%`,
+      `${data.abandonment.unanswered} of ${data.abandonment.total} never got a reply`);
+    // Anything above one in twenty going unanswered is worth flagging rather
+    // than leaving as a neutral number.
+    if (abandonEl) {
+      abandonEl.className = `stat-value ${data.abandonment.rate > 5 ? 'text-danger' : ''}`;
+    }
+  } else {
+    setUnavailable('stat-abandoned');
+  }
 
-  setStat('stat-tasks', `${data.tasks.completionRate}%`,
-    `${data.tasks.completed} of ${data.tasks.created} closed` +
-    (data.tasks.overdue ? ` · ${data.tasks.overdue} overdue` : ''));
+  if (data.satisfaction && !missing.has('satisfaction')) {
+    renderSatisfaction(data.satisfaction);
+  } else {
+    setUnavailable('stat-csat');
+  }
+
+  if (data.tasks && !missing.has('tasks')) {
+    setStat('stat-tasks', `${data.tasks.completionRate}%`,
+      data.tasks.created
+        ? `${data.tasks.completed} of ${data.tasks.created} closed` + (data.tasks.overdue ? ` · ${data.tasks.overdue} overdue` : '')
+        : 'no tasks raised in this period');
+  } else {
+    setUnavailable('stat-tasks');
+  }
+}
+
+/** Where a rating's conversation opens. */
+function conversationLink(sessionId) {
+  return `?section=active-chats&chat=${encodeURIComponent(sessionId)}`;
 }
 
 /**
@@ -86,8 +196,8 @@ function renderSatisfaction(csat, options = {}) {
     if (panel) {
       panel.innerHTML = `
         <p class="text-muted mb-0">
-          No ratings yet. Visitors are asked once a conversation ends, if they
-          sent more than one message.
+          No ratings in this period. Visitors are asked once a conversation ends,
+          if they sent more than one message.
         </p>`;
     }
     return;
@@ -131,11 +241,6 @@ function renderSatisfaction(csat, options = {}) {
     return;
   }
 
-  const most = Math.max(...csat.distribution, 1);
-
-  const bars = renderDistribution(csat.distribution);
-  void most;
-
   const handler = csat.byHandler || {};
   const side = (label, stats) => `
     <div class="col-6">
@@ -149,7 +254,7 @@ function renderSatisfaction(csat, options = {}) {
   const comments = (csat.comments || []).slice(0, 5);
 
   panel.innerHTML = `
-    ${bars}
+    ${renderDistribution(csat.distribution)}
     <div class="row g-2 mt-3 pt-3 border-top">
       ${side('Handled by the bot', handler.bot)}
       ${side('Handled by a person', handler.operator)}
@@ -175,6 +280,8 @@ function renderSatisfaction(csat, options = {}) {
           <div class="csat-comment">
             <span class="badge bg-${row.rating.score >= 4 ? 'success' : row.rating.score <= 2 ? 'danger' : 'secondary'}">${row.rating.score}</span>
             <span>${escapeHtml(row.rating.comment)}</span>
+            ${row.sessionId ? `<a class="small ms-1 text-nowrap" href="${escapeHtml(conversationLink(row.sessionId))}"
+               data-open-chat="${escapeHtml(row.sessionId)}">Read the conversation</a>` : ''}
           </div>`).join('')}
       </div>` : ''}`;
 }
@@ -187,9 +294,10 @@ function renderSatisfaction(csat, options = {}) {
  * for very different responses.
  */
 function renderDistribution(distribution) {
-  const most = Math.max(...distribution, 1);
+  const counts = distribution || [0, 0, 0, 0, 0];
+  const most = Math.max(...counts, 1);
 
-  return distribution.map((count, index) => `
+  return counts.map((count, index) => `
     <div class="csat-bar-row">
       <span class="csat-bar-label">${index + 1}</span>
       <span class="csat-bar-track">
@@ -204,9 +312,19 @@ function renderDistribution(distribution) {
  * A 7x24 grid. Built from a flat list, so hours with no traffic simply have
  * no entry and render as empty.
  */
-function renderHeatmap(peakHours) {
+function renderHeatmap(peakHours, timezone) {
   const container = document.getElementById('peak-heatmap');
   if (!container) {
+    return;
+  }
+
+  const note = document.getElementById('heatmap-note');
+  if (note) {
+    note.textContent = `Darker means busier, in ${timezone || 'UTC'} time. Use it to plan cover.`;
+  }
+
+  if (peakHours === null) {
+    container.innerHTML = `<p class="mb-0">${UNAVAILABLE}</p>`;
     return;
   }
 
@@ -246,8 +364,13 @@ function renderTopics(topics) {
     return;
   }
 
+  if (topics === null) {
+    container.innerHTML = `<p class="mb-0">${UNAVAILABLE}</p>`;
+    return;
+  }
+
   if (!topics.length) {
-    container.innerHTML = '<p class="text-muted mb-0">Not enough conversations yet.</p>';
+    container.innerHTML = '<p class="text-muted mb-0">Not enough conversations in this period yet.</p>';
     return;
   }
 
@@ -270,9 +393,14 @@ function renderOperators(operators) {
     return;
   }
 
+  if (operators === null) {
+    table.innerHTML = `<tr><td colspan="5" class="text-center py-3">${UNAVAILABLE}</td></tr>`;
+    return;
+  }
+
   if (!operators.length) {
     table.innerHTML =
-      '<tr><td colspan="5" class="text-muted text-center py-3">No operator-handled conversations in this period.</td></tr>';
+      '<tr><td colspan="5" class="text-muted text-center py-3">No conversations reached a person in this period.</td></tr>';
     return;
   }
 
@@ -281,8 +409,8 @@ function renderOperators(operators) {
       <td>${escapeHtml(operator.operator)}</td>
       <td class="text-end">${operator.conversations}</td>
       <td class="text-end">${operator.replies}</td>
-      <td class="text-end">${escapeHtml(formatDuration(operator.medianResponseSeconds))}</td>
-      <td class="text-end text-muted">${escapeHtml(formatDuration(operator.avgResponseSeconds))}</td>
+      <td class="text-end">${escapeHtml(formatSeconds(operator.medianResponseSeconds || null))}</td>
+      <td class="text-end text-muted">${escapeHtml(formatSeconds(operator.avgResponseSeconds || null))}</td>
     </tr>`).join('');
 }
 
@@ -297,27 +425,20 @@ function showLocked(locked) {
   }
 }
 
-async function load(days = currentRange) {
-  currentRange = days;
-
-  const label = document.getElementById('analytics-range-label');
-  if (label) {
-    label.textContent = `Last ${days} days`;
-  }
-
+async function loadAdvanced() {
   try {
-    const response = await fetch(`/api/admin/analytics/advanced?days=${days}`, {
-      headers: { 'x-auth-token': authToken() }
-    });
+    const response = await apiFetch(`/api/admin/analytics/advanced?${query()}`);
 
     if (response.status === 402) {
       // Not an error: the tenant's plan simply does not include this. The
       // satisfaction figures are not part of that gate — they come from the
       // basic endpoint, so they are rendered here regardless.
       showLocked(true);
-      // Read from the basic payload Home already loaded.
       const overview = overviewData();
       renderSatisfaction(overview ? overview.satisfaction : null, { summaryOnly: true });
+      renderHeatmap([], null);
+      renderTopics([]);
+      renderOperators([]);
       return;
     }
 
@@ -329,17 +450,52 @@ async function load(days = currentRange) {
     showLocked(false);
 
     renderHeadline(data);
-    renderHeatmap(data.peakHours);
+    renderHeatmap(data.peakHours, data.timezone);
     renderTopics(data.topics);
     renderOperators(data.operators);
   } catch (error) {
     logger.error('Failed to load advanced analytics:', error);
-    const container = document.getElementById('peak-heatmap');
-    if (container) {
-      container.innerHTML =
-        `<p class="text-danger mb-0">Could not load analytics: ${escapeHtml(error.message)}</p>`;
-    }
+    renderHeatmap(null);
+    renderTopics(null);
+    renderOperators(null);
   }
+}
+
+async function load(days = currentRange) {
+  currentRange = days;
+
+  const label = document.getElementById('analytics-range-label');
+  if (label) {
+    label.textContent = `Last ${days} days${currentCompany ? '' : (state.currentUser && state.currentUser.role === 'superadmin' ? ' · every company together' : '')}`;
+  }
+
+  // The overview first: the plan-gated panel falls back to its satisfaction.
+  await loadOverview({ days, companyId: currentCompany });
+  resizeChartsIn('analytics-section');
+  loadValue();
+  loadAdvanced();
+}
+
+/** The tenant picker, for a superadmin. */
+async function setupCompanyPicker() {
+  const select = document.getElementById('analytics-company');
+  if (!select || !state.currentUser || state.currentUser.role !== 'superadmin') {
+    return;
+  }
+
+  select.classList.remove('d-none');
+  try {
+    const { companies } = await api('/api/companies');
+    select.innerHTML = '<option value="">All companies</option>' + companies.map(company =>
+      `<option value="${escapeHtml(company._id)}">${escapeHtml(company.name)}</option>`).join('');
+  } catch (error) {
+    logger.warn('Could not list companies for the report picker', error);
+  }
+
+  select.addEventListener('change', () => {
+    currentCompany = select.value;
+    load();
+  });
 }
 
 function setupAnalytics() {
@@ -353,16 +509,35 @@ function setupAnalytics() {
     });
   });
 
+  document.getElementById('value-minutes-save')?.addEventListener('click', saveMinutes);
+
+  // A rating comment opens its conversation in the inbox, in this tab.
+  document.getElementById('csat-panel').addEventListener('click', event => {
+    const link = event.target.closest('[data-open-chat]');
+    if (!link || event.metaKey || event.ctrlKey || event.shiftKey) {
+      return;
+    }
+    event.preventDefault();
+    showSection('active-chats', { params: { chat: link.dataset.openChat } });
+  });
+
+  document.getElementById('value-export').addEventListener('click', async () => {
+    try {
+      await downloadFile(`/api/admin/analytics/value/export?${query()}`,
+        `bot-value-${new Date().toISOString().slice(0, 10)}.csv`);
+    } catch (error) {
+      showToast('Could not export the report', 'danger');
+    }
+  });
+
   initializeReportCharts();
-  // These aggregations are heavier than Home's, and most sessions never open
-  // Reports, so they load the first time it is opened rather than at boot.
-  load();
+  setupCompanyPicker();
 }
 
 registerSection('analytics', {
   setup: setupAnalytics,
   show: () => {
     resizeChartsIn('analytics-section');
-    loadOverview();
+    load();
   }
 });

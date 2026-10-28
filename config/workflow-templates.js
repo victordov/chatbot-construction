@@ -14,6 +14,10 @@
  *
  * Positions are laid out left to right in the order a conversation travels, so
  * a tenant opening one sees the shape of it before reading any of the nodes.
+ *
+ * Each has a trigger. The front desk sorts every conversation, so it answers
+ * everything; the others run only for what they are about ("where is my
+ * order?"), leaving the assistant to answer the rest from the knowledge base.
  */
 
 const templates = [
@@ -25,6 +29,9 @@ const templates = [
     // Said plainly, because a template that silently needs a working API and
     // does nothing until it has one is worse than no template.
     requires: 'An API that returns an order by reference. Fill in the URL on the "Look up the order" node.',
+    // Which messages it answers once live. Everything else still goes to
+    // the assistant, so publishing it does not take over the bot.
+    trigger: { type: 'intent', description: 'where is my order' },
     nodes: [
       { id: 'persona', type: 'persona', position: { x: 40, y: 40 }, data: {
         label: 'Persona',
@@ -91,6 +98,7 @@ const templates = [
     industry: 'Retail and e-commerce',
     summary: 'Collects the order and the reason, raises a task for the team, and tells the customer what happens next.',
     requires: 'Nothing. Works as it is; the task lands in Tasks for someone to action.',
+    trigger: { type: 'intent', description: 'return or refund' },
     nodes: [
       { id: 'persona', type: 'persona', position: { x: 40, y: 40 }, data: {
         label: 'Persona',
@@ -168,9 +176,14 @@ const templates = [
     industry: 'Any',
     summary: 'Sorts the conversation into the right lane first, answers common questions from your knowledge base, and escalates the rest.',
     requires: 'A knowledge source for the "Answer from your material" node, if you have one.',
+    trigger: { type: 'always' },
     nodes: [
+      // Defers to the tenant's Persona screen until edited: this flow answers
+      // every message, so its persona would otherwise replace theirs. The
+      // other templates' personas only speak in their own steps.
       { id: 'persona', type: 'persona', position: { x: 40, y: 40 }, data: {
         label: 'Persona',
+        inheritPersona: true,
         prompt: 'You are the first point of contact for a support team. Answer briefly, and offer a person when you are not sure.',
         tone: 'friendly', personality: 'helpful'
       } },
@@ -246,6 +259,7 @@ const templates = [
     industry: 'B2B and services',
     summary: 'Finds out who they are and what they need before taking up a salesperson\'s time, then books the follow-up.',
     requires: 'Nothing. The qualified lead lands in Tasks.',
+    trigger: { type: 'intent', description: 'a quote or new enquiry' },
     nodes: [
       { id: 'persona', type: 'persona', position: { x: 40, y: 40 }, data: {
         label: 'Persona',
@@ -332,8 +346,9 @@ const templates = [
     id: 'booking',
     name: 'Book or change an appointment',
     industry: 'Clinics, salons, trades and services',
-    summary: 'Takes the details for a booking or a change and raises it for whoever runs the diary.',
-    requires: 'Nothing, unless you want it to write to a booking system — then point the Call an API node at it.',
+    summary: 'Offers real free times from your calendar and books the one they pick. Without a calendar connected, or for a change, it takes the details and raises a task for whoever runs the diary.',
+    requires: 'Nothing. Connect Cal.com, Calendly or Google Calendar under Bot → Booking and it books real appointments; until then it raises a task.',
+    trigger: { type: 'intent', description: 'book, change or cancel an appointment' },
     nodes: [
       { id: 'persona', type: 'persona', position: { x: 40, y: 40 }, data: {
         label: 'Persona',
@@ -355,31 +370,75 @@ const templates = [
         question: 'What name should I put it under?',
         variable: 'customer_name', validate: 'any'
       } },
-      { id: 'ask-when', type: 'ask', position: { x: 800, y: 140 }, data: {
+      // The calendar's real free times, offered as buttons. With no calendar
+      // connected (or nothing free) this takes its other output, into the
+      // task-based path below - so the template works before and after.
+      { id: 'find-slots', type: 'capability', position: { x: 800, y: 40 }, data: {
+        label: 'Offer free times',
+        capability: 'availability.slots',
+        input: {},
+        limit: '6',
+        offerAsChoices: 'yes',
+        question: 'Here are the next free times. Which suits you?',
+        variable: 'slot'
+      } },
+      { id: 'ask-email', type: 'ask', position: { x: 1060, y: 40 }, data: {
+        label: 'Where to confirm',
+        question: 'Lovely. What email should the booking go under?',
+        variable: 'email', validate: 'email', maxAttempts: '2'
+      } },
+      { id: 'book-slot', type: 'capability', position: { x: 1320, y: 40 }, data: {
+        label: 'Book it',
+        capability: 'availability.book',
+        input: { slotId: '{{slot}}', name: '{{customer_name}}', email: '{{email}}' },
+        offerAsChoices: 'no'
+      } },
+      { id: 'is-link', type: 'condition', position: { x: 1560, y: 40 }, data: {
+        label: 'Finished on their page?',
+        left: '{{result_status}}', operator: 'equals', right: 'link'
+      } },
+      { id: 'reply-link', type: 'response', position: { x: 1820, y: 0 }, data: {
+        label: 'Send the booking page',
+        template: 'Nearly done: tap the link to confirm {{slot_label}} on our booking page. {{result_url}}'
+      } },
+      { id: 'tag-booked', type: 'tag', position: { x: 1820, y: 110 }, data: {
+        label: 'Tag it', tags: ['booking', 'booked']
+      } },
+      { id: 'reply-booked', type: 'response', position: { x: 2080, y: 110 }, data: {
+        label: 'Confirm the booking',
+        template: 'All booked: {{slot_label}}, under {{customer_name}}. Your reference is {{result_reference}} — quote it if you need to change or cancel.'
+      } },
+      // The time was taken in the meantime, or the calendar refused: fall
+      // back to a person, with the time they chose as their preference.
+      { id: 'book-failed', type: 'set', position: { x: 1560, y: 200 }, data: {
+        label: 'Keep their choice',
+        assignments: [{ variable: 'preferred_time', value: '{{slot_label}}' }]
+      } },
+      { id: 'ask-when', type: 'ask', position: { x: 800, y: 200 }, data: {
         label: 'When suits',
         question: 'When would suit you? A day and rough time is enough.',
         variable: 'preferred_time', validate: 'any'
       } },
-      { id: 'ask-phone', type: 'ask', position: { x: 1060, y: 140 }, data: {
+      { id: 'ask-phone', type: 'ask', position: { x: 1060, y: 260 }, data: {
         label: 'How to confirm',
         question: 'What is the best number to confirm on?',
         variable: 'phone', validate: 'phone'
       } },
-      { id: 'ask-ref', type: 'ask', position: { x: 540, y: 340 }, data: {
+      { id: 'ask-ref', type: 'ask', position: { x: 540, y: 380 }, data: {
         label: 'Existing booking',
         question: 'No problem. What name is the existing appointment under, and when is it?',
         variable: 'existing_booking', validate: 'any'
       } },
-      { id: 'tag-booking', type: 'tag', position: { x: 1320, y: 200 }, data: {
+      { id: 'tag-booking', type: 'tag', position: { x: 1320, y: 320 }, data: {
         label: 'Tag it', tags: ['booking', '{{booking_type}}']
       } },
-      { id: 'booking-task', type: 'task', position: { x: 1560, y: 200 }, data: {
+      { id: 'booking-task', type: 'task', position: { x: 1560, y: 320 }, data: {
         label: 'Raise the booking',
         title: 'Appointment ({{booking_type}}): {{customer_name}}{{existing_booking}}',
         description: 'Preferred: {{preferred_time}}. Contact: {{phone}}. Existing: {{existing_booking}}',
         priority: 'high', dueInDays: '1'
       } },
-      { id: 'confirm', type: 'response', position: { x: 1820, y: 200 }, data: {
+      { id: 'confirm', type: 'response', position: { x: 1820, y: 320 }, data: {
         label: 'Confirm',
         template: 'Thanks — I have passed this to the team and someone will confirm shortly. We have you down for around {{preferred_time}}.'
       } }
@@ -389,8 +448,8 @@ const templates = [
       { id: 'e2', source: 'what', target: 'ask-name', sourceHandle: 'new' },
       { id: 'e3', source: 'what', target: 'ask-ref', sourceHandle: 'change' },
       { id: 'e4', source: 'what', target: 'ask-name', sourceHandle: 'other' },
-      { id: 'e5', source: 'ask-name', target: 'ask-when', sourceHandle: 'next' },
-      { id: 'e6', source: 'ask-name', target: 'ask-when', sourceHandle: 'invalid' },
+      { id: 'e5', source: 'ask-name', target: 'find-slots', sourceHandle: 'next' },
+      { id: 'e6', source: 'ask-name', target: 'find-slots', sourceHandle: 'invalid' },
       { id: 'e7', source: 'ask-when', target: 'ask-phone', sourceHandle: 'next' },
       { id: 'e8', source: 'ask-when', target: 'ask-phone', sourceHandle: 'invalid' },
       { id: 'e9', source: 'ask-phone', target: 'tag-booking', sourceHandle: 'next' },
@@ -398,7 +457,19 @@ const templates = [
       { id: 'e11', source: 'ask-ref', target: 'tag-booking', sourceHandle: 'next' },
       { id: 'e12', source: 'ask-ref', target: 'tag-booking', sourceHandle: 'invalid' },
       { id: 'e13', source: 'tag-booking', target: 'booking-task' },
-      { id: 'e14', source: 'booking-task', target: 'confirm' }
+      { id: 'e14', source: 'booking-task', target: 'confirm' },
+      { id: 'e15', source: 'find-slots', target: 'ask-email', sourceHandle: 'success' },
+      { id: 'e16', source: 'find-slots', target: 'ask-when', sourceHandle: 'error' },
+      { id: 'e17', source: 'ask-email', target: 'book-slot', sourceHandle: 'next' },
+      // No usable email after two tries: still book. Google needs none, and
+      // Calendly answers with its booking page, which asks for one.
+      { id: 'e18', source: 'ask-email', target: 'book-slot', sourceHandle: 'invalid' },
+      { id: 'e19', source: 'book-slot', target: 'is-link', sourceHandle: 'success' },
+      { id: 'e20', source: 'book-slot', target: 'book-failed', sourceHandle: 'error' },
+      { id: 'e21', source: 'is-link', target: 'reply-link', sourceHandle: 'true' },
+      { id: 'e22', source: 'is-link', target: 'tag-booked', sourceHandle: 'false' },
+      { id: 'e23', source: 'tag-booked', target: 'reply-booked' },
+      { id: 'e24', source: 'book-failed', target: 'ask-phone' }
     ]
   },
 
@@ -408,6 +479,7 @@ const templates = [
     industry: 'SaaS and subscriptions',
     summary: 'Only answers account questions for someone whose identity your own application has vouched for.',
     requires: 'Identity verification set up (People → Identity), and an API returning the account for a verified user.',
+    trigger: { type: 'intent', description: 'a question about my account' },
     nodes: [
       { id: 'persona', type: 'persona', position: { x: 40, y: 40 }, data: {
         label: 'Persona',
@@ -463,6 +535,7 @@ const templates = [
     industry: 'SaaS and subscriptions',
     summary: 'Finds out why they are leaving, routes a fixable reason to the team the same day, and never makes cancelling feel like a trap.',
     requires: 'Nothing. The save attempt lands in Tasks with the reason attached.',
+    trigger: { type: 'intent', description: 'cancel subscription' },
     nodes: [
       { id: 'persona', type: 'persona', position: { x: 40, y: 40 }, data: {
         label: 'Persona',
@@ -525,6 +598,7 @@ const templates = [
     industry: 'Any',
     summary: 'Hears the complaint in full, marks it urgent, gets a person if anyone is there — and if not, promises a reply and emails the team so it is not waiting for someone to open the dashboard.',
     requires: 'Change the address on the "Email the team" node. Sending needs SMTP configured; without it the task is still raised.',
+    trigger: { type: 'intent', description: 'make a complaint' },
     nodes: [
       { id: 'persona', type: 'persona', position: { x: 40, y: 40 }, data: {
         label: 'Persona',
@@ -592,8 +666,8 @@ const templates = [
 
 /** The list for the picker: everything except the graphs themselves. */
 function summaries() {
-  return templates.map(({ id, name, industry, summary, requires, nodes }) => ({
-    id, name, industry, summary, requires, nodeCount: nodes.length
+  return templates.map(({ id, name, industry, summary, requires, trigger, nodes }) => ({
+    id, name, industry, summary, requires, trigger, nodeCount: nodes.length
   }));
 }
 

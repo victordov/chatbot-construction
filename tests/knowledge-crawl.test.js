@@ -17,6 +17,7 @@ const dns = require('dns');
 const User = require('../models/user');
 const Company = require('../models/company');
 const KnowledgeChunk = require('../models/knowledge-chunk');
+const KnowledgeCrawl = require('../models/knowledge-crawl');
 const safeHttp = require('../services/safe-http');
 const crawler = require('../services/knowledge-crawler');
 
@@ -112,21 +113,45 @@ describe('crawling a site', () => {
     await Promise.all([
       User.deleteMany({ email: /@crawl\.test$/ }),
       Company.deleteOne({ _id: company._id }),
-      KnowledgeChunk.deleteMany({ company: company._id })
+      KnowledgeChunk.deleteMany({ company: company._id }),
+      KnowledgeCrawl.deleteMany({ company: company._id })
     ]);
   });
 
   beforeEach(async () => {
     await KnowledgeChunk.deleteMany({ company: company._id });
+    await KnowledgeCrawl.deleteMany({ company: company._id });
     requested.length = 0;
     withSitemap = true;
     version = 1;
   });
 
-  const crawl = body => request(app)
-    .post('/api/knowledge/crawl')
-    .set('x-auth-token', adminToken)
-    .send(body);
+  /**
+   * Start a crawl and wait for it, the way the dashboard does: the POST
+   * answers 202 with a job id and the job is polled until it finishes. A
+   * refusal (a bad or private address) comes straight back from the POST.
+   */
+  const crawl = async body => {
+    const started = await request(app)
+      .post('/api/knowledge/crawl')
+      .set('x-auth-token', adminToken)
+      .send(body);
+
+    if (started.status !== 202) {
+      return started;
+    }
+
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      const job = await request(app)
+        .get(`/api/knowledge/crawl/${started.body.jobId}`)
+        .set('x-auth-token', adminToken);
+      if (['done', 'failed'].includes(job.body.status)) {
+        return job;
+      }
+      await new Promise(resolve => setTimeout(resolve, 25));
+    }
+    throw new Error('The crawl did not finish');
+  };
 
   test('reads the sitemap and the links, on this site only, HTML only', async () => {
     const response = await crawl({ url: `${base}/` });

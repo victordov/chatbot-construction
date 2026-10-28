@@ -1,6 +1,7 @@
 const { OpenAI } = require('openai');
 const { getResponseTemplateService } = require('./responseTemplates');
-const { PromptEngineeringService, wrapKnowledge } = require('./promptEngineering');
+const { PromptEngineeringService, wrapKnowledge, NO_ANSWER_MARKER } = require('./promptEngineering');
+const { fillPlaceholders } = require('./visitor-notices');
 const { getVectorStore } = require('./vector-store');
 const { logger } = require('./logging');
 const { openaiClientOptions } = require('../config/env');
@@ -171,6 +172,53 @@ async function isOnTopic(message, openaiClient = openai, scope = null) {
 const MAX_CITATIONS = 3;
 
 /**
+ * The no-answer marker, however the model chose to space or bracket it
+ * ("[[NO_ANSWER]]", "[NO ANSWER]"). Built from the constant so the two cannot
+ * drift apart; the word inside is letters and an underscore only.
+ */
+const NO_ANSWER_SOURCE = `\\[{1,2}\\s*${NO_ANSWER_MARKER.replace(/[[\]]/g, '').replace(/_/g, '[ _]')}\\s*\\]{1,2}`;
+const NO_ANSWER_TEST = new RegExp(NO_ANSWER_SOURCE, 'i');
+const NO_ANSWER_ALL = new RegExp(NO_ANSWER_SOURCE, 'gi');
+
+/** Words that make a message a greeting, and the words allowed beside them. */
+const GREETINGS = new Set([
+  'hi', 'hii', 'hello', 'hey', 'heya', 'hiya', 'howdy', 'greetings', 'yo', 'morning', 'afternoon', 'evening'
+]);
+const GREETING_FILLER = new Set([
+  'there', 'good', 'all', 'everyone', 'everybody', 'team', 'folks', 'again', 'guys', 'and', 'oh'
+]);
+/** Past this many words a message is saying something besides hello. */
+const MAX_GREETING_WORDS = 4;
+
+/**
+ * "I don't have that information", in the forms a model says it.
+ *
+ * Only consulted when retrieval found nothing to put in front of the model,
+ * because then a sentence like this is the model telling the truth about an
+ * empty knowledge base rather than hedging part of a grounded answer.
+ */
+const SAYS_IT_DOES_NOT_KNOW = /\b(i (?:do not|don't|dont) (?:have|know)|i'?m not sure|i am not sure|i (?:could not|couldn't|can'?t|cannot) find|i (?:have|got) no information|there is no information|no information (?:about|on|regarding)|not (?:something|information) i have|i'?m (?:unable|not able) to (?:answer|help with|find))\b/i;
+
+/**
+ * Take the no-answer marker out of a reply.
+ *
+ * @returns {{text: string, marked: boolean}}
+ */
+function stripNoAnswerMarker(text) {
+  if (typeof text !== 'string' || !NO_ANSWER_TEST.test(text)) {
+    return { text, marked: false };
+  }
+
+  const cleaned = text
+    .replace(NO_ANSWER_ALL, ' ')
+    .replace(/^[\s:.-]+/, '')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim();
+
+  return { text: cleaned, marked: true };
+}
+
+/**
  * The sources behind a set of retrieved chunks, best first, one per source.
  *
  * `url` is only ever an http(s) address the source was fetched from; pasted
@@ -265,15 +313,25 @@ class AIService {
    * @param {Array} messageHistory - Array of previous messages for context
    * @param {object} [options] `toolSession` from services/assistant-tools.js,
    *        when the model may call the tenant's actions this turn
-   * @returns {Promise<string>} - The AI-generated response
+   * @returns {Promise<string|null>} the reply, or null when the model could
+   *          not be reached - see `lastFailed`
    */
   async generateResponse(message, messageHistory = [], options = {}) {
     // How this reply was produced and what it drew on, for the caller to read
     // afterwards (`services/reply.js` turns it into citations). Kept on the
     // instance rather than in the return value so every existing caller that
     // expects a plain string keeps working.
+    //
+    // `lastFailed`: the model call threw, and there is no reply at all.
+    // `lastUnanswered`: there is a reply, and it says the assistant does not
+    // know. The caller decides what the visitor sees in both cases; this
+    // service no longer writes an apology of its own, because "please try
+    // again later" was a dead end for somebody who needed an answer now.
     this.lastPath = 'assistant';
     this.lastSources = [];
+    this.lastFailed = false;
+    this.lastUnanswered = false;
+    this.lastRetrieved = 0;
 
     try {
       // Only enforced when the tenant configured a scope; otherwise every
@@ -283,24 +341,87 @@ class AIService {
       if (!onTopic) {
         const offTopic = await this.templateService.getByRole(this.companyId, 'offTopic');
         this.lastPath = offTopic ? 'canned' : 'fallback';
-        return offTopic ||
-          'That is outside what I can help with here. Would you like me to pass you to a colleague?';
+        return offTopic
+          ? await this.personalise(offTopic, options)
+          : 'That is outside what I can help with here. Would you like me to pass you to a colleague?';
       }
 
       const templateResponse = await this.checkForTemplateMatch(message);
       if (templateResponse) {
         this.lastPath = 'canned';
-        return templateResponse;
+        return await this.personalise(templateResponse, options);
       }
 
-      return await this.generateEngineeredResponse(message, messageHistory, options);
+      const raw = await this.generateEngineeredResponse(message, messageHistory, options);
+      const { text, marked } = stripNoAnswerMarker(raw);
+
+      // Either the model said so in the way it was asked to, or there was
+      // nothing in the knowledge base to answer from and it said so in words.
+      this.lastUnanswered = marked ||
+        (this.lastRetrieved === 0 && typeof text === 'string' && SAYS_IT_DOES_NOT_KNOW.test(text));
+
+      if (typeof text !== 'string' || !text.trim()) {
+        if (marked) {
+          // The marker and nothing after it: the model meant "I don't know"
+          // and forgot to say so.
+          return 'I do not have that information.';
+        }
+        // An empty completion is no reply, and an empty bubble is worse than
+        // handing the question on.
+        this.lastFailed = true;
+        return null;
+      }
+
+      return text;
     } catch (error) {
       logger.error('Error generating AI response:', { error });
-      // The apology cites nothing, whatever was retrieved before the failure.
+      // No reply, and it cites nothing, whatever was retrieved before the
+      // failure.
       this.lastPath = 'fallback';
       this.lastSources = [];
-      return 'I\'m sorry, I encountered an error processing your request. Please try again later.';
+      this.lastFailed = true;
+      this.lastUnanswered = false;
+      return null;
     }
+  }
+
+  /**
+   * Fill `{name}` and `{company}` in a canned reply on its way out.
+   *
+   * The visitor's name comes from the caller - `options.visitorName`, or the
+   * name on `options.conversation` - because this service is not told who is
+   * asking otherwise; without one the placeholder is dropped cleanly. The
+   * company's name is looked up once per instance.
+   */
+  async personalise(text, options = {}) {
+    if (typeof text !== 'string' || !/\{(name|company)\}/i.test(text)) {
+      return text;
+    }
+
+    const metadata = options.conversation && options.conversation.metadata;
+    const fromConversation = metadata
+      ? (typeof metadata.get === 'function' ? metadata.get('name') : metadata.name)
+      : null;
+
+    if (this.companyName === undefined) {
+      this.companyName = options.companyName || null;
+      if (!this.companyName && this.companyId) {
+        try {
+          // Required here: the model requires nothing back, but this file is
+          // loaded by scripts that never touch the database.
+          const Company = require('../models/company');
+          const company = await Company.findById(this.companyId).select('name').lean();
+          this.companyName = company ? company.name : null;
+        } catch (error) {
+          logger.warn('Could not read the company name for a canned reply', { error: error.message });
+        }
+      }
+    }
+
+    return fillPlaceholders(text, {
+      name: options.visitorName || fromConversation || '',
+      company: this.companyName || ''
+    });
   }
 
   /**
@@ -413,6 +534,9 @@ class AIService {
       // a source the model was not shown.
       const used = (results || []).filter(result => String(result.content || '').trim());
       this.lastSources = citationsFrom(used);
+      // Whether the model had anything of the tenant's to answer from, which
+      // is what decides whether "I don't know" is a gap in the material.
+      this.lastRetrieved = used.length;
 
       return used
         .map(result => String(result.content).trim())
@@ -430,17 +554,31 @@ class AIService {
   }
 
   /**
-   * Check if the message is a greeting
-   * @param {string} message - The lowercase message
-   * @returns {boolean} - Whether the message is a greeting
+   * Whether a message is only a greeting.
+   *
+   * This used to look for "hi" anywhere in the text, so "this", "which" and
+   * "shipping" were greetings, and a tenant with a greeting template had it
+   * sent in reply to "which shipping options do you have?". A greeting now has
+   * to be short and made of nothing but greeting words: "hi", "hello there",
+   * "good morning all". Anything with content in it goes to the model, which
+   * can say hello and answer at the same time.
+   *
+   * @param {string} message
+   * @returns {boolean}
    */
   isGreeting(message) {
-    const greetingPatterns = [
-      'hello', 'hi', 'hey', 'greetings', 'good morning',
-      'good afternoon', 'good evening', 'howdy'
-    ];
+    const words = String(message || '')
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}\s]+/gu, ' ')
+      .split(/\s+/)
+      .filter(Boolean);
 
-    return greetingPatterns.some(pattern => message.includes(pattern));
+    if (words.length === 0 || words.length > MAX_GREETING_WORDS) {
+      return false;
+    }
+
+    return words.some(word => GREETINGS.has(word)) &&
+      words.every(word => GREETINGS.has(word) || GREETING_FILLER.has(word));
   }
 
   /**
@@ -448,9 +586,12 @@ class AIService {
    * This is specifically for operator suggestions and not direct responses to users
    * @param {string} userMessage - The user's message
    * @param {Array} messageHistory - Array of previous messages for context
-   * @returns {Promise<string>} - The AI-generated suggestion for the operator
+   * @returns {Promise<string|null>} the suggestion, or null when none could
+   *          be drafted (`lastFailed` is then true)
    */
   async generateOperatorSuggestion(userMessage, messageHistory = []) {
+    this.lastFailed = false;
+
     try {
       const onTopic = await isOnTopic(userMessage, this.openai, this.scope);
 
@@ -516,7 +657,11 @@ Include all relevant information that might help the user, as the operator can e
       return response.choices[0].message.content;
     } catch (error) {
       logger.error('Error generating operator suggestion:', { error });
-      return 'I encountered an error generating a suggestion. Please respond to the user directly.';
+      // No text at all. An error sentence came back here before, and the
+      // dashboard rendered it as a draft with a "Use" button - one click
+      // from being sent to the customer.
+      this.lastFailed = true;
+      return null;
     }
   }
 }
@@ -547,3 +692,4 @@ module.exports = AIService;
 module.exports.buildClient = buildClient;
 module.exports.getChatGPTResponse = getChatGPTResponse;
 module.exports.citationsFrom = citationsFrom;
+module.exports.stripNoAnswerMarker = stripNoAnswerMarker;

@@ -5,9 +5,14 @@ const MessageSchema = new mongoose.Schema({
     type: String,
     required: true
   },
+  /**
+   * `system` lines are transcript events for operators ("asked for a person",
+   * "handed back to the bot"). They are never sent to the visitor and never
+   * enter the model's context.
+   */
   sender: {
     type: String,
-    enum: ['user', 'bot', 'operator'],
+    enum: ['user', 'bot', 'operator', 'system'],
     required: true
   },
   messageId: {
@@ -56,6 +61,38 @@ const MessageSchema = new mongoose.Schema({
     type: [{ _id: false, title: String, url: String }],
     default: undefined
   },
+  /**
+   * How a bot message was produced. Kept on the message so the transcript,
+   * reports and the unanswered-questions list can tell a grounded answer from
+   * a fallback without re-running anything.
+   */
+  path: {
+    type: String,
+    enum: ['workflow', 'canned', 'assistant', 'fallback', 'handoff', 'system']
+  },
+  /**
+   * The bot could not answer this: it said it did not know, fell back after an
+   * error, or handed over for lack of an answer. What the unanswered-questions
+   * list is built from.
+   */
+  unanswered: {
+    type: Boolean
+  },
+  /** The visitor's thumbs up or down on a bot answer. */
+  feedback: {
+    rating: { type: String, enum: ['up', 'down'] },
+    at: { type: Date }
+  },
+  /**
+   * Set when somebody fixed this answer from the dashboard ("Teach the bot"),
+   * so the transcript can show it was dealt with and the list can drop it.
+   */
+  correction: {
+    kind: { type: String, enum: ['knowledge', 'canned'] },
+    refId: { type: String },
+    at: { type: Date },
+    by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
+  },
   timestamp: {
     type: Date,
     default: Date.now
@@ -84,8 +121,23 @@ const ConversationSchema = new mongoose.Schema({
    */
   channel: {
     type: String,
-    enum: ['chat', 'email'],
+    enum: ['chat', 'email', 'whatsapp', 'messenger', 'instagram'],
     default: 'chat'
+  },
+  /**
+   * Who this conversation is with on a messaging app (WhatsApp, Messenger,
+   * Instagram), and which of the tenant's accounts they wrote to.
+   *
+   * `userId` is the provider's id for the customer - the WhatsApp id (their
+   * number), or the Page- or Instagram-scoped id - and is where every reply
+   * is sent. `lastInboundAt` is when they last wrote: the providers only
+   * allow a free reply within 24 hours of it (services/channels).
+   */
+  external: {
+    provider: { type: String, enum: ['whatsapp', 'messenger', 'instagram'] },
+    accountId: { type: mongoose.Schema.Types.ObjectId, ref: 'ChannelAccount' },
+    userId: { type: String },
+    lastInboundAt: { type: Date }
   },
   /**
    * Threading state for email conversations.
@@ -190,6 +242,60 @@ const ConversationSchema = new mongoose.Schema({
    */
   awaitingOperatorSince: {
     type: Date
+  },
+  /**
+   * Why this conversation was handed to a person, and when. Unlike
+   * `awaitingOperatorSince` it is not cleared when somebody joins, so the
+   * operator can see why it reached them and reports can count handovers.
+   *
+   * - visitor_request: the visitor pressed "talk to a person" or asked for one
+   * - bot_unanswered: the bot could not answer
+   * - model_error: the model failed and the bot could not reply at all
+   * - quota: the plan's AI replies ran out
+   * - workflow: a workflow handoff step
+   * - offline_message: left a message while nobody could answer
+   */
+  handoff: {
+    requestedAt: { type: Date },
+    reason: {
+      type: String,
+      enum: ['visitor_request', 'bot_unanswered', 'model_error', 'quota', 'workflow', 'offline_message']
+    },
+    summary: { type: String },
+    /** When the team was alerted that this visitor had waited too long. */
+    escalatedAt: { type: Date }
+  },
+  /**
+   * Whether a person ever took part. `hasOperator`, `operatorId` and
+   * `operatorName` are cleared when a chat ends, so they cannot answer
+   * "did the bot handle this alone?" afterwards; these can.
+   */
+  operatorEverJoined: {
+    type: Boolean,
+    default: false
+  },
+  firstOperatorJoinedAt: {
+    type: Date
+  },
+  firstOperatorReplyAt: {
+    type: Date
+  },
+  /** What the operator recorded when closing it. */
+  outcome: {
+    status: { type: String, enum: ['resolved', 'follow_up', 'unresolved', 'spam'] },
+    note: { type: String, trim: true, maxlength: 500 },
+    by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    at: { type: Date }
+  },
+  /**
+   * The visitor asked to be answered by email, or left a message while nobody
+   * was free. Operator replies to a visitor who is no longer connected go to
+   * this address.
+   */
+  followUp: {
+    email: { type: String, lowercase: true, trim: true },
+    requestedAt: { type: Date },
+    lastSentAt: { type: Date }
   },
   /**
    * Where the published workflow got to.
@@ -353,6 +459,11 @@ ConversationSchema.methods.anonymize = async function() {
     this.email.lastMessageId = undefined;
   }
 
+  // On WhatsApp the customer's id is their phone number.
+  if (this.external && this.external.userId) {
+    this.external.userId = undefined;
+  }
+
   if (this.metadata) {
     // Iterate over a copy: deleting from a Map while iterating it is defined
     // behaviour in JavaScript, but mongoose's change tracking is happier when
@@ -395,6 +506,18 @@ ConversationSchema.methods.anonymize = async function() {
     this.rating.comment = undefined;
   }
 
+  // The follow-up address is the visitor's own; the handover summary and the
+  // closing note are written about them.
+  if (this.followUp) {
+    this.followUp.email = undefined;
+  }
+  if (this.handoff) {
+    this.handoff.summary = undefined;
+  }
+  if (this.outcome) {
+    this.outcome.note = undefined;
+  }
+
   this.anonymizedAt = new Date();
   return this.save();
 };
@@ -413,8 +536,31 @@ ConversationSchema.index({ contact: 1, startedAt: -1 });
 // have seen on the thread.
 ConversationSchema.index({ 'email.messageIds': 1 });
 ConversationSchema.index({ company: 1, channel: 1, status: 1 });
+// A messaging-app customer's conversations: the open one to add to, and the
+// message ids already received from them.
+ConversationSchema.index(
+  { company: 1, 'external.provider': 1, 'external.userId': 1, status: 1 },
+  { partialFilterExpression: { 'external.userId': { $type: 'string' } } }
+);
+// At most one open conversation per messaging-app customer. Two instances
+// receiving that customer's messages at the same moment both try to start
+// one; the database lets one win and the other joins it.
+ConversationSchema.index(
+  { company: 1, 'external.provider': 1, 'external.userId': 1 },
+  {
+    unique: true,
+    name: 'one_open_conversation_per_app_customer',
+    partialFilterExpression: { 'external.userId': { $type: 'string' }, status: 'active' }
+  }
+);
 // Filtering the queue by tag.
 ConversationSchema.index({ company: 1, tags: 1, lastActivity: -1 });
+// The unanswered-questions list: recent conversations with a bot message the
+// bot could not answer.
+ConversationSchema.index(
+  { company: 1, 'messages.unanswered': 1, lastActivity: -1 },
+  { partialFilterExpression: { 'messages.unanswered': true } }
+);
 // Per-operator load: how many conversations someone currently holds.
 ConversationSchema.index({ company: 1, operatorId: 1, status: 1 });
 // CSAT reporting: rated conversations for a company over a period.

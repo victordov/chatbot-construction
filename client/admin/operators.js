@@ -1,50 +1,58 @@
 /**
  * Team: the people who answer conversations.
+ *
+ * People join by invitation: an email with a link where they choose their own
+ * password, so nobody sends one over chat. Setting a password for somebody is
+ * still possible, as the second way. Deactivating someone signs them out
+ * everywhere and hands their open chats back to the queue; removing someone
+ * keeps the history they are part of and takes their name off it.
  */
 
 import * as bootstrap from 'bootstrap';
 import { registerSection } from './nav.js';
-import { authToken, errorMessage, escapeHtml, getStoredUser, logger, parseJsonResponse, showNotification, showToast } from './utils.js';
+import { state } from './state.js';
+import {
+  api, confirmDialog, errorMessage, escapeHtml, formatRelativeTime, getStoredUser, logger,
+  showNotification, showToast
+} from './utils.js';
 
-export function loadOperators(token) {
-  return fetch('/api/admin/operators', {
-    method: 'GET',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-auth-token': token
-    }
-  })
-    .then(response => {
-      if (!response.ok) {
-        throw new Error('Failed to load operators');
-      }
-      return response.json();
-    })
+const ROLE_WORDS = { operator: 'Operator', company_admin: 'Admin', superadmin: 'Superadmin' };
+
+let team = [];
+let companies = null;
+
+function currentUser() {
+  return state.currentUser || getStoredUser() || {};
+}
+
+function isSuperadmin() {
+  return currentUser().role === 'superadmin';
+}
+
+/**
+ * Operators for task assignment, in the task form and filter. Used by the
+ * Tasks screen, which every operator can open.
+ */
+export function loadOperators() {
+  return api('/api/admin/operators')
     .then(data => {
-      // Populate assignee dropdowns
       const assigneeSelect = document.getElementById('task-assignee-input');
       const assigneeFilter = document.getElementById('task-assignee-filter');
 
-      // Clear existing options (except the first one)
-      while (assigneeSelect.options.length > 1) {
-        assigneeSelect.remove(1);
-      }
-
-      while (assigneeFilter.options.length > 1) {
-        assigneeFilter.remove(1);
-      }
-
-      // Add operators to dropdowns
-      data.operators.forEach(operator => {
-        const option1 = document.createElement('option');
-        option1.value = operator._id;
-        option1.textContent = operator.username;
-        assigneeSelect.appendChild(option1);
-
-        const option2 = document.createElement('option');
-        option2.value = operator._id;
-        option2.textContent = operator.username;
-        assigneeFilter.appendChild(option2);
+      [assigneeSelect, assigneeFilter].forEach(select => {
+        if (!select) {
+          return;
+        }
+        // Clear existing options (except the first one)
+        while (select.options.length > 1) {
+          select.remove(1);
+        }
+        data.operators.forEach(operator => {
+          const option = document.createElement('option');
+          option.value = operator._id;
+          option.textContent = operator.displayName || operator.username;
+          select.appendChild(option);
+        });
       });
 
       return data.operators;
@@ -56,444 +64,356 @@ export function loadOperators(token) {
     });
 }
 
-// Load all operators (including inactive)
-function loadAllOperators() {
-  const token = authToken();
+// ------------------------------------------------------------------ list
 
-  fetch('/api/admin/all-operators', {
-    method: 'GET',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-auth-token': token
-    }
-  })
-    .then(parseJsonResponse)
-    .then(data => {
-      const tableBody = document.getElementById('operators-table-body');
-      tableBody.innerHTML = '';
-
-      data.operators.forEach(operator => {
-        const row = document.createElement('tr');
-
-        // Format date
-        const createdDate = new Date(operator.createdAt).toLocaleDateString();
-        const lastLogin = operator.lastLogin
-          ? new Date(operator.lastLogin).toLocaleDateString()
-          : 'Never';
-
-        // Every one of these is typed by somebody: escaped, or it is script
-        // running in whoever opens the operators tab.
-        row.innerHTML = `
-          <td>${escapeHtml(operator.username)}</td>
-          <td>${escapeHtml(operator.displayName || '-')}</td>
-          <td>${escapeHtml(operator.name || '-')}</td>
-          <td>${escapeHtml(operator.email)}</td>
-          <td>
-            <span class="badge ${operator.isActive ? 'bg-success' : 'bg-danger'}">
-              ${operator.isActive ? 'Active' : 'Inactive'}
-            </span>
-          </td>
-          <td>${createdDate}</td>
-          <td>${lastLogin}</td>
-          <td>
-            <div class="btn-group">
-              <button class="btn btn-sm btn-primary edit-operator"
-                      data-id="${escapeHtml(operator._id)}">
-                Edit
-              </button>
-              <button class="btn btn-sm ${operator.isActive ? 'btn-warning' : 'btn-success'} toggle-status"
-                      data-id="${escapeHtml(operator._id)}" 
-                      data-status="${operator.isActive}">
-                ${operator.isActive ? 'Deactivate' : 'Activate'}
-              </button>
-            </div>
-          </td>
-        `;
-
-        tableBody.appendChild(row);
-      });
-
-      // Add event listeners to status toggle buttons
-      document.querySelectorAll('.toggle-status').forEach(button => {
-        button.addEventListener('click', toggleOperatorStatus);
-      });
-
-      // Add event listeners to edit buttons
-      document.querySelectorAll('.edit-operator').forEach(button => {
-        button.addEventListener('click', openEditOperatorModal);
-      });
-    })
-    .catch(error => {
-      console.error('Error loading operators:', error);
-      showToast(errorMessage(error, 'Failed to load operators'), 'danger');
-    });
+function statusBadge(person) {
+  if (person.invitePending) {
+    return person.inviteExpired
+      ? '<span class="badge bg-warning text-dark">Invitation expired</span>'
+      : `<span class="badge bg-info text-dark" title="Sent; the link works until ${escapeHtml(new Date(person.inviteExpires).toLocaleDateString())}">Invited</span>`;
+  }
+  return person.isActive
+    ? '<span class="badge bg-success">Active</span>'
+    : '<span class="badge bg-secondary">Deactivated</span>';
 }
 
-// Toggle operator active status
-function toggleOperatorStatus(event) {
-  const button = event.currentTarget;
-  const operatorId = button.dataset.id;
-  const currentStatus = button.dataset.status === 'true';
-  const newStatus = !currentStatus;
-  const token = authToken();
+/**
+ * What an admin may do to this row. A company admin manages operators; their
+ * fellow admins are peers, apart from an invitation nobody has accepted yet.
+ */
+function actionsFor(person) {
+  if (person.isSelf) {
+    return '<span class="small text-muted">You</span>';
+  }
+  const canManage = isSuperadmin() || person.role === 'operator';
+  const id = escapeHtml(person._id);
 
-  fetch(`/api/admin/operators/${operatorId}`, {
-    method: 'PATCH',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-auth-token': token
-    },
-    body: JSON.stringify({ isActive: newStatus })
-  })
-    .then(parseJsonResponse)
-    .then(data => {
-      if (data.success) {
-        showToast(`Operator ${newStatus ? 'activated' : 'deactivated'} successfully`, 'success');
-        loadAllOperators(); // Reload the operators list
-      } else {
-        showToast(data.error || 'Failed to update operator status', 'danger');
-      }
-    })
-    .catch(error => {
-      console.error('Error updating operator status:', error);
-      showToast(errorMessage(error, 'Failed to update operator status'), 'danger');
-    });
-}
-
-// Load companies for dropdowns
-function loadCompaniesForDropdown(selectElement, selectedCompanyId = null) {
-  const token = authToken();
-  const currentUser = getStoredUser() || {};
-
-  // Clear existing options (except the first one)
-  while (selectElement.options.length > 1) {
-    selectElement.remove(1);
+  if (person.invitePending) {
+    return `
+      <div class="btn-group btn-group-sm">
+        <button type="button" class="btn btn-outline-primary" data-action="resend" data-id="${id}">Resend</button>
+        <button type="button" class="btn btn-outline-danger" data-action="revoke" data-id="${id}">Withdraw</button>
+      </div>`;
   }
 
-  // If user is a company admin, they can only assign to their own company
-  if (currentUser.role === 'company_admin' && currentUser.company) {
-    const option = document.createElement('option');
-    option.value = currentUser.company.id;
-    option.textContent = currentUser.company.name;
-    option.selected = true;
-    selectElement.appendChild(option);
+  if (!canManage) {
+    return '<span class="small text-muted">Admin</span>';
+  }
 
-    // Disable the select element since there's only one option
-    selectElement.disabled = true;
+  return `
+    <div class="btn-group btn-group-sm">
+      <button type="button" class="btn btn-outline-primary" data-action="edit" data-id="${id}">Edit</button>
+      <button type="button" class="btn btn-outline-secondary" data-action="toggle" data-id="${id}">
+        ${person.isActive ? 'Deactivate' : 'Reactivate'}
+      </button>
+      <button type="button" class="btn btn-outline-danger" data-action="remove" data-id="${id}">Remove</button>
+    </div>`;
+}
+
+function renderTeam() {
+  const body = document.getElementById('operators-table-body');
+  const superadmin = isSuperadmin();
+
+  document.querySelectorAll('.operators-company-col').forEach(cell => cell.classList.toggle('d-none', !superadmin));
+
+  if (!team.length) {
+    body.innerHTML = `
+      <tr><td colspan="8" class="text-center py-5">
+        <div class="fw-semibold mb-1">Nobody else is here yet</div>
+        <div class="text-muted small mb-3">Invite the people who will answer conversations. They choose their own password.</div>
+        <button type="button" class="btn btn-primary btn-sm" data-action="invite">Invite teammate</button>
+      </td></tr>`;
     return;
   }
 
-  // For superadmins, load all companies
-  fetch('/api/companies', {
-    method: 'GET',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-auth-token': token
-    }
-  })
-    .then(parseJsonResponse)
-    .then(data => {
-      data.companies.forEach(company => {
-        const option = document.createElement('option');
-        option.value = company._id;
-        option.textContent = company.name;
-
-        // Select the company if it matches the selectedCompanyId
-        if (selectedCompanyId && company._id === selectedCompanyId) {
-          option.selected = true;
-        }
-
-        selectElement.appendChild(option);
-      });
-    })
-    .catch(error => {
-      console.error('Error loading companies:', error);
-      showToast(errorMessage(error, 'Failed to load companies'), 'danger');
-    });
+  body.innerHTML = team.map(person => `
+    <tr class="${person.isActive || person.invitePending ? '' : 'text-muted'}">
+      <td>
+        <div class="team-name">${escapeHtml(person.displayName || person.name || person.email)}</div>
+        <div class="team-sub">${escapeHtml(person.username)}</div>
+      </td>
+      <td>${escapeHtml(person.email)}</td>
+      <td>${escapeHtml(ROLE_WORDS[person.role] || person.role)}</td>
+      ${superadmin ? `<td>${escapeHtml(person.company ? person.company.name : '—')}</td>` : ''}
+      <td>${statusBadge(person)}</td>
+      <td>${person.role === 'operator' ? escapeHtml(person.maxConcurrentChats ?? 'Team setting') : '<span class="text-muted">—</span>'}</td>
+      <td class="small">${person.lastLogin ? escapeHtml(formatRelativeTime(person.lastLogin)) : '<span class="text-muted">Never</span>'}</td>
+      <td class="text-end">${actionsFor(person)}</td>
+    </tr>`).join('');
 }
 
-// Handle role selection changes
-function handleRoleChange(roleSelect, companySelect, companyContainer) {
-  const currentUser = getStoredUser() || {};
+async function loadTeam() {
+  try {
+    const { operators } = await api('/api/admin/all-operators');
+    team = operators;
+    renderTeam();
+  } catch (error) {
+    logger.error('Error loading the team:', error);
+    document.getElementById('operators-table-body').innerHTML =
+      `<tr><td colspan="8" class="text-danger text-center py-4">${escapeHtml(errorMessage(error, 'Could not load your team'))}</td></tr>`;
+  }
+}
 
-  // Hide superadmin option for non-superadmins
-  const superadminOption = roleSelect.querySelector('option[value="superadmin"]');
-  if (superadminOption) {
-    superadminOption.style.display = currentUser.role === 'superadmin' ? 'block' : 'none';
+const findPerson = id => team.find(person => String(person._id) === String(id));
+
+// ------------------------------------------------------------- companies
+
+/**
+ * Fill a company menu. A company admin has one company and the menu is
+ * fixed to it; a superadmin picks.
+ */
+async function fillCompanies(select, selectedId = null) {
+  const user = currentUser();
+  while (select.options.length > 1) {
+    select.remove(1);
   }
 
-  // Show/hide company selection based on role
-  roleSelect.addEventListener('change', function() {
-    const selectedRole = this.value;
+  if (user.role !== 'superadmin') {
+    if (user.company) {
+      const option = document.createElement('option');
+      option.value = user.company.id;
+      option.textContent = user.company.name;
+      option.selected = true;
+      select.appendChild(option);
+    }
+    select.disabled = true;
+    return;
+  }
 
-    if (selectedRole === 'superadmin') {
-      companyContainer.style.display = 'none';
-      companySelect.required = false;
+  try {
+    if (!companies) {
+      companies = (await api('/api/companies')).companies;
+    }
+    companies.forEach(company => {
+      const option = document.createElement('option');
+      option.value = company._id;
+      option.textContent = company.name;
+      option.selected = Boolean(selectedId && String(company._id) === String(selectedId));
+      select.appendChild(option);
+    });
+  } catch (error) {
+    showToast(errorMessage(error, 'Failed to load companies'), 'danger');
+  }
+}
+
+/** Where the company menu shows: for a superadmin, who has to choose. */
+function showCompanyChoice(container) {
+  if (container) {
+    container.classList.toggle('d-none', !isSuperadmin());
+  }
+}
+
+// -------------------------------------------------------------- invite
+
+/**
+ * An invitation that could not be emailed: show the link, once, to copy and
+ * send by hand.
+ */
+function showInviteLink(email, link) {
+  const panel = document.getElementById('invite-link-panel');
+  if (!link) {
+    panel.innerHTML = '';
+    return;
+  }
+  panel.innerHTML = `
+    <div class="alert alert-warning alert-dismissible">
+      <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Hide"></button>
+      <div class="fw-semibold mb-1">The invitation email could not be sent to ${escapeHtml(email)}.</div>
+      <div class="small mb-2">Send them this link yourself. It works once, for seven days.</div>
+      <code class="d-block p-2 bg-light text-dark rounded user-select-all text-break">${escapeHtml(link)}</code>
+    </div>`;
+}
+
+async function openInvite() {
+  document.getElementById('invite-operator-form').reset();
+  showCompanyChoice(document.getElementById('invite-operator-company-group'));
+  if (isSuperadmin()) {
+    await fillCompanies(document.getElementById('invite-operator-company'));
+  }
+  bootstrap.Modal.getOrCreateInstance(document.getElementById('inviteOperatorModal')).show();
+  setTimeout(() => document.getElementById('invite-operator-email').focus(), 300);
+}
+
+async function sendInvite() {
+  const button = document.getElementById('invite-operator-btn');
+  const email = document.getElementById('invite-operator-email').value.trim();
+  const name = document.getElementById('invite-operator-name').value.trim();
+  const role = document.getElementById('invite-operator-role').value;
+  const companyId = isSuperadmin() ? document.getElementById('invite-operator-company').value : undefined;
+
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    showToast('Enter a valid email address', 'warning');
+    return;
+  }
+  if (isSuperadmin() && !companyId) {
+    showToast('Choose the company to invite them to', 'warning');
+    return;
+  }
+
+  button.disabled = true;
+  try {
+    const result = await api('/api/admin/operators/invite', {
+      method: 'POST',
+      body: { email, name: name || undefined, role, companyId }
+    });
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('inviteOperatorModal')).hide();
+    showToast(result.inviteSent ? `Invitation sent to ${email}` : `${email} is on the team; send them the link below`, 'success');
+    showInviteLink(email, result.inviteLink);
+    loadTeam();
+  } catch (error) {
+    if (error.status === 402) {
+      showToast(`${errorMessage(error, 'No seats left on your plan')} Upgrade under Plan & billing, or invite them as an admin.`, 'warning', 10000);
     } else {
-      companyContainer.style.display = 'block';
-      companySelect.required = true;
+      showToast(errorMessage(error, 'Could not send the invitation'), 'danger');
     }
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function resendInvite(person) {
+  try {
+    const result = await api(`/api/admin/operators/${encodeURIComponent(person._id)}/resend-invite`, { method: 'POST' });
+    showToast(result.inviteSent ? `A new invitation is on its way to ${person.email}` : 'The email could not be sent; copy the link below', result.inviteSent ? 'success' : 'warning');
+    showInviteLink(person.email, result.inviteLink);
+    loadTeam();
+  } catch (error) {
+    showToast(errorMessage(error, 'Could not resend the invitation'), 'danger');
+  }
+}
+
+async function revokeInvite(person) {
+  const ok = await confirmDialog({
+    title: 'Withdraw this invitation?',
+    message: `The link sent to ${person.email} stops working. You can invite them again later.`,
+    confirmLabel: 'Withdraw',
+    danger: true
   });
-
-  // Initial setup based on current role
-  const selectedRole = roleSelect.value;
-  if (selectedRole === 'superadmin') {
-    companyContainer.style.display = 'none';
-    companySelect.required = false;
-  } else {
-    companyContainer.style.display = 'block';
-    companySelect.required = true;
+  if (!ok) {
+    return;
   }
-
-  // Company admins can only create operators
-  if (currentUser.role === 'company_admin') {
-    // Hide company_admin and superadmin options
-    Array.from(roleSelect.options).forEach(option => {
-      if (option.value !== 'operator') {
-        option.style.display = 'none';
-      }
-    });
-
-    // Set to operator and disable
-    roleSelect.value = 'operator';
-    roleSelect.disabled = true;
+  try {
+    await api(`/api/admin/operators/${encodeURIComponent(person._id)}/invite`, { method: 'DELETE' });
+    showToast('Invitation withdrawn', 'success');
+    loadTeam();
+  } catch (error) {
+    showToast(errorMessage(error, 'Could not withdraw the invitation'), 'danger');
   }
 }
 
-// Create new operator
-function setupOperatorForms() {
-  const createOperatorBtn = document.getElementById('create-operator-btn');
-  if (createOperatorBtn) {
-    createOperatorBtn.addEventListener('click', createOperator);
-  }
+// ---------------------------------------------------- set a password
 
-  // Setup role and company selection for create operator form
-  const roleSelect = document.getElementById('operator-role');
-  const companySelect = document.getElementById('operator-company');
-  const companyContainer = document.getElementById('company-selection-container');
-
-  if (roleSelect && companySelect && companyContainer) {
-    // Load companies for dropdown
-    loadCompaniesForDropdown(companySelect);
-
-    // Setup role change handler
-    handleRoleChange(roleSelect, companySelect, companyContainer);
-  }
-
-  // Setup role and company selection for edit operator form
-  const editRoleSelect = document.getElementById('edit-operator-role');
-  const editCompanySelect = document.getElementById('edit-operator-company');
-  const editCompanyContainer = document.getElementById('edit-company-selection-container');
-
-  if (editRoleSelect && editCompanySelect && editCompanyContainer) {
-    // Setup role change handler
-    handleRoleChange(editRoleSelect, editCompanySelect, editCompanyContainer);
-  }
-
-  const saveOperatorBtn = document.getElementById('save-operator-btn');
-  if (saveOperatorBtn) {
-    saveOperatorBtn.addEventListener('click', editOperator);
-  }
-
-  const confirmResetPasswordBtn = document.getElementById('confirm-reset-password-btn');
-  if (confirmResetPasswordBtn) {
-    confirmResetPasswordBtn.addEventListener('click', resetPassword);
-  }
+async function openCreate() {
+  document.getElementById('create-operator-form').reset();
+  const role = document.getElementById('operator-role');
+  role.value = 'operator';
+  showCompanyChoice(document.getElementById('company-selection-container'));
+  await fillCompanies(document.getElementById('operator-company'));
+  bootstrap.Modal.getOrCreateInstance(document.getElementById('createOperatorModal')).show();
 }
 
-function createOperator() {
-  const username = document.getElementById('operator-username').value;
-  const displayName = document.getElementById('operator-display-name').value;
-  const name = document.getElementById('operator-name').value;
-  const email = document.getElementById('operator-email').value;
+async function createOperator() {
+  const name = document.getElementById('operator-name').value.trim();
+  const email = document.getElementById('operator-email').value.trim();
   const role = document.getElementById('operator-role').value;
   const companyId = document.getElementById('operator-company').value;
   const password = document.getElementById('operator-password').value;
   const confirmPassword = document.getElementById('operator-confirm-password').value;
-  const token = authToken();
 
-  if (!username || !email || !password || !confirmPassword) {
-    showToast('Please fill in all required fields', 'warning');
+  if (!email || !password || !confirmPassword) {
+    showToast('Fill in the email and both password fields', 'warning');
     return;
   }
-
+  if (password.length < 8) {
+    showToast('Use at least 8 characters for the password', 'warning');
+    return;
+  }
   if (password !== confirmPassword) {
-    showToast('Passwords do not match', 'warning');
+    showToast('The two passwords do not match', 'warning');
+    return;
+  }
+  if (!companyId) {
+    showToast('Choose a company', 'warning');
     return;
   }
 
-  // Validate company selection for non-superadmin roles
-  if (role !== 'superadmin' && !companyId) {
-    showToast('Please select a company', 'warning');
-    return;
+  try {
+    await api('/api/admin/operators', {
+      method: 'POST',
+      body: { displayName: name || undefined, email, role, companyId, password, confirmPassword }
+    });
+    showToast(`${name || email} can now sign in with that password`, 'success');
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('createOperatorModal')).hide();
+    loadTeam();
+  } catch (error) {
+    showToast(errorMessage(error, 'Could not add them'), error.status === 402 ? 'warning' : 'danger');
   }
-
-  fetch('/api/admin/operators', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-auth-token': token
-    },
-    body: JSON.stringify({
-      username,
-      displayName,
-      name,
-      email,
-      role,
-      companyId: role !== 'superadmin' ? companyId : null,
-      password,
-      confirmPassword
-    })
-  })
-    .then(parseJsonResponse)
-    .then(data => {
-      if (data.success) {
-        showToast('Operator created successfully', 'success');
-
-        // Clear form and close modal
-        document.getElementById('create-operator-form').reset();
-        bootstrap.Modal.getInstance(document.getElementById('createOperatorModal')).hide();
-
-        // Reload operators list
-        loadAllOperators();
-      } else {
-        showToast(data.error || 'Failed to create operator', 'danger');
-      }
-    })
-    .catch(error => {
-      console.error('Error creating operator:', error);
-      showToast(errorMessage(error, 'Failed to create operator'), 'danger');
-    });
 }
 
-// Open edit operator modal
-function openEditOperatorModal(event) {
-  const operatorId = event.currentTarget.dataset.id;
-  const token = authToken();
+// ------------------------------------------------------------------ edit
 
-  // Fetch operator details
-  fetch('/api/admin/all-operators', {
-    method: 'GET',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-auth-token': token
-    }
-  })
-    .then(parseJsonResponse)
-    .then(data => {
-      const operator = data.operators.find(op => op._id === operatorId);
+async function openEdit(person) {
+  document.getElementById('edit-operator-id').value = person._id;
+  document.getElementById('edit-operator-display-name').value = person.displayName || person.name || '';
+  document.getElementById('edit-operator-email').value = person.email;
+  document.getElementById('edit-operator-role').value = person.role === 'company_admin' ? 'company_admin' : 'operator';
+  document.getElementById('edit-operator-limit').value = person.maxConcurrentChats ?? '';
+  document.getElementById('reset-password-operator-id').value = person._id;
 
-      if (!operator) {
-        showToast('Operator not found', 'danger');
-        return;
-      }
+  showCompanyChoice(document.getElementById('edit-company-selection-container'));
+  await fillCompanies(document.getElementById('edit-operator-company'), person.company && person.company.id);
 
-      // Fill the form with operator details
-      document.getElementById('edit-operator-id').value = operator._id;
-      document.getElementById('edit-operator-username').value = operator.username;
-      document.getElementById('edit-operator-display-name').value = operator.displayName || '';
-      document.getElementById('edit-operator-name').value = operator.name || '';
-      document.getElementById('edit-operator-email').value = operator.email;
-
-      // Set role if available
-      const roleSelect = document.getElementById('edit-operator-role');
-      if (roleSelect && operator.role) {
-        roleSelect.value = operator.role;
-
-        // Trigger change event to update company field visibility
-        const event = new Event('change');
-        roleSelect.dispatchEvent(event);
-      }
-
-      // Load companies and set selected company if available
-      const companySelect = document.getElementById('edit-operator-company');
-      if (companySelect && operator.company) {
-        loadCompaniesForDropdown(companySelect, operator.company.id);
-      } else if (companySelect) {
-        loadCompaniesForDropdown(companySelect);
-      }
-
-      // Store operator ID for reset password
-      document.getElementById('reset-password-operator-id').value = operator._id;
-
-      // Show the modal
-      const editModal = new bootstrap.Modal(document.getElementById('editOperatorModal'));
-      editModal.show();
-    })
-    .catch(error => {
-      console.error('Error fetching operator details:', error);
-      showToast(errorMessage(error, 'Failed to fetch operator details'), 'danger');
-    });
+  bootstrap.Modal.getOrCreateInstance(document.getElementById('editOperatorModal')).show();
 }
 
-function editOperator() {
-  const operatorId = document.getElementById('edit-operator-id').value;
-  const username = document.getElementById('edit-operator-username').value;
-  const displayName = document.getElementById('edit-operator-display-name').value;
-  const name = document.getElementById('edit-operator-name').value;
-  const email = document.getElementById('edit-operator-email').value;
+async function saveEdit() {
+  const id = document.getElementById('edit-operator-id').value;
+  const person = findPerson(id);
+  const displayName = document.getElementById('edit-operator-display-name').value.trim();
+  const email = document.getElementById('edit-operator-email').value.trim();
   const role = document.getElementById('edit-operator-role').value;
+  const limit = document.getElementById('edit-operator-limit').value.trim();
   const companyId = document.getElementById('edit-operator-company').value;
-  const token = authToken();
-  const currentUser = getStoredUser() || {};
 
-  if (!username || !email) {
-    showToast('Username and email are required', 'warning');
+  if (!email) {
+    showToast('An email address is required', 'warning');
     return;
   }
 
-  // Validate company selection for non-superadmin roles
-  if (role !== 'superadmin' && !companyId) {
-    showToast('Please select a company', 'warning');
-    return;
-  }
-
-  // Company admins can only create operators
-  if (currentUser.role === 'company_admin' && role !== 'operator') {
-    showToast('Company admins can only create operators', 'warning');
-    return;
-  }
-
-  fetch(`/api/admin/operators/${operatorId}`, {
-    method: 'PUT',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-auth-token': token
-    },
-    body: JSON.stringify({
-      username,
-      displayName,
-      name,
-      email,
-      role,
-      companyId: role !== 'superadmin' ? companyId : null
-    })
-  })
-    .then(parseJsonResponse)
-    .then(data => {
-      if (data.success) {
-        showToast('Operator details updated successfully', 'success');
-
-        // Close the modal
-        bootstrap.Modal.getInstance(document.getElementById('editOperatorModal')).hide();
-
-        // Reload operators list
-        loadAllOperators();
-      } else {
-        showToast(data.error || 'Failed to update operator details', 'danger');
-      }
-    })
-    .catch(error => {
-      console.error('Error updating operator details:', error);
-      showToast(errorMessage(error, 'Failed to update operator details'), 'danger');
+  if (person && person.role === 'operator' && role === 'company_admin') {
+    const ok = await confirmDialog({
+      title: `Make ${displayName || email} an admin?`,
+      message: 'Admins can change the bot, the team, the plan and every setting - including removing other operators.',
+      confirmLabel: 'Make admin'
     });
+    if (!ok) {
+      return;
+    }
+  }
+
+  try {
+    await api(`/api/admin/operators/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: {
+        displayName,
+        email,
+        role,
+        maxConcurrentChats: limit === '' ? null : Number(limit),
+        ...(isSuperadmin() && companyId ? { companyId } : {})
+      }
+    });
+    showToast('Saved', 'success');
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('editOperatorModal')).hide();
+    loadTeam();
+  } catch (error) {
+    showToast(errorMessage(error, 'Could not save the changes'), 'danger');
+  }
 }
 
-function resetPassword() {
+async function resetPassword() {
   const operatorId = document.getElementById('reset-password-operator-id').value;
   const password = document.getElementById('reset-password-new').value;
   const confirmPassword = document.getElementById('reset-password-confirm').value;
-  const token = authToken();
 
   if (!password || !confirmPassword) {
     showToast('Password and confirm password are required', 'warning');
@@ -505,41 +425,121 @@ function resetPassword() {
     return;
   }
 
-  fetch(`/api/admin/operators/${operatorId}/reset-password`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-auth-token': token
-    },
-    body: JSON.stringify({ password, confirmPassword })
-  })
-    .then(parseJsonResponse)
-    .then(data => {
-      if (data.success) {
-        showToast('Password reset successfully', 'success');
-
-        // Close the modal
-        bootstrap.Modal.getInstance(document.getElementById('resetPasswordModal')).hide();
-
-        // Also close the edit modal if it's open
-        const editModal = bootstrap.Modal.getInstance(document.getElementById('editOperatorModal'));
-        if (editModal) {
-          editModal.hide();
-        }
-
-        // Clear the form
-        document.getElementById('reset-password-form').reset();
-      } else {
-        showToast(data.error || 'Failed to reset password', 'danger');
-      }
-    })
-    .catch(error => {
-      console.error('Error resetting password:', error);
-      showToast(errorMessage(error, 'Failed to reset password'), 'danger');
+  try {
+    await api(`/api/admin/operators/${encodeURIComponent(operatorId)}/reset-password`, {
+      method: 'POST',
+      body: { password, confirmPassword }
     });
+    showToast('Password set. They have been signed out everywhere.', 'success');
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('resetPasswordModal')).hide();
+    const editModal = bootstrap.Modal.getInstance(document.getElementById('editOperatorModal'));
+    if (editModal) {
+      editModal.hide();
+    }
+    document.getElementById('reset-password-form').reset();
+  } catch (error) {
+    showToast(errorMessage(error, 'Failed to reset password'), 'danger');
+  }
+}
+
+// ---------------------------------------------- deactivate and remove
+
+async function toggleActive(person) {
+  const name = person.displayName || person.email;
+
+  if (person.isActive) {
+    const ok = await confirmDialog({
+      title: `Deactivate ${name}?`,
+      message: 'They are signed out everywhere straight away, and any conversations they hold go back to the queue. You can reactivate them later.',
+      confirmLabel: 'Deactivate',
+      danger: true
+    });
+    if (!ok) {
+      return;
+    }
+  }
+
+  try {
+    const result = await api(`/api/admin/operators/${encodeURIComponent(person._id)}`, {
+      method: 'PATCH',
+      body: { isActive: !person.isActive }
+    });
+    showToast(person.isActive
+      ? `${name} is deactivated${result.chatsReturnedToQueue ? `; ${result.chatsReturnedToQueue} conversation${result.chatsReturnedToQueue === 1 ? '' : 's'} went back to the queue` : ''}.`
+      : `${name} can sign in again.`, 'success');
+    loadTeam();
+  } catch (error) {
+    showToast(errorMessage(error, 'Could not change their status'), error.status === 402 ? 'warning' : 'danger');
+  }
+}
+
+async function removePerson(person) {
+  const name = person.displayName || person.email;
+  const ok = await confirmDialog({
+    title: `Remove ${name} from the team?`,
+    message: 'They are signed out and cannot sign in again. Conversations and notes they wrote stay, under "Removed user". This cannot be undone; to bring them back, invite them again.',
+    confirmLabel: 'Remove',
+    danger: true
+  });
+  if (!ok) {
+    return;
+  }
+
+  try {
+    await api(`/api/admin/operators/${encodeURIComponent(person._id)}`, { method: 'DELETE' });
+    showToast(`${name} has been removed`, 'success');
+    loadTeam();
+  } catch (error) {
+    showToast(errorMessage(error, 'Could not remove them'), 'danger');
+  }
+}
+
+// ----------------------------------------------------------------- wiring
+
+function setupOperators() {
+  // Only roles the server will actually create: an operator or another admin.
+  ['operator-role', 'edit-operator-role', 'invite-operator-role'].forEach(id => {
+    const select = document.getElementById(id);
+    if (select) {
+      [...select.options].filter(option => !['operator', 'company_admin'].includes(option.value))
+        .forEach(option => option.remove());
+    }
+  });
+
+  document.getElementById('open-invite-operator').addEventListener('click', openInvite);
+  document.getElementById('open-create-operator').addEventListener('click', openCreate);
+  document.getElementById('invite-operator-btn').addEventListener('click', sendInvite);
+  document.getElementById('create-operator-btn').addEventListener('click', createOperator);
+  document.getElementById('save-operator-btn').addEventListener('click', saveEdit);
+  document.getElementById('confirm-reset-password-btn').addEventListener('click', resetPassword);
+
+  document.getElementById('operators-table-body').addEventListener('click', event => {
+    const button = event.target.closest('[data-action]');
+    if (!button) {
+      return;
+    }
+    if (button.dataset.action === 'invite') {
+      openInvite();
+      return;
+    }
+    const person = findPerson(button.dataset.id);
+    if (!person) {
+      return;
+    }
+    const handlers = {
+      edit: openEdit,
+      toggle: toggleActive,
+      remove: removePerson,
+      resend: resendInvite,
+      revoke: revokeInvite
+    };
+    if (handlers[button.dataset.action]) {
+      handlers[button.dataset.action](person);
+    }
+  });
 }
 
 registerSection('operators', {
-  setup: setupOperatorForms,
-  show: loadAllOperators
+  setup: setupOperators,
+  show: loadTeam
 });

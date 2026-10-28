@@ -184,6 +184,27 @@ describe('Per-tenant backup', () => {
       expect((await Workflow.findById(workflow._id)).name).toBe('Backup Flow');
     });
 
+    it('carries the credentials a model hides, so a restore does not wipe them', async () => {
+      const ChannelAccount = require('../models/channel-account');
+      // Written straight to the collection: the point is the hidden fields,
+      // not the account's validation.
+      const { insertedId } = await ChannelAccount.collection.insertOne({
+        company: acme._id, provider: 'whatsapp', phoneNumberId: 'backup-hidden-1',
+        accessToken: 'encrypted-token-value', appSecret: 'encrypted-secret-value'
+      });
+      try {
+        const manifest = await service.backupCompany(acme._id);
+
+        // A replace restore rewrites each document whole.
+        await service.restoreCompany(acme._id, manifest.timestamp, { mode: 'replace' });
+
+        const restored = await ChannelAccount.findById(insertedId).select('+accessToken +appSecret').lean();
+        expect(restored).toMatchObject({ accessToken: 'encrypted-token-value', appSecret: 'encrypted-secret-value' });
+      } finally {
+        await ChannelAccount.collection.deleteOne({ _id: insertedId });
+      }
+    });
+
     it('refuses a backup belonging to another company', async () => {
       const manifest = await service.backupCompany(globex._id);
 

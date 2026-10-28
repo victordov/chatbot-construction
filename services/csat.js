@@ -18,14 +18,22 @@ const { logger } = require('./logging');
 /** Scores at or above this count as satisfied, which is what CSAT % measures. */
 const SATISFIED_FROM = 4;
 
-/** A conversation this short was not really a conversation. */
-const MIN_VISITOR_MESSAGES = 2;
+/**
+ * How much the visitor must have said before they are asked.
+ *
+ * This was two, on the theory that a single "hi" is noise. In practice most
+ * support conversations are one question and one answer, so the rule skipped
+ * the commonest conversation there is - and an operator who ended a chat
+ * after answering the one question never heard how it went. A visitor who
+ * wrote nothing at all still has nothing to rate.
+ */
+const MIN_VISITOR_MESSAGES = 1;
 
 /**
  * Whether it is worth asking this visitor to rate.
  *
- * Asking after a single "hi" annoys people and produces noise, and asking twice
- * is worse than not asking at all.
+ * Asking twice is worse than not asking at all, and asking somebody who never
+ * said anything is asking about nothing.
  */
 function shouldRequestRating(conversation) {
   if (!conversation || conversation.rating?.score || conversation.ratingRequestedAt) {

@@ -11,12 +11,23 @@ const router = express.Router();
 
 const ResponseTemplate = require('../models/response-template');
 const Company = require('../models/company');
-const { getResponseTemplateService } = require('../services/responseTemplates');
+const AssistantProfile = require('../models/assistant-profile');
+const { getResponseTemplateService, ResponseTemplateService } = require('../services/responseTemplates');
 const assistantConfig = require('../services/assistant-config');
+const audit = require('../services/audit');
 const { auth, admin, operator } = require('../middleware/auth');
 const { logger } = require('../services/logging');
 
 const VALID_ROLES = ['greeting', 'fallback', 'offTopic', 'handoff'];
+
+/** What the guided persona builder may say about "never guess at". */
+const NEVER_GUESS = ['prices', 'availability', 'delivery dates', 'medical advice', 'legal advice'];
+const TONES = ['friendly', 'professional', 'brief'];
+
+/** A canned reply named in an audit entry: what it is, not what it says. */
+function templateTarget(template) {
+  return { type: 'template', id: String(template._id), label: template.name };
+}
 
 /**
  * Operators need to read templates so they can insert one into a reply. Only
@@ -174,6 +185,15 @@ router.post('/', async (req, res) => {
 
     getResponseTemplateService().invalidate(companyId);
 
+    // What the bot says word for word, on the company's behalf.
+    await audit.record({
+      req,
+      company: companyId,
+      action: 'template.created',
+      target: templateTarget(template),
+      details: { role: template.role, triggers: template.triggers.length, enabled: template.enabled }
+    });
+
     res.status(201).json({ template });
   } catch (error) {
     logger.error('Failed to create response template', { error: error.message });
@@ -222,6 +242,14 @@ router.put('/:id', async (req, res) => {
 
     getResponseTemplateService().invalidate(companyId);
 
+    await audit.record({
+      req,
+      company: companyId,
+      action: 'template.updated',
+      target: templateTarget(template),
+      details: { role: template.role, triggers: template.triggers.length, enabled: template.enabled }
+    });
+
     res.json({ template });
   } catch (error) {
     logger.error('Failed to update response template', { error: error.message });
@@ -237,15 +265,22 @@ router.delete('/:id', async (req, res) => {
       return;
     }
 
-    const result = await ResponseTemplate.deleteOne({
+    const template = await ResponseTemplate.findOneAndDelete({
       _id: req.params.id, company: companyId
     });
 
-    if (result.deletedCount === 0) {
+    if (!template) {
       return res.status(404).json({ error: 'Template not found' });
     }
 
     getResponseTemplateService().invalidate(companyId);
+
+    await audit.record({
+      req,
+      company: companyId,
+      action: 'template.deleted',
+      target: templateTarget(template)
+    });
 
     res.json({ success: true });
   } catch (error) {
@@ -273,7 +308,11 @@ router.post('/preview', async (req, res) => {
       return res.status(400).json({ error: 'A message is required' });
     }
 
-    const match = await getResponseTemplateService().match(companyId, message);
+    // A fresh service that does not count matches: trying a phrase ten times
+    // here must not make a reply look like the most used one, and it should
+    // see a reply saved a second ago rather than the cached list.
+    const service = new ResponseTemplateService({ cacheTtl: 0, recordUse: false });
+    const match = await service.match(companyId, message);
 
     res.json({
       matched: Boolean(match),
@@ -288,8 +327,34 @@ router.post('/preview', async (req, res) => {
   }
 });
 
+/** The builder's answers as the dashboard reads them, defaults filled in. */
+function presentProfile(profile) {
+  return {
+    businessName: (profile && profile.businessName) || '',
+    whatYouDo: (profile && profile.whatYouDo) || '',
+    tone: (profile && profile.tone) || 'friendly',
+    neverGuess: (profile && profile.neverGuess) || [],
+    neverGuessOther: (profile && profile.neverGuessOther) || '',
+    handover: (profile && profile.handover) || ''
+  };
+}
+
+/** The builder's answers from a request, keeping only what it may contain. */
+function cleanProfile(builder = {}) {
+  const text = (value, max) => String(value || '').trim().slice(0, max);
+  return {
+    businessName: text(builder.businessName, 120),
+    whatYouDo: text(builder.whatYouDo, 600),
+    tone: TONES.includes(builder.tone) ? builder.tone : 'friendly',
+    neverGuess: (Array.isArray(builder.neverGuess) ? builder.neverGuess : [])
+      .map(item => String(item)).filter(item => NEVER_GUESS.includes(item)),
+    neverGuessOther: text(builder.neverGuessOther, 300),
+    handover: text(builder.handover, 600)
+  };
+}
+
 /**
- * The assistant's persona and scope, for tenants who have not built a workflow.
+ * The assistant's persona and scope, and the guided builder's answers.
  */
 router.get('/assistant/config', async (req, res) => {
   try {
@@ -298,12 +363,17 @@ router.get('/assistant/config', async (req, res) => {
       return;
     }
 
-    const company = await Company.findById(companyId).select('assistant').lean();
-    const resolved = await assistantConfig.resolve(companyId);
+    const [company, profile, resolved] = await Promise.all([
+      Company.findById(companyId).select('assistant').lean(),
+      AssistantProfile.findOne({ company: companyId }).lean(),
+      assistantConfig.resolve(companyId)
+    ]);
 
     res.json({
       persona: company?.assistant?.persona || '',
       scope: company?.assistant?.scope || '',
+      builder: presentProfile(profile),
+      builderOptions: { tones: TONES, neverGuess: NEVER_GUESS },
       // Which source is actually in effect, so an admin editing this field is
       // not confused when a published workflow is overriding it.
       effective: { persona: resolved.persona, scope: resolved.scope, source: resolved.source }
@@ -321,12 +391,17 @@ router.put('/assistant/config', async (req, res) => {
       return;
     }
 
-    const { persona, scope } = req.body;
+    const { persona, scope, builder } = req.body;
 
     const company = await Company.findById(companyId);
     if (!company) {
       return res.status(404).json({ error: 'Company not found' });
     }
+
+    const before = {
+      persona: (company.assistant && company.assistant.persona) || '',
+      scope: (company.assistant && company.assistant.scope) || ''
+    };
 
     company.assistant = {
       persona: persona ? String(persona).trim() : undefined,
@@ -334,7 +409,29 @@ router.put('/assistant/config', async (req, res) => {
     };
     await company.save();
 
+    if (builder && typeof builder === 'object') {
+      await AssistantProfile.findOneAndUpdate(
+        { company: companyId },
+        { $set: { ...cleanProfile(builder), updatedBy: req.user.id, updatedAt: new Date() } },
+        { upsert: true, setDefaultsOnInsert: true }
+      );
+    }
+
     assistantConfig.invalidate(companyId);
+
+    // Which fields changed, not what to: the persona is the company's own
+    // wording and the audit log is not the place for it.
+    const changed = ['persona', 'scope'].filter(field =>
+      before[field] !== ((company.assistant && company.assistant[field]) || ''));
+    if (changed.length > 0) {
+      await audit.record({
+        req,
+        company: companyId,
+        action: 'assistant.updated',
+        target: { type: 'assistant', id: String(companyId) },
+        details: { changed }
+      });
+    }
 
     const resolved = await assistantConfig.resolve(companyId);
     res.json({ success: true, effective: resolved });

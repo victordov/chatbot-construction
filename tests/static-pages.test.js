@@ -48,7 +48,7 @@ describe('Removed static pages', () => {
   test('the admin pages carry no inline script', () => {
     // The CSP refuses inline script, so an inline block would silently
     // not run - the page would load and do nothing.
-    ['admin/index.html', 'admin/login.html', 'admin/workflow-editor.html'].forEach(page => {
+    ['admin/index.html', 'admin/login.html', 'admin/signup.html', 'admin/invite.html', 'admin/workflow-editor.html'].forEach(page => {
       const html = fs.readFileSync(path.join(publicDir, page), 'utf8');
       const inline = html.match(/<script(?![^>]*\bsrc=)[^>]*>/gi) || [];
       expect(inline).toEqual([]);
@@ -61,7 +61,7 @@ describe('Removed static pages', () => {
     // Bootstrap, Chart.js, Feather and marked are bundled into /dist by
     // scripts/build-client.js, so a compromised or changed CDN file has no way
     // into an operator's authenticated session.
-    ['admin/index.html', 'admin/login.html', 'admin/workflow-editor.html', 'privacy-policy.html'].forEach(page => {
+    ['admin/index.html', 'admin/login.html', 'admin/signup.html', 'admin/invite.html', 'admin/workflow-editor.html', 'privacy-policy.html'].forEach(page => {
       const html = fs.readFileSync(path.join(publicDir, page), 'utf8');
       const external = html.match(/<(?:script|link)\b[^>]*(?:src|href)="https?:\/\/[^>]*>/gi) || [];
 

@@ -199,7 +199,8 @@ describe('workflow hardening', () => {
 
       const first = await publishInDb(askGraph('First?', 'a', 'x'), 'Hardening first');
       await runtime.loadWorkflow(tenantId, first);
-      expect(String(runtime.activeWorkflows.get(tenantId).id)).toBe(String(first._id));
+      // One entry per live workflow: a tenant may have several.
+      expect(String(runtime.activeWorkflows.get(tenantId).workflows[0].id)).toBe(String(first._id));
 
       const second = await publishInDb(askGraph('Second?', 'b', 'y'), 'Hardening second');
 
@@ -238,7 +239,9 @@ describe('workflow hardening', () => {
       expect(String(stored.company)).toBe(String(acme._id));
       expect(stored.status).toBe('draft');
       expect(stored.publishedAt).toBeUndefined();
-      expect(stored.version).toBe(2);
+      // Not the 40 asked for. A rename alone is not a new version (only a
+      // change to what the workflow does is), so it stays at 1.
+      expect(stored.version).toBe(1);
       expect(String(stored.createdBy)).toBe(String(admin._id));
     });
 
@@ -503,12 +506,14 @@ describe('workflow hardening', () => {
       const service = new AIService();
       expect(service.openai).toBeNull();
 
+      // No text at all on a failure, so neither stub text nor an apology can
+      // reach anyone; the caller hands over (contract §3).
       const response = await service.generateResponse('what are your hours?', []);
-      expect(response).toMatch(/sorry/i);
-      expect(response).not.toMatch(/mock|engineered response/i);
+      expect(response).toBeNull();
+      expect(service.lastFailed).toBe(true);
 
       const suggestion = await service.generateOperatorSuggestion('what are your hours?', []);
-      expect(suggestion).not.toMatch(/suggestion for the operator to respond/i);
+      expect(suggestion).toBeNull();
 
       await expect(AIService.getChatGPTResponse([{ role: 'user', content: 'hi' }]))
         .rejects.toMatchObject({ code: 'NO_AI_CLIENT' });

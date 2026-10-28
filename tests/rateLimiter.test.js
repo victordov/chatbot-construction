@@ -210,6 +210,27 @@ describe('Rate limiting', () => {
       expect(response.headers['ratelimit-limit']).toBe('600');
     });
 
+    it('gives a signed-in dashboard user on a trial at least the dashboard floor', async () => {
+      await Subscription.findOneAndUpdate(
+        { company: company._id },
+        { planId: 'trial', status: 'trialing' },
+        { upsert: true, new: true }
+      );
+      require('../services/usage').invalidateSubscription?.(company._id);
+
+      const { apiLimiter } = require('../middleware/rateLimiter');
+      const app = express();
+      app.get('/api/thing', apiLimiter, (req, res) => res.send('ok'));
+
+      const token = tokenFor(new mongoose.Types.ObjectId(), company._id);
+      const response = await request(app).get('/api/thing').set('x-auth-token', token);
+
+      // The trial's API allowance is 60/minute; a person in the dashboard
+      // gets the 300 floor, because one page load is a dozen requests.
+      expect(response.statusCode).toBe(200);
+      expect(response.headers['ratelimit-limit']).toBe('300');
+    });
+
     it('does not throttle a superadmin, who may be fixing the incident', async () => {
       const app = express();
       const limiter = buildLimiter({ prefix: 'test-super', windowMs: 60000, limit: 1, message: 'no' });

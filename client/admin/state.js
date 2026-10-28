@@ -13,33 +13,34 @@ export const state = {
   currentUser: null,
   /** The dashboard's socket.io connection. */
   socket: null,
-  /** Session ids of the conversations this operator has joined. */
+  /**
+   * Session ids of the conversations this operator holds, as the server last
+   * said. Derived from the queue (`operatorId` is the signed-in user), never
+   * remembered by the browser.
+   */
   joinedChats: new Set(),
   /** The conversation open in the inbox, as loaded from the API, or null. */
   currentConversation: null
 };
 
-const JOINED_CHATS_KEY = 'joined-chats';
+/** What older dashboards kept in localStorage. */
+const LEGACY_JOINED_CHATS_KEY = 'joined-chats';
 
-/** Restore the joined conversations from the last page load. */
+/**
+ * Start a page load holding nothing until the server says otherwise.
+ *
+ * The joined conversations used to be kept in localStorage, which every
+ * person signing in on that browser shared and which sign-out never cleared:
+ * the next person to log in "rejoined" their colleague's chats and announced
+ * themselves to customers they had never spoken to. The queue now asks the
+ * server who holds what (inbox.js). The old key is removed so a browser that
+ * still has one stops carrying it around.
+ */
 export function restoreJoinedChats() {
   state.joinedChats = new Set();
   try {
-    const saved = JSON.parse(localStorage.getItem(JOINED_CHATS_KEY) || '[]');
-    if (Array.isArray(saved)) {
-      saved.forEach(id => state.joinedChats.add(id));
-    }
+    localStorage.removeItem(LEGACY_JOINED_CHATS_KEY);
   } catch (error) {
-    // A corrupt value means starting with none joined, which the server
-    // corrects on the next queue refresh.
-  }
-}
-
-/** Persist the joined conversations so a reload does not drop them. */
-export function saveJoinedChats() {
-  try {
-    localStorage.setItem(JOINED_CHATS_KEY, JSON.stringify(Array.from(state.joinedChats)));
-  } catch (error) {
-    // Storage blocked: the set still works for this page load.
+    // Storage blocked: there is nothing to clear.
   }
 }

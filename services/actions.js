@@ -18,6 +18,7 @@ const mongoose = require('mongoose');
 
 const Action = require('../models/action');
 const secrets = require('./secrets');
+const audit = require('./audit');
 const workflowActions = require('./workflow-actions');
 
 /**
@@ -77,6 +78,8 @@ function normalise(body = {}, existing = null) {
     errors.push('Name must be 2–48 characters: lowercase letters, digits and underscores, starting with a letter');
   } else if (name.startsWith(RESERVED_PREFIX)) {
     errors.push(`Names starting with "${RESERVED_PREFIX}" are reserved for your connector`);
+  } else if (name.startsWith('mcp_')) {
+    errors.push('Names starting with "mcp_" are reserved for connected tools');
   }
 
   const title = text(input.title, 120);
@@ -208,6 +211,7 @@ function normalise(body = {}, existing = null) {
     response: { mode, maxBytes, outputs },
     mode: input.mode === 'workflow_only' ? 'workflow_only' : 'auto',
     requiresVerified: Boolean(input.requiresVerified),
+    verification: input.verification === 'email' ? 'email' : 'signed',
     enabled: input.enabled !== false
   };
 
@@ -282,6 +286,7 @@ function present(action) {
     },
     mode: doc.mode || 'auto',
     requiresVerified: Boolean(doc.requiresVerified),
+    verification: doc.verification === 'email' ? 'email' : 'signed',
     enabled: doc.enabled !== false,
     isWrite: isWrite(doc),
     createdBy: doc.createdBy,
@@ -344,6 +349,16 @@ function coerce(value, type) {
  */
 function resolveInputs(action, args = {}, { contact = null, trustArgs = false } = {}) {
   const values = {};
+
+  // P2D: a visitor proven by an email code is `verified` too, but only an
+  // action marked "email verification is enough" may run for them. Checked
+  // here, where every caller passes, so it holds whoever offered the action.
+  if (!trustArgs && needsVerified(action)) {
+    const { isVerifiedEnough, requirementOf } = require('./visitor-verification');
+    if (!isVerifiedEnough(contact, requirementOf(action))) {
+      return { ok: false, error: 'This needs a verified customer, and the visitor is not verified.' };
+    }
+  }
 
   for (const input of action.inputs || []) {
     let raw;
@@ -461,6 +476,33 @@ async function runForWorkflow(companyId, actionId, variables = {}, options = {})
   if (!action) {
     return { ok: false, error: 'The saved action this node uses no longer exists', variables: {}, durationMs: 0 };
   }
+
+  const result = await runSavedForWorkflow(action, variables, options, started);
+
+  // The action's run log (Actions → Last 20 runs) reads the audit trail, where
+  // the assistant's calls already are. A preview run is the author trying
+  // their flow, not a customer's call, so it is left out.
+  if (!options.simulate) {
+    audit.record({
+      company: companyId,
+      actor: { displayName: 'Workflow', role: 'workflow' },
+      action: 'action.run',
+      target: { type: 'action', id: String(action._id), label: action.name },
+      details: {
+        ok: Boolean(result.ok),
+        ...(result.status ? { httpStatus: result.status } : {}),
+        durationMs: result.durationMs || 0,
+        ...(result.ok ? {} : { error: result.error })
+      },
+      outcome: result.ok ? 'success' : 'failure'
+    });
+  }
+
+  return result;
+}
+
+/** The body of runForWorkflow, once the action is found. */
+async function runSavedForWorkflow(action, variables, options, started) {
   if (!action.enabled) {
     return { ok: false, error: `The action "${action.title}" is switched off`, variables: {}, durationMs: 0 };
   }
@@ -470,6 +512,9 @@ async function runForWorkflow(companyId, actionId, variables = {}, options = {})
     ? {
       identityLevel: 'verified',
       externalId: variables.contact_external_id,
+      // A signature always leaves an account id; verified without one is an
+      // email code (P2D).
+      verifiedBy: variables.contact_external_id ? undefined : 'email_code',
       email: variables.contact_email,
       name: variables.contact_name
     }

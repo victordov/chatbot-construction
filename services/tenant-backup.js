@@ -64,6 +64,24 @@ function isTenantScoped(model) {
   return Boolean(model.schema.path('company'));
 }
 
+/**
+ * The fields a model hides from ordinary queries (`select: false`): stored
+ * credentials, token hashes, secrets. A backup must carry them, or restoring
+ * it over a live tenant (a whole-document replace) would wipe every channel
+ * token, calendar connection and API credential the tenant had set up.
+ *
+ * @returns {string} a projection that adds them, or '' when there are none
+ */
+function hiddenFields(model) {
+  const hidden = [];
+  model.schema.eachPath((path, schemaType) => {
+    if (schemaType && schemaType.options && schemaType.options.select === false) {
+      hidden.push(`+${path}`);
+    }
+  });
+  return hidden.join(' ');
+}
+
 class TenantBackupService {
   /**
    * @param {object} [options]
@@ -135,7 +153,7 @@ class TenantBackupService {
    */
   async backupCompany(companyId) {
     const Company = mongoose.model('Company');
-    const company = await Company.findById(companyId).lean();
+    const company = await Company.findById(companyId).select(hiddenFields(Company)).lean();
 
     if (!company) {
       throw new Error(`Company ${companyId} not found`);
@@ -151,7 +169,7 @@ class TenantBackupService {
 
     for (const entry of direct) {
       const model = mongoose.model(entry.name);
-      const documents = await model.find(entry.match(company._id)).lean();
+      const documents = await model.find(entry.match(company._id)).select(hiddenFields(model)).lean();
 
       collections[entry.name] = documents.length;
       parentIds[entry.name] = documents.map(doc => doc._id);
@@ -165,7 +183,8 @@ class TenantBackupService {
 
       const ids = parentIds[dependent.parent] || [];
       const documents = ids.length
-        ? await mongoose.model(dependent.model).find({ [dependent.field]: { $in: ids } }).lean()
+        ? await mongoose.model(dependent.model).find({ [dependent.field]: { $in: ids } })
+          .select(hiddenFields(mongoose.model(dependent.model))).lean()
         : [];
 
       collections[dependent.model] = documents.length;

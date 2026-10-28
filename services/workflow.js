@@ -72,12 +72,75 @@ function protectNodeSecrets(incomingNodes, existingNodes = []) {
  * could be set by whoever could edit a draft - including moving a workflow to
  * another tenant.
  */
-const EDITABLE_FIELDS = ['name', 'description', 'nodes', 'edges', 'moderationConfig', 'changeDescription'];
+const EDITABLE_FIELDS = ['name', 'description', 'nodes', 'edges', 'trigger', 'moderationConfig', 'changeDescription'];
+
+/**
+ * The fields that change what the workflow does. Editing one makes a new
+ * version; renaming does not, so renaming a live workflow from the list does
+ * not leave it with "unpublished changes" that are only a new name.
+ */
+const VERSIONED_FIELDS = ['nodes', 'edges', 'trigger', 'moderationConfig'];
 
 function pickEditable(updateData = {}) {
   return Object.fromEntries(
     Object.entries(updateData).filter(([key]) => EDITABLE_FIELDS.includes(key))
   );
+}
+
+/** Bounds on what a trigger may hold, so it cannot grow without limit. */
+const MAX_TRIGGER_DESCRIPTION = 200;
+const MAX_TRIGGER_KEYWORDS = 20;
+const MAX_KEYWORD_LENGTH = 60;
+
+/**
+ * A trigger as the editor sent it, cleaned: an unknown type is `always`,
+ * keywords may arrive as a list or as comma-separated text, and everything is
+ * trimmed and capped.
+ */
+function cleanTrigger(raw) {
+  const input = raw && typeof raw === 'object' ? raw : {};
+  const type = ['always', 'intent', 'keywords'].includes(input.type) ? input.type : 'always';
+  const keywords = (Array.isArray(input.keywords) ? input.keywords : String(input.keywords || '').split(','))
+    .map(keyword => String(keyword || '').trim().slice(0, MAX_KEYWORD_LENGTH))
+    .filter(Boolean)
+    .filter((keyword, index, all) =>
+      all.findIndex(other => other.toLowerCase() === keyword.toLowerCase()) === index)
+    .slice(0, MAX_TRIGGER_KEYWORDS);
+
+  return {
+    type,
+    description: String(input.description || '').trim().slice(0, MAX_TRIGGER_DESCRIPTION),
+    keywords
+  };
+}
+
+/** What a trigger still needs before it can go live. */
+function triggerProblems(trigger) {
+  const clean = cleanTrigger(trigger);
+  if (clean.type === 'intent' && !clean.description) {
+    return ['Say what the visitor wants for this workflow to run, under "When does this run?"'];
+  }
+  if (clean.type === 'keywords' && clean.keywords.length === 0) {
+    return ['Add at least one keyword under "When does this run?"'];
+  }
+  return [];
+}
+
+/** An error with the HTTP status (and any detail) a route should answer with. */
+function statusError(message, status, extra = {}) {
+  const error = new Error(message);
+  error.status = status;
+  Object.assign(error, extra);
+  return error;
+}
+
+/** The tenant id of a workflow whose `company` may or may not be populated. */
+function companyIdOf(workflow) {
+  const company = workflow && workflow.company;
+  if (!company) {
+    return null;
+  }
+  return String(company._id || company);
 }
 
 /**
@@ -140,36 +203,120 @@ class WorkflowService {
   constructor() {
     this.compiler = new WorkflowCompilerService();
   }
+
+  /**
+   * Refuse a graph that is unsafe to store, as opposed to unfinished.
+   *
+   * A draft may be saved half-built - an Ask with no question yet, a node not
+   * wired up - because building a flow takes more than one sitting. What may
+   * not be saved is anything the editor would draw into its page unescaped, or
+   * that it could not draw at all.
+   */
+  assertStorable({ nodes = [], edges = [] }) {
+    const problems = this.compiler.structuralProblems(nodes, edges);
+    if (problems.length > 0) {
+      throw statusError(problems[0].message, 400, {
+        problems: problems.map(problem => ({ ...problem, level: 'error' }))
+      });
+    }
+  }
+
+  /**
+   * Everything that would stop this graph going live, and everything worth a
+   * second look, at once.
+   *
+   * @returns {{valid: boolean, errors: string[], warnings: string[],
+   *            problems: Array<{message, nodeId, level}>}}
+   */
+  report(nodes = [], edges = [], trigger = undefined) {
+    const plainNodes = (nodes || []).map(node => (node && typeof node.toObject === 'function' ? node.toObject() : node));
+    const plainEdges = (edges || []).map(edge => (edge && typeof edge.toObject === 'function' ? edge.toObject() : edge));
+
+    const problems = [
+      ...this.compiler.structuralProblems(plainNodes, plainEdges).map(problem => ({ ...problem, level: 'error' })),
+      ...this.compiler.validateWorkflow(plainNodes, plainEdges).problems
+    ];
+
+    plainNodes.forEach(node => {
+      if (!node || !node.data) {
+        return;
+      }
+      try {
+        this.validateNodeData(node);
+      } catch (error) {
+        problems.push({ message: error.message, nodeId: node.id || null, level: 'error' });
+      }
+    });
+
+    if (trigger !== undefined) {
+      triggerProblems(trigger).forEach(message => problems.push({ message, nodeId: null, level: 'error' }));
+    }
+
+    // The same complaint reached by two routes is said once.
+    const seen = new Set();
+    const unique = problems.filter(problem => {
+      const key = `${problem.level}|${problem.nodeId}|${problem.message}`;
+      if (seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      return true;
+    });
+
+    const errors = unique.filter(problem => problem.level === 'error').map(problem => problem.message);
+    const warnings = unique.filter(problem => problem.level === 'warning').map(problem => problem.message);
+    return { valid: errors.length === 0, errors, warnings, problems: unique };
+  }
+
+  /**
+   * The compiled chain for a graph that is complete, or a note saying it is
+   * not yet. A draft with problems is stored as it is; it is compiled for
+   * real when it is published.
+   */
+  async compileIfReady(nodes, edges, tenantId) {
+    if (!nodes || nodes.length === 0) {
+      return { compiled: false, reason: 'No nodes to compile', timestamp: new Date() };
+    }
+
+    const report = this.report(nodes, edges);
+    if (!report.valid) {
+      return {
+        compiled: false,
+        reason: 'Not ready to publish yet',
+        problems: report.errors.length,
+        timestamp: new Date()
+      };
+    }
+
+    return this.compileWorkflow({ nodes, edges }, tenantId);
+  }
+
   /**
    * Create a new workflow
    */
   async createWorkflow(workflowData, user) {
     try {
-      // Validate workflow structure
-      this.validateWorkflow(workflowData);
+      this.assertStorable(workflowData);
 
       // Set company context for multi-tenancy
       const company = user.role === 'superadmin' ? null : user.company?.id;
 
       const workflow = new Workflow({
-        ...workflowData,
-        nodes: protectNodeSecrets(workflowData.nodes),
+        name: workflowData.name,
+        description: workflowData.description,
+        nodes: protectNodeSecrets(workflowData.nodes || []),
+        edges: workflowData.edges || [],
+        trigger: cleanTrigger(workflowData.trigger),
+        ...(workflowData.moderationConfig ? { moderationConfig: workflowData.moderationConfig } : {}),
         company,
         createdBy: user.id,
         version: 1
       });
 
-      // Compile workflow if it has nodes
-      if (workflow.nodes && workflow.nodes.length > 0) {
-        // Compiled from the protected nodes, so the chain that gets persisted
-        // carries the encrypted credential rather than the plaintext one the
-        // request arrived with.
-        const compiledChain = await this.compileWorkflow(
-          { nodes: workflow.nodes, edges: workflow.edges },
-          company
-        );
-        workflow.compiledChain = compiledChain;
-      }
+      // Compiled from the protected nodes, so the chain that gets persisted
+      // carries the encrypted credential rather than the plaintext one the
+      // request arrived with.
+      workflow.compiledChain = await this.compileIfReady(workflow.nodes, workflow.edges, company);
 
       await workflow.save();
 
@@ -182,6 +329,24 @@ class WorkflowService {
       logger.error('Error creating workflow:', error);
       throw error;
     }
+  }
+
+  /**
+   * A copy of a workflow, as a new draft. Credentials come with it, still
+   * encrypted, so a copy of a flow that calls an API still calls it.
+   */
+  async duplicateWorkflow(workflowId, user) {
+    const userCompanyId = user.role === 'superadmin' ? null : user.company?.id;
+    const source = await this.getWorkflow(workflowId, userCompanyId, user.role);
+    const plain = source.toObject();
+
+    return this.createWorkflow({
+      name: `${plain.name} (copy)`.slice(0, 200),
+      description: plain.description,
+      nodes: plain.nodes,
+      edges: plain.edges,
+      trigger: plain.trigger
+    }, user);
   }
 
   /**
@@ -203,6 +368,7 @@ class WorkflowService {
 
       const workflows = await Workflow.find(filter)
         .populate('createdBy', 'username displayName')
+        .populate('publishedBy', 'username displayName')
         .populate('company', 'name')
         .sort({ updatedAt: -1 });
 
@@ -224,6 +390,7 @@ class WorkflowService {
 
       const workflow = await Workflow.findOne(query)
         .populate('createdBy', 'username displayName email')
+        .populate('publishedBy', 'username displayName')
         .populate('company', 'name description');
 
       if (!workflow) {
@@ -238,7 +405,11 @@ class WorkflowService {
   }
 
   /**
-   * Update an existing workflow
+   * Save changes to a workflow.
+   *
+   * A save is a draft. On a live workflow it makes a new version and leaves
+   * the live one serving visitors until Publish; it used to hot-swap straight
+   * away, so a half-finished edit reached customers on Save.
    */
   async updateWorkflow(workflowId, rawUpdate, user) {
     try {
@@ -250,37 +421,50 @@ class WorkflowService {
       // Get existing workflow
       const workflow = await this.getWorkflow(workflowId, userCompanyId, user.role);
 
-      // Validate updates
       if (updateData.nodes || updateData.edges) {
-        this.validateWorkflow(updateData);
+        this.assertStorable({
+          nodes: updateData.nodes || workflow.nodes.map(node => node.toObject()),
+          edges: updateData.edges || workflow.edges.map(edge => edge.toObject())
+        });
       }
 
       if (updateData.nodes) {
         updateData.nodes = protectNodeSecrets(updateData.nodes, workflow.nodes);
       }
 
-      // Recompile if structure changed
-      if (updateData.nodes || updateData.edges) {
-        const workflowForCompilation = {
-          nodes: updateData.nodes || workflow.nodes,
-          edges: updateData.edges || workflow.edges
-        };
-
-        const compiledChain = await this.compileWorkflow(workflowForCompilation, workflow.company);
-        updateData.compiledChain = compiledChain;
+      if (updateData.trigger !== undefined) {
+        const before = JSON.stringify(cleanTrigger(workflow.trigger));
+        updateData.trigger = cleanTrigger(updateData.trigger);
+        workflow.$locals.triggerChanged = before !== JSON.stringify(updateData.trigger);
       }
 
-      // Increment version
-      updateData.version = workflow.version + 1;
-      updateData.updatedAt = new Date();
-
-      // Update workflow
+      const versioned = VERSIONED_FIELDS.some(field => updateData[field] !== undefined);
       const { changeDescription, ...fields } = updateData;
+
+      if (versioned) {
+        fields.compiledChain = await this.compileIfReady(
+          fields.nodes || workflow.nodes,
+          fields.edges || workflow.edges,
+          companyIdOf(workflow)
+        );
+
+        // Published before drafts existed: pin what visitors have now, so this
+        // save does not become live by the back door.
+        if (workflow.status === 'published' && !workflow.liveVersion) {
+          workflow.liveVersion = workflow.version;
+          workflow.liveTrigger = Workflow.liveTriggerOf(workflow);
+        }
+
+        fields.version = workflow.version + 1;
+      }
+
+      fields.updatedAt = new Date();
       Object.assign(workflow, fields);
       await workflow.save();
 
-      // Save new version
-      await this.saveVersion(workflow, user, changeDescription);
+      if (versioned) {
+        await this.saveVersion(workflow, user, changeDescription);
+      }
 
       logger.info(`Workflow updated: ${workflowId} to version ${workflow.version}`);
       return workflow;
@@ -291,35 +475,166 @@ class WorkflowService {
   }
 
   /**
-   * Publish a workflow
+   * How many workflows a company has live, and how many its plan allows.
+   *
+   * Counted here rather than through the usage meter, because the meter
+   * counted every workflow that was not archived - drafts included - and a
+   * draft answers nobody. Fails open, like every other quota check: the plan
+   * service being down must not stop somebody publishing a fix.
+   *
+   * @returns {Promise<{used: number, limit: number|null, entitled: boolean,
+   *                    reason?: string}>}
    */
-  async publishWorkflow(workflowId, user) {
+  async liveUsage(companyId, { excluding = null } = {}) {
+    const filter = { company: companyId, status: 'published' };
+    if (excluding) {
+      filter._id = { $ne: excluding };
+    }
+
+    const used = await Workflow.countDocuments(filter);
+
+    try {
+      const subscription = await require('./usage').getSubscription(companyId);
+      const entitled = subscription.isEntitled();
+      return {
+        used,
+        limit: entitled ? subscription.limitFor('workflows') : 0,
+        entitled,
+        ...(entitled ? {} : {
+          reason: subscription.status === 'trialing'
+            ? 'Your trial has ended. Choose a plan to continue.'
+            : `This account is ${subscription.status}.`
+        })
+      };
+    } catch (error) {
+      logger.error('Could not read the live-workflow limit; allowing', { error: error.message });
+      return { used, limit: null, entitled: true };
+    }
+  }
+
+  /** Take a workflow off live without touching its draft. */
+  async takeOffline(workflowId) {
+    await Workflow.updateOne(
+      { _id: workflowId },
+      { $set: { status: 'draft', updatedAt: new Date() }, $unset: { liveVersion: 1, liveTrigger: 1 } }
+    );
+  }
+
+  /**
+   * Make the current version live.
+   *
+   * Several workflows may be live at once, each answering the messages its
+   * trigger matches. Only one may answer everything: publishing a second
+   * `always` workflow is refused with a 409 naming the first, and done with
+   * `replace: true`, which takes the first offline.
+   *
+   * @param {object} [options]
+   * @param {boolean} [options.replace] take the live `always` workflow offline
+   * @returns {Promise<Workflow>} with `$locals.replaced` set to the workflow
+   *          it replaced, if any
+   */
+  async publishWorkflow(workflowId, user, options = {}) {
     try {
       const userCompanyId = user.role === 'superadmin' ? null : user.company?.id;
       const workflow = await this.getWorkflow(workflowId, userCompanyId, user.role);
 
-      // Validate workflow is ready for publishing
-      this.validateForPublishing(workflow);
-
-      // Archive any currently published workflow for this company
-      if (workflow.company) {
-        await Workflow.updateMany(
-          { company: workflow.company, status: 'published' },
-          { status: 'archived' }
+      // The full set of checks a draft is spared on save.
+      const report = this.report(workflow.nodes, workflow.edges, workflow.trigger);
+      if (!report.valid) {
+        throw statusError(
+          report.errors.length === 1
+            ? `Fix this before publishing: ${report.errors[0]}`
+            : `Fix ${report.errors.length} problems before publishing. First: ${report.errors[0]}`,
+          400,
+          { errors: report.errors, problems: report.problems }
         );
       }
 
-      // Publish this workflow
+      const companyId = companyIdOf(workflow);
+      const trigger = cleanTrigger(workflow.trigger);
+      let replaced = null;
+
+      if (companyId) {
+        const others = await Workflow.find({
+          company: companyId, status: 'published', _id: { $ne: workflow._id }
+        }).select('name trigger liveTrigger').lean();
+
+        const conflict = trigger.type === 'always'
+          ? others.find(other => Workflow.liveTriggerOf(other).type === 'always')
+          : null;
+
+        if (conflict && !options.replace) {
+          throw statusError(
+            `"${conflict.name}" already answers every message. Only one workflow can do that.`,
+            409,
+            { code: 'ALWAYS_CONFLICT', conflict: { id: String(conflict._id), name: conflict.name } }
+          );
+        }
+
+        // Republishing a live workflow does not need another slot, and a
+        // superadmin is not subject to a tenant's plan.
+        if (workflow.status !== 'published' && user.role !== 'superadmin') {
+          const usage = await this.liveUsage(companyId, { excluding: workflow._id });
+          const used = usage.used - (conflict ? 1 : 0);
+
+          if (!usage.entitled || (usage.limit !== null && usage.limit !== undefined && used + 1 > usage.limit)) {
+            throw statusError(
+              usage.entitled
+                ? `Your plan allows ${usage.limit} live workflow${usage.limit === 1 ? '' : 's'} and you have ${used}. ` +
+                  'Unpublish one first, or upgrade.'
+                : usage.reason,
+              402,
+              { code: 'PLAN_LIMIT_REACHED', meter: 'workflows', limit: usage.limit, used }
+            );
+          }
+        }
+
+        if (conflict) {
+          await this.takeOffline(conflict._id);
+          replaced = { id: String(conflict._id), name: conflict.name };
+        }
+      }
+
+      workflow.compiledChain = await this.compileWorkflow(
+        { nodes: workflow.nodes, edges: workflow.edges },
+        companyId
+      );
       workflow.status = 'published';
       workflow.publishedAt = new Date();
+      workflow.publishedBy = user.id;
+      workflow.liveVersion = workflow.version;
+      workflow.liveTrigger = trigger;
       await workflow.save();
 
+      workflow.$locals.replaced = replaced;
       logger.info(`Workflow published: ${workflowId}`);
       return workflow;
     } catch (error) {
       logger.error('Error publishing workflow:', error);
       throw error;
     }
+  }
+
+  /**
+   * Take a workflow off live. It stays as a draft, with its history, and can
+   * be published again; the messages it answered go back to the assistant
+   * (or another live workflow) from the next one.
+   */
+  async unpublishWorkflow(workflowId, user) {
+    const userCompanyId = user.role === 'superadmin' ? null : user.company?.id;
+    const workflow = await this.getWorkflow(workflowId, userCompanyId, user.role);
+
+    if (workflow.status !== 'published') {
+      throw statusError('This workflow is not live', 400);
+    }
+
+    workflow.status = 'draft';
+    workflow.liveVersion = undefined;
+    workflow.liveTrigger = undefined;
+    await workflow.save();
+
+    logger.info(`Workflow unpublished: ${workflowId}`);
+    return workflow;
   }
 
   /**
@@ -339,7 +654,10 @@ class WorkflowService {
   }
 
   /**
-   * Rollback workflow to a specific version
+   * Put an earlier version back on the canvas.
+   *
+   * Like a save, it is a draft: a live workflow keeps serving the version
+   * visitors have until it is published again.
    */
   async rollbackWorkflow(workflowId, targetVersion, user) {
     try {
@@ -353,10 +671,18 @@ class WorkflowService {
         throw new Error(`Version ${targetVersion} not found`);
       }
 
+      if (workflow.status === 'published' && !workflow.liveVersion) {
+        workflow.liveVersion = workflow.version;
+        workflow.liveTrigger = Workflow.liveTriggerOf(workflow);
+      }
+
       // Update workflow with target version data
       workflow.nodes = targetVersionData.nodes;
       workflow.edges = targetVersionData.edges;
       workflow.compiledChain = targetVersionData.compiledChain;
+      if (targetVersionData.trigger && targetVersionData.trigger.type) {
+        workflow.trigger = cleanTrigger(targetVersionData.trigger);
+      }
       workflow.version = workflow.version + 1; // Increment version for rollback
       workflow.updatedAt = new Date();
 
@@ -387,9 +713,10 @@ class WorkflowService {
       const userCompanyId = user.role === 'superadmin' ? null : user.company?.id;
       const workflow = await this.getWorkflow(workflowId, userCompanyId, user.role);
 
-      // Check if workflow can be deleted
+      // Deleting what visitors are talking to would cut conversations off
+      // mid-question; taking it offline first is one click and reversible.
       if (workflow.status === 'published') {
-        throw new Error('Cannot delete a published workflow. Archive it first.');
+        throw statusError('This workflow is live. Unpublish it first, then delete it.', 409, { code: 'WORKFLOW_LIVE' });
       }
 
       // Delete workflow and its versions
@@ -410,7 +737,7 @@ class WorkflowService {
   }
 
   /**
-   * Get active workflow for a company
+   * The most recently published workflow for a company.
    */
   async getActiveWorkflow(companyId) {
     try {
@@ -422,18 +749,10 @@ class WorkflowService {
   }
 
   /**
-   * Validate workflow structure.
+   * Validate workflow structure, throwing the first problem.
    *
-   * Delegates the graph-level rules (persona present, orphans, cycles, dangling
-   * edges) to the compiler so there is one definition of a valid workflow, then
-   * layers on the editor-specific checks (positions, per-node config).
-   *
-   * The previous implementation duplicated the graph rules and got both wrong:
-   * it read `node.type` (always the React Flow renderer type, `customNode`)
-   * instead of `node.data.type`, so the persona check rejected every workflow;
-   * and its position check `!node.position.x !== undefined` is a boolean
-   * compared to undefined, which is always true, so it threw for every node.
-   * Between them, no workflow could ever be created.
+   * Kept for callers that want a yes or no; the editor's routes use report()
+   * for the whole list.
    */
   validateWorkflow(workflowData) {
     const { nodes = [], edges = [] } = workflowData;
@@ -442,27 +761,10 @@ class WorkflowService {
       return; // Empty workflow is valid for drafts
     }
 
-    const result = this.compiler.validateWorkflow(nodes, edges);
+    const result = this.report(nodes, edges);
     if (!result.valid) {
-      throw new Error(result.errors[0]);
+      throw statusError(result.errors[0], 400, { problems: result.problems });
     }
-
-    nodes.forEach((node, index) => {
-      if (!node.id || !node.data) {
-        throw new Error(`Invalid node structure at index ${index}`);
-      }
-
-      // Position is optional for programmatically created workflows, but when
-      // present both coordinates must be numbers or the editor cannot render it.
-      if (node.position !== undefined) {
-        const { x, y } = node.position || {};
-        if (typeof x !== 'number' || typeof y !== 'number') {
-          throw new Error(`Invalid node position at index ${index}`);
-        }
-      }
-
-      this.validateNodeData(node);
-    });
   }
 
   /**
@@ -472,32 +774,34 @@ class WorkflowService {
     const type = (node.data && node.data.type) || node.type;
     const data = node.data || {};
     const config = data.config || {};
+    // Named the way the editor shows it, never by its internal id.
+    const name = this.compiler.nodeLabel(node);
 
     switch (type) {
     case 'persona':
       if (!data.prompt || data.prompt.trim().length === 0) {
-        throw new Error(`Persona node ${node.id} must have a prompt`);
+        throw new Error(`"${name}" must have a prompt`);
       }
       break;
 
     case 'knowledge':
     case 'knowledge-source': {
       if (!data.sourceType) {
-        throw new Error(`Knowledge node ${node.id} must have a source type`);
+        throw new Error(`"${name}" must have a source type`);
       }
 
       switch (data.sourceType) {
       case 'google_sheets':
       case 'google-sheets':
         if (!config.sheetId && !config.spreadsheetId) {
-          throw new Error(`Knowledge node ${node.id} with Google Sheets source must have a sheet ID`);
+          throw new Error(`"${name}" with Google Sheets source must have a sheet ID`);
         }
         break;
       case 'pdf':
       case 'url':
       case 'pdf-url':
         if (!config.url && !config.filePath) {
-          throw new Error(`Knowledge node ${node.id} must have a URL or file path`);
+          throw new Error(`"${name}" must have a URL or file path`);
         }
         break;
       case 'vector_store':
@@ -508,32 +812,32 @@ class WorkflowService {
         // most common configuration.
         break;
       default:
-        throw new Error(`Knowledge node ${node.id} has an unsupported source type: ${data.sourceType}`);
+        throw new Error(`"${name}" has an unsupported source type: ${data.sourceType}`);
       }
       break;
     }
 
     case 'router':
       if (!Array.isArray(data.conditions)) {
-        throw new Error(`Router node ${node.id} must have conditions array`);
+        throw new Error(`"${name}" must have conditions array`);
       }
       break;
 
     case 'ask':
       if (!data.question || String(data.question).trim().length === 0) {
-        throw new Error(`Ask node ${node.id} must have a question`);
+        throw new Error(`"${name}" must have a question`);
       }
       if (!data.variable || String(data.variable).trim().length === 0) {
-        throw new Error(`Ask node ${node.id} must say where to save the answer`);
+        throw new Error(`"${name}" must say where to save the answer`);
       }
       break;
 
     case 'buttons':
       if (!Array.isArray(data.choices) || data.choices.length === 0) {
-        throw new Error(`Choices node ${node.id} must offer at least one choice`);
+        throw new Error(`"${name}" must offer at least one choice`);
       }
       if (data.choices.some(choice => !choice || !String(choice.label || '').trim())) {
-        throw new Error(`Choices node ${node.id} has a choice with no label`);
+        throw new Error(`"${name}" has a choice with no label`);
       }
       break;
 
@@ -546,43 +850,43 @@ class WorkflowService {
       const usable = clauses.some(clause =>
         clause && clause.left && String(clause.left).trim().length > 0);
       if (!usable) {
-        throw new Error(`Check node ${node.id} must have at least one value to check`);
+        throw new Error(`"${name}" must have at least one value to check`);
       }
       break;
     }
 
     case 'notify':
       if (!data.to || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(data.to).trim())) {
-        throw new Error(`Notify node ${node.id} needs the email address to send to`);
+        throw new Error(`"${name}" needs the email address to send to`);
       }
       if (!data.subject || String(data.subject).trim().length === 0) {
-        throw new Error(`Notify node ${node.id} needs a subject`);
+        throw new Error(`"${name}" needs a subject`);
       }
       break;
 
     case 'task':
       if (!data.title || String(data.title).trim().length === 0) {
-        throw new Error(`Task node ${node.id} must have a title`);
+        throw new Error(`"${name}" must have a title`);
       }
       break;
 
     case 'tag':
       if (!Array.isArray(data.tags) || data.tags.length === 0) {
-        throw new Error(`Tag node ${node.id} must have at least one tag`);
+        throw new Error(`"${name}" must have at least one tag`);
       }
       break;
 
     case 'action': {
-      if (!data.url || String(data.url).trim().length === 0) {
-        throw new Error(`Action node ${node.id} must have a URL`);
-      }
+      // The URL (or the saved Action that holds it) is the compiler's to
+      // check: see validateActionNode. A node that uses a saved Action has no
+      // URL of its own, and requiring one here made such a node unsaveable.
 
       // A mapping with a name but no path would quietly resolve to nothing, so
       // a downstream reply would say "your order is " and stop.
       (data.outputs || []).forEach(output => {
         if (output.variable && !output.path) {
           throw new Error(
-            `Action node ${node.id}: "${output.variable}" has no path into the response`
+            `"${name}": "${output.variable}" has no path into the response`
           );
         }
       });
@@ -591,19 +895,19 @@ class WorkflowService {
 
     case 'fallback':
       if (!data.message || data.message.trim().length === 0) {
-        throw new Error(`Fallback node ${node.id} must have a message`);
+        throw new Error(`"${name}" must have a message`);
       }
       break;
 
     case 'llm':
       if (!data.prompt || data.prompt.trim().length === 0) {
-        throw new Error(`LLM node ${node.id} must have a prompt`);
+        throw new Error(`"${name}" must have an instruction`);
       }
       break;
 
     case 'response':
       if (!data.template && !data.message) {
-        throw new Error(`Response node ${node.id} must have a message template`);
+        throw new Error(`"${name}" must have a message template`);
       }
       break;
 
@@ -614,19 +918,19 @@ class WorkflowService {
       const capability = data.capability ? capabilities.byId(String(data.capability)) : null;
       if (!capability) {
         throw new Error(
-          `Capability node ${node.id} must choose one of: ${capabilities.ids().join(', ')}`
+          `"${name}" must choose one of: ${capabilities.ids().join(', ')}`
         );
       }
 
       const input = data.input || {};
       if (typeof input !== 'object' || Array.isArray(input)) {
-        throw new Error(`Capability node ${node.id} has inputs that are not a set of fields`);
+        throw new Error(`"${name}" has inputs that are not a set of fields`);
       }
 
       Object.keys(input).forEach(field => {
         if (!Object.prototype.hasOwnProperty.call(capability.input, field)) {
           throw new Error(
-            `Capability node ${node.id}: "${capability.id}" has no input called "${field}"`
+            `"${name}": "${capability.id}" has no input called "${field}"`
           );
         }
       });
@@ -635,12 +939,12 @@ class WorkflowService {
         const required = !String(spec).endsWith('?');
         const value = input[field];
         if (required && (value === undefined || value === null || String(value).trim() === '')) {
-          throw new Error(`Capability node ${node.id}: "${capability.id}" needs "${field}"`);
+          throw new Error(`"${name}": "${capability.id}" needs "${field}"`);
         }
       });
 
       if (data.limit !== undefined && data.limit !== '' && !/^\d+$/.test(String(data.limit))) {
-        throw new Error(`Capability node ${node.id} has a limit that is not a whole number`);
+        throw new Error(`"${name}" has a limit that is not a whole number`);
       }
       break;
     }
@@ -654,7 +958,7 @@ class WorkflowService {
       break;
 
     default:
-      throw new Error(`Unknown node type: ${type}`);
+      throw new Error(`"${name}" is a kind of step this version does not know (${type})`);
     }
   }
 
@@ -747,6 +1051,7 @@ class WorkflowService {
         version: workflow.version,
         nodes: workflow.nodes,
         edges: workflow.edges,
+        trigger: cleanTrigger(workflow.trigger),
         compiledChain: workflow.compiledChain,
         changeDescription,
         isRollback,
@@ -803,3 +1108,6 @@ module.exports.redactWorkflow = redactWorkflow;
 module.exports.protectNodeSecrets = protectNodeSecrets;
 module.exports.pickEditable = pickEditable;
 module.exports.EDITABLE_FIELDS = EDITABLE_FIELDS;
+module.exports.cleanTrigger = cleanTrigger;
+module.exports.triggerProblems = triggerProblems;
+module.exports.statusError = statusError;

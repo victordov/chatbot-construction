@@ -5,38 +5,18 @@
  * wall of `operator.role_changed` rows nobody can parse is barely better than
  * no log at all, so every action gets a plain-English description and the
  * details are rendered rather than dumped as JSON.
+ *
+ * The descriptions come from the server (services/audit.js), the same list
+ * the CSV export uses, so the screen and the export cannot word one entry two
+ * different ways - and an action added later reads as words, not as a code.
  */
 
 import { registerSection } from './nav.js';
-import { authToken, escapeHtml } from './utils.js';
+import { api, downloadFile, escapeHtml, showToast } from './utils.js';
 
-const state = { skip: 0, limit: 50, action: '', outcome: '', days: 30 };
+const state = { skip: 0, limit: 50, action: '', outcome: '', actorId: '', days: 30 };
 
-
-/**
- * What each action means, in words somebody who was not there can read.
- *
- * Anything not listed falls back to the raw action name, so a new event type
- * shows up rather than silently rendering blank.
- */
-const DESCRIPTIONS = {
-  'auth.login': 'Signed in',
-  'user.created': 'Created an account',
-  'superadmin.created': 'Created a platform superadmin',
-  'operator.activated': 'Reactivated an account',
-  'operator.deactivated': 'Deactivated an account',
-  'operator.updated': 'Edited an account',
-  'operator.role_changed': 'Changed a role',
-  'conversation.deleted': 'Deleted a conversation',
-  'plan.changed': 'Changed the plan',
-  'identity_secret.rotated': 'Rotated the identity secret',
-  'workflow.published': 'Published a workflow',
-  'workflow.rolled_back': 'Rolled a workflow back',
-  'workflow.deleted': 'Deleted a workflow',
-  'gdpr.data_read': 'Read a person\'s data',
-  'gdpr.exported': 'Exported a person\'s data',
-  'gdpr.erased': 'Erased a person\'s data'
-};
+let descriptions = {};
 
 /**
  * Actions where a failure is worth noticing rather than shrugging at.
@@ -47,8 +27,29 @@ const OUTCOME_STYLE = {
   denied: 'table-danger'
 };
 
+/** What a role is called on screen. */
+const ROLE_WORDS = { superadmin: 'platform admin', company_admin: 'admin', operator: 'operator', system: 'system' };
+
+/** Words for an action name nobody has described yet: "Webhook: secret rotated". */
+function fallbackDescription(action) {
+  const [noun, ...rest] = String(action || '').split('.');
+  const words = text => String(text || '').replace(/[_-]+/g, ' ').trim();
+  const subject = words(noun);
+  const verb = words(rest.join(' '));
+  if (!subject) {
+    return 'Unknown action';
+  }
+  const capitalised = subject.charAt(0).toUpperCase() + subject.slice(1);
+  return verb ? `${capitalised}: ${verb}` : capitalised;
+}
+
 function describe(entry) {
-  return DESCRIPTIONS[entry.action] || entry.action;
+  return descriptions[entry.action] || fallbackDescription(entry.action);
+}
+
+/** A details key as words: `chatsReturnedToQueue` -> "chats returned to queue". */
+function keyWords(key) {
+  return String(key).replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[_-]+/g, ' ').toLowerCase();
 }
 
 /**
@@ -62,10 +63,17 @@ function renderDetails(entry) {
   }
 
   Object.entries(entry.details || {}).forEach(([key, value]) => {
-    const shown = value === null || value === undefined
-      ? '—'
-      : (typeof value === 'object' ? JSON.stringify(value) : String(value));
-    parts.push(`<span class="text-muted">${escapeHtml(key)}:</span> ${escapeHtml(shown)}`);
+    let shown;
+    if (value === null || value === undefined) {
+      shown = '—';
+    } else if (typeof value === 'object' && !Array.isArray(value) && ('from' in value || 'to' in value)) {
+      // A change, said as one.
+      const side = side => (side && typeof side === 'object' ? JSON.stringify(side) : String(side ?? '—'));
+      shown = `${side(value.from)} → ${side(value.to)}`;
+    } else {
+      shown = typeof value === 'object' ? JSON.stringify(value) : String(value);
+    }
+    parts.push(`<span class="text-muted">${escapeHtml(keyWords(key))}:</span> ${escapeHtml(shown)}`);
   });
 
   if (entry.ip) {
@@ -73,6 +81,24 @@ function renderDetails(entry) {
   }
 
   return parts.join(' · ') || '<span class="text-muted">—</span>';
+}
+
+/** The filters as a query string, the same for the page and the export. */
+function filterParams() {
+  const params = new URLSearchParams();
+  if (state.action) {
+    params.set('action', state.action);
+  }
+  if (state.outcome) {
+    params.set('outcome', state.outcome);
+  }
+  if (state.actorId) {
+    params.set('actorId', state.actorId);
+  }
+  if (state.days) {
+    params.set('since', new Date(Date.now() - state.days * 86400000).toISOString());
+  }
+  return params;
 }
 
 async function load() {
@@ -83,41 +109,24 @@ async function load() {
 
   table.innerHTML = '<tr><td colspan="4" class="text-center text-muted py-4">Loading…</td></tr>';
 
-  const params = new URLSearchParams({
-    limit: String(state.limit),
-    skip: String(state.skip)
-  });
-
-  if (state.action) {
-    params.set('action', state.action);
-  }
-  if (state.outcome) {
-    params.set('outcome', state.outcome);
-  }
-  if (state.days) {
-    params.set('since', new Date(Date.now() - state.days * 86400000).toISOString());
-  }
+  const params = filterParams();
+  params.set('limit', String(state.limit));
+  params.set('skip', String(state.skip));
 
   try {
-    const response = await fetch(`/api/admin/audit?${params.toString()}`, {
-      headers: { 'x-auth-token': authToken() }
-    });
-
-    if (!response.ok) {
-      throw new Error((await response.json().catch(() => ({}))).error || 'Could not load the log');
-    }
-
-    const { entries, total, retentionDays } = await response.json();
+    const { entries, total, retentionDays } = await api(`/api/admin/audit?${params.toString()}`);
 
     const retentionEl = document.getElementById('audit-retention-days');
     if (retentionEl && retentionDays) {
       retentionEl.textContent = retentionDays;
     }
 
+    const filtered = state.action || state.outcome || state.actorId;
+
     if (entries.length === 0) {
       table.innerHTML = `
         <tr><td colspan="4" class="text-center text-muted py-4">
-          Nothing recorded${state.action || state.outcome ? ' for this filter' : ' yet'}.
+          Nothing recorded${filtered ? ' for this filter' : ' yet'}.
         </td></tr>`;
     } else {
       table.innerHTML = entries.map(entry => `
@@ -127,7 +136,7 @@ async function load() {
           </td>
           <td class="small">
             ${escapeHtml(entry.actor?.displayName || entry.actor?.username || 'System')}
-            ${entry.actor?.role ? `<span class="text-muted">· ${escapeHtml(entry.actor.role)}</span>` : ''}
+            ${entry.actor?.role ? `<span class="text-muted">· ${escapeHtml(ROLE_WORDS[entry.actor.role] || entry.actor.role)}</span>` : ''}
           </td>
           <td class="small">
             ${escapeHtml(describe(entry))}
@@ -152,25 +161,45 @@ async function load() {
   }
 }
 
-async function loadActions() {
+async function loadFilters() {
   try {
-    const response = await fetch('/api/admin/audit/actions', {
-      headers: { 'x-auth-token': authToken() }
-    });
+    const { actions, descriptions: words } = await api('/api/admin/audit/actions');
+    descriptions = words || {};
 
-    if (!response.ok) {
-      return;
-    }
-
-    const { actions } = await response.json();
     const select = document.getElementById('audit-action-filter');
-
     select.innerHTML = '<option value="">All actions</option>' +
-      actions.map(action =>
-        `<option value="${escapeHtml(action)}">${escapeHtml(DESCRIPTIONS[action] || action)}</option>`
-      ).join('');
+      actions
+        .map(action => ({ action, label: descriptions[action] || fallbackDescription(action) }))
+        .sort((a, b) => a.label.localeCompare(b.label))
+        .map(({ action, label }) => `<option value="${escapeHtml(action)}">${escapeHtml(label)}</option>`)
+        .join('');
   } catch {
     // The filter is a convenience; the log still loads without it.
+  }
+
+  try {
+    const { actors } = await api('/api/admin/audit/actors');
+    document.getElementById('audit-actor-filter').innerHTML = '<option value="">Anyone</option>' +
+      actors.map(actor =>
+        `<option value="${escapeHtml(actor.id)}">${escapeHtml(actor.name)}${actor.role ? ` (${escapeHtml(ROLE_WORDS[actor.role] || actor.role)})` : ''}</option>`
+      ).join('');
+  } catch {
+    // As above.
+  }
+
+  // The descriptions may have arrived after the first page did.
+  load();
+}
+
+async function exportLog(button) {
+  button.disabled = true;
+  try {
+    await downloadFile(`/api/admin/audit/export?${filterParams().toString()}`,
+      `audit-log-${new Date().toISOString().slice(0, 10)}.csv`);
+  } catch (error) {
+    showToast('Could not export the log', 'danger');
+  } finally {
+    button.disabled = false;
   }
 }
 
@@ -186,6 +215,7 @@ function setupAudit() {
   };
 
   onChange('audit-action-filter', 'action');
+  onChange('audit-actor-filter', 'actorId');
   onChange('audit-outcome-filter', 'outcome');
   onChange('audit-range-filter', 'days', value => (value ? Number(value) : 0));
 
@@ -199,7 +229,9 @@ function setupAudit() {
     load();
   });
 
-  loadActions();
+  document.getElementById('audit-export')?.addEventListener('click', event => exportLog(event.currentTarget));
+
+  loadFilters();
 }
 
 registerSection('audit', { setup: setupAudit, show: () => load() });

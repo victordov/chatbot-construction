@@ -8,13 +8,15 @@
  */
 
 import * as bootstrap from 'bootstrap';
-import { selectedSessionId } from './inbox.js';
-import { saveJoinedChats, state } from './state.js';
-import { api, escapeHtml, formatRelativeTime, logger, setLoading, showToast } from './utils.js';
+import { chatRecord, confirmOverride, mergeChat, openConversation, refreshConversationControls, selectedSessionId } from './inbox.js';
+import { alertPerson } from './notifications.js';
+import { state } from './state.js';
+import { api, debounce, errorMessage, escapeHtml, formatRelativeTime, logger, setLoading, showToast } from './utils.js';
 
 let cannedReplies = [];
 let currentNotes = [];
 let chatFilter = 'all';
+let queueSearch = '';
 
 
 // ------------------------------------------------------------ saved replies
@@ -50,7 +52,8 @@ function renderPicker(query = '') {
   }
 
   picker.innerHTML = matches.map((reply, index) => `
-    <button type="button" class="canned-item ${index === 0 ? 'is-active' : ''}"
+    <button type="button" class="canned-item ${index === 0 ? 'is-active' : ''}" role="option"
+            aria-selected="${index === 0 ? 'true' : 'false'}"
             data-reply-index="${cannedReplies.indexOf(reply)}">
       <span class="canned-name">${escapeHtml(reply.name)}</span>
       <span class="canned-text">${escapeHtml(reply.text)}</span>
@@ -69,6 +72,48 @@ function hidePicker() {
   document.getElementById('canned-reply-picker').style.display = 'none';
 }
 
+/** Move the highlighted saved reply up or down, keeping it in view. */
+function moveSelection(step) {
+  const items = [...document.querySelectorAll('#canned-reply-picker [data-reply-index]')];
+  if (items.length === 0) {
+    return;
+  }
+  const current = items.findIndex(item => item.classList.contains('is-active'));
+  const next = (current + step + items.length) % items.length;
+  items.forEach((item, index) => {
+    item.classList.toggle('is-active', index === next);
+    item.setAttribute('aria-selected', index === next ? 'true' : 'false');
+  });
+  items[next].scrollIntoView({ block: 'nearest' });
+}
+
+/**
+ * Fill in `{name}`, `{email}` and `{operator}`.
+ *
+ * A saved reply that says "Hi {name}" used to go to the customer exactly like
+ * that. Whatever is not known reads naturally rather than leaving a gap.
+ */
+export function fillPlaceholders(text, { name, email, operator } = {}) {
+  return String(text || '')
+    .replace(/\{\s*name\s*\}/gi, name || 'there')
+    .replace(/\{\s*email\s*\}/gi, email || 'your email address')
+    .replace(/\{\s*operator\s*\}/gi, operator || 'our team');
+}
+
+function placeholderValues() {
+  const conversation = state.currentConversation || {};
+  const metadata = conversation.metadata instanceof Map
+    ? Object.fromEntries(conversation.metadata)
+    : (conversation.metadata || {});
+  const user = state.currentUser || {};
+  const firstName = metadata.name ? String(metadata.name).trim().split(/\s+/)[0] : '';
+  return {
+    name: firstName,
+    email: metadata.email || conversation.followUpEmail || (conversation.email && conversation.email.from) || '',
+    operator: user.displayName || user.username || ''
+  };
+}
+
 /**
  * Put the reply in the composer rather than sending it.
  *
@@ -82,11 +127,12 @@ function insertReply(reply) {
   }
 
   const input = document.getElementById('operator-message');
-  input.value = reply.text;
+  input.value = fillPlaceholders(reply.text, placeholderValues());
   hidePicker();
   input.focus();
   // Cursor at the end, ready to edit.
   input.setSelectionRange(input.value.length, input.value.length);
+  input.dispatchEvent(new Event('input'));
 }
 
 function setupCannedReplies() {
@@ -123,13 +169,22 @@ function setupCannedReplies() {
       return;
     }
 
-    // Enter picks the first match instead of sending "/refund" as a message.
-    if (event.key === 'Enter') {
-      const first = picker.querySelector('[data-reply-index]');
-      if (first) {
+    // Up and down move through the matches, as in any picker.
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      moveSelection(event.key === 'ArrowDown' ? 1 : -1);
+      return;
+    }
+
+    // Enter picks the highlighted match instead of sending "/refund" as a
+    // message.
+    if (event.key === 'Enter' || event.key === 'Tab') {
+      const chosen = picker.querySelector('[data-reply-index].is-active') ||
+        picker.querySelector('[data-reply-index]');
+      if (chosen) {
         event.preventDefault();
         event.stopImmediatePropagation();
-        insertReply(cannedReplies[Number(first.dataset.replyIndex)]);
+        insertReply(cannedReplies[Number(chosen.dataset.replyIndex)]);
       }
     }
   }, true);
@@ -152,15 +207,18 @@ function renderNotes() {
     return;
   }
 
+  const myId = state.currentUser ? String(state.currentUser.id) : '';
+  const admin = state.currentUser && ['company_admin', 'superadmin'].includes(state.currentUser.role);
+
   list.innerHTML = currentNotes.map(note => `
     <div class="note-item ${note.system ? 'is-system' : ''}">
       <div class="note-body">${escapeHtml(note.body)}</div>
       <div class="note-meta">
         ${escapeHtml(note.authorName || 'Unknown')} ·
         ${escapeHtml(formatRelativeTime(note.createdAt))}
-        ${note.system ? '' : `
+        ${!note.system && note._id && (admin || String(note.author || '') === myId) ? `
           <button class="btn btn-link btn-sm p-0 ms-2 delete-note-btn"
-                  data-note-id="${escapeHtml(note._id || '')}">delete</button>`}
+                  data-note-id="${escapeHtml(note._id)}">delete</button>` : ''}
       </div>
     </div>`).join('');
 
@@ -171,7 +229,23 @@ function renderNotes() {
 
 /** Called when a conversation is opened; notes arrive with it. */
 function setNotes(notes) {
-  currentNotes = notes || [];
+  currentNotes = (notes || []).map(note => ({ ...note, _id: note._id ? String(note._id) : note._id }));
+  renderNotes();
+}
+
+/**
+ * Add a note to the list once. The author hears about their own note twice -
+ * from the response and from the broadcast - and it used to appear twice.
+ */
+function rememberNote(note) {
+  if (!note) {
+    return;
+  }
+  const id = note._id ? String(note._id) : null;
+  if (id && currentNotes.some(existing => String(existing._id) === id)) {
+    return;
+  }
+  currentNotes.push({ ...note, _id: id });
   renderNotes();
 }
 
@@ -190,11 +264,12 @@ async function addNote() {
       body: JSON.stringify({ body })
     });
 
-    currentNotes.push(result.note);
     input.value = '';
-    renderNotes();
+    if (selectedSessionId() === sessionId) {
+      rememberNote(result.note);
+    }
   } catch (error) {
-    showToast(error.message, 'danger');
+    showToast(errorMessage(error, 'Could not add the note'), 'danger');
   }
 }
 
@@ -208,10 +283,10 @@ async function deleteNote(noteId) {
     await api(`/api/admin/chat/${encodeURIComponent(sessionId)}/notes/${encodeURIComponent(noteId)}`, {
       method: 'DELETE'
     });
-    currentNotes = currentNotes.filter(note => note._id !== noteId);
+    currentNotes = currentNotes.filter(note => String(note._id) !== String(noteId));
     renderNotes();
   } catch (error) {
-    showToast(error.message, 'danger');
+    showToast(errorMessage(error, 'Could not delete the note'), 'danger');
   }
 }
 
@@ -228,32 +303,68 @@ function setupNotes() {
 
 // ----------------------------------------------------------------- transfer
 
+let transferForce = false;
+
+/**
+ * Who it could go to, and whether each of them could take it now.
+ *
+ * Company admins answer chats too, and are offered. Somebody offline, or not
+ * taking conversations, is shown but cannot be chosen: the server refuses a
+ * transfer to them, because a customer handed to an empty desk waits for
+ * nobody.
+ */
 async function openTransfer() {
   const sessionId = selectedSessionId();
   if (!sessionId) {
     return;
   }
 
+  const override = await confirmOverride('transfer');
+  if (!override.ok) {
+    return;
+  }
+  transferForce = override.force;
+
   const select = document.getElementById('transfer-operator');
-  select.innerHTML = '<option>Loading…</option>';
+  const hint = document.getElementById('transfer-presence-hint');
+  const confirm = document.getElementById('confirm-transfer-btn');
+  select.innerHTML = '<option value="">Loading…</option>';
+  hint.textContent = '';
+  confirm.disabled = true;
   bootstrap.Modal.getOrCreateInstance(document.getElementById('transferModal')).show();
 
   try {
-    const { operators } = await api('/api/admin/operators');
-    const currentUserId = state.currentUser ? String(state.currentUser.id) : null;
+    const { operators } = await api(`/api/admin/chat/${encodeURIComponent(sessionId)}/transfer-targets`);
+    const people = operators || [];
+    const available = people.filter(person => person.online && person.accepting);
 
-    // Transferring to yourself is a no-op the server rejects; do not offer it.
-    const options = (operators || []).filter(op => String(op._id) !== currentUserId);
+    const label = person => {
+      const role = person.role === 'company_admin' ? ' (admin)' : '';
+      const status = !person.online
+        ? 'offline'
+        : !person.accepting ? 'not taking chats' : `online · ${person.load} open`;
+      return `${person.displayName}${role} — ${status}`;
+    };
 
-    select.innerHTML = options.length
-      ? options.map(op =>
-        `<option value="${escapeHtml(op._id)}">${escapeHtml(op.displayName || op.username)}</option>`).join('')
-      : '<option value="">No other operators available</option>';
+    select.innerHTML = people.length
+      ? people.map(person => `
+          <option value="${escapeHtml(person._id)}" ${person.online && person.accepting ? '' : 'disabled'}>
+            ${escapeHtml(label(person))}
+          </option>`).join('')
+      : '<option value="">Nobody else on your team yet</option>';
 
-    document.getElementById('confirm-transfer-btn').disabled = options.length === 0;
+    if (available.length) {
+      select.value = available[0]._id;
+    } else {
+      select.value = '';
+    }
+    hint.textContent = people.length && !available.length
+      ? 'Nobody else is online and taking conversations right now. Leave it in the queue instead.'
+      : '';
+    confirm.disabled = available.length === 0;
   } catch (error) {
-    select.innerHTML = '<option value="">Could not load operators</option>';
-    showToast(error.message, 'danger');
+    select.innerHTML = '<option value="">Could not load your colleagues</option>';
+    showToast(errorMessage(error, 'Could not load your colleagues'), 'danger');
   }
 }
 
@@ -271,7 +382,7 @@ async function confirmTransfer() {
   try {
     const result = await api(`/api/admin/chat/${encodeURIComponent(sessionId)}/transfer`, {
       method: 'POST',
-      body: JSON.stringify({ operatorId, note: note || undefined })
+      body: JSON.stringify({ operatorId, note: note || undefined, force: transferForce || undefined })
     });
 
     bootstrap.Modal.getOrCreateInstance(document.getElementById('transferModal')).hide();
@@ -279,13 +390,20 @@ async function confirmTransfer() {
     showToast(`Transferred to ${result.operatorName}`, 'success');
 
     // It is no longer this operator's chat.
-    state.joinedChats.delete(sessionId);
-    saveJoinedChats();
-    applyChatFilter();
+    const holder = { operatorId: String(result.operatorId || operatorId), operatorName: result.operatorName };
+    if (chatRecord(sessionId)) {
+      mergeChat(sessionId, holder);
+    }
+    if (state.currentConversation && state.currentConversation.sessionId === sessionId) {
+      Object.assign(state.currentConversation, holder);
+      refreshConversationControls();
+    }
   } catch (error) {
-    showToast(error.message, 'danger');
+    // The server says why: offline, not taking chats, somebody else's.
+    showToast(errorMessage(error, 'Could not transfer the conversation'), 'danger');
   } finally {
     setLoading(button, false);
+    transferForce = false;
   }
 }
 
@@ -297,36 +415,40 @@ function setupTransfer() {
 // ------------------------------------------------------------ multiple chats
 
 /**
- * Show only the conversations matching the current filter, and keep the
- * counts honest.
+ * Show only the conversations matching the current filter and search, and
+ * keep the counts honest.
  *
- * Operators could always join several chats, but the queue gave them no way
- * to tell which were theirs, so in practice they worked one at a time.
+ * "Mine" is what the server says this person holds and "Waiting" is somebody
+ * who wants a person and has nobody; the rows carry both (inbox.js). "Mine"
+ * used to mean "joined in this browser", and "Waiting" every conversation the
+ * bot was handling.
  */
 export function applyChatFilter() {
-  const items = document.querySelectorAll('#active-chat-list a[data-session-id]');
+  const list = document.getElementById('active-chat-list');
+  if (!list) {
+    return;
+  }
+  const items = list.querySelectorAll('a[data-session-id]');
   let mine = 0;
   let waiting = 0;
   let visible = 0;
 
   items.forEach(item => {
-    const sessionId = item.getAttribute('data-session-id');
-    const isMine = state.joinedChats.has(sessionId);
-    const hasOperator = item.querySelector('.status-indicator.has-operator') !== null;
+    const isMine = item.dataset.mine === '1';
+    const isWaiting = item.dataset.waiting === '1';
 
     if (isMine) {
       mine += 1;
     }
-    if (!hasOperator) {
+    if (isWaiting) {
       waiting += 1;
     }
 
-    item.classList.toggle('is-mine', isMine);
-
     const show =
-      chatFilter === 'all' ||
-      (chatFilter === 'mine' && isMine) ||
-      (chatFilter === 'unassigned' && !hasOperator);
+      (chatFilter === 'all' ||
+        (chatFilter === 'mine' && isMine) ||
+        (chatFilter === 'unassigned' && isWaiting)) &&
+      (!queueSearch || (item.dataset.search || '').includes(queueSearch));
 
     item.style.display = show ? '' : 'none';
     if (show) {
@@ -338,7 +460,7 @@ export function applyChatFilter() {
   document.getElementById('mine-count').textContent = mine;
   document.getElementById('waiting-count').textContent = waiting;
 
-  const empty = document.querySelector('#active-chat-list .empty-state');
+  const empty = list.querySelector('.empty-state');
   if (empty) {
     empty.style.display = items.length === 0 ? '' : 'none';
   }
@@ -350,11 +472,13 @@ export function applyChatFilter() {
       notice = document.createElement('div');
       notice.id = 'filter-empty-notice';
       notice.className = 'list-group-item text-muted small text-center';
-      document.getElementById('active-chat-list').appendChild(notice);
+      list.appendChild(notice);
     }
-    notice.textContent = chatFilter === 'mine'
-      ? 'You have not joined any conversations yet.'
-      : 'No conversations are waiting.';
+    notice.textContent = queueSearch
+      ? 'No conversation matches that search.'
+      : chatFilter === 'mine'
+        ? 'You are not in any conversations.'
+        : 'Nobody is waiting for a person.';
     notice.style.display = '';
   } else if (notice) {
     notice.style.display = 'none';
@@ -371,6 +495,11 @@ function setupChatFilter() {
       applyChatFilter();
     });
   });
+
+  document.getElementById('queue-search')?.addEventListener('input', debounce(event => {
+    queueSearch = event.target.value.trim().toLowerCase();
+    applyChatFilter();
+  }, 150));
 }
 
 // -------------------------------------------------------------------- setup
@@ -389,32 +518,62 @@ export function setupOperatorTools(socket) {
   if (socket) {
     // A colleague added a note to the chat currently open.
     socket.on('conversation-note', data => {
-      if (data.sessionId === selectedSessionId()) {
-        currentNotes.push(data.note);
+      if (data && data.sessionId === selectedSessionId()) {
+        rememberNote(data.note);
+      }
+    });
+
+    socket.on('conversation-note-deleted', data => {
+      if (data && data.sessionId === selectedSessionId()) {
+        currentNotes = currentNotes.filter(note => String(note._id) !== String(data.noteId));
         renderNotes();
       }
     });
 
     socket.on('chat-assigned', data => {
-      applyChatFilter();
-      if (data.sessionId === selectedSessionId()) {
-        showToast(`This conversation is now with ${data.operatorName}`, 'info');
+      if (!data || !data.sessionId) {
+        return;
+      }
+      const holder = {
+        operatorId: data.operatorId ? String(data.operatorId) : null,
+        operatorName: data.operatorName || null
+      };
+      if (chatRecord(data.sessionId)) {
+        mergeChat(data.sessionId, holder);
+      }
+      if (data.sessionId === selectedSessionId() && state.currentConversation) {
+        Object.assign(state.currentConversation, holder);
+        refreshConversationControls();
+        const me = state.currentUser ? String(state.currentUser.id) : '';
+        const myName = state.currentUser ? (state.currentUser.displayName || state.currentUser.username) : '';
+        // Whoever handed it over has already been told.
+        if (holder.operatorId !== me && data.from !== myName) {
+          showToast(`This conversation is now with ${data.operatorName}`, 'info');
+        }
       }
     });
 
     // Being handed a chat is worth interrupting for.
     socket.on('chat-transferred-to-you', data => {
-      showToast(`${data.from} transferred a conversation to you`, 'info');
-      state.joinedChats.add(data.sessionId);
-      saveJoinedChats();
-      applyChatFilter();
-
-      if (localStorage.getItem('notification-setting') !== 'none' &&
-          'Notification' in window && Notification.permission === 'granted') {
-        new Notification('Conversation transferred to you', {
-          body: data.note || `From ${data.from}`
-        });
+      if (!data || !data.sessionId) {
+        return;
       }
+      const me = state.currentUser ? String(state.currentUser.id) : '';
+      const myName = state.currentUser ? (state.currentUser.displayName || state.currentUser.username) : '';
+      if (chatRecord(data.sessionId)) {
+        mergeChat(data.sessionId, { operatorId: me, operatorName: myName });
+      }
+      // Into the conversation's room, so typing and messages arrive here.
+      // Already ours on the server, so this is a quiet re-join.
+      socket.emit('operator-takeover', { sessionId: data.sessionId });
+
+      alertPerson({
+        kind: 'transfer',
+        key: `transfer:${data.sessionId}`,
+        title: `${data.from || 'A colleague'} transferred a conversation to you`,
+        body: data.note || '',
+        open: () => openConversation(data.sessionId)
+      });
     });
   }
 

@@ -109,7 +109,9 @@ describe('POST /api/bot/test', () => {
 
     expect(response.status).toBe(200);
     expect(response.body.path).toBe('fallback');
-    expect(response.body.reply).toMatch(/sorry/i);
+    // The assistant no longer writes an apology of its own (contract §3); what
+    // the visitor would see instead is the caller's to say.
+    expect(response.body.reply || '').not.toMatch(/encountered an error/i);
     expect(response.body.sources).toEqual([]);
     expect(response.body.warning).toBe('OPENAI_API_KEY is not set');
     await expectNoTrace();

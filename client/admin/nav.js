@@ -25,6 +25,37 @@ const ALIASES = {
 
 let current = null;
 let user = null;
+// What the tab says after the section's name. Replaced by core.js with the
+// product's own name from the server once it is known.
+let productName = 'Dashboard';
+
+/** The product's name, for the browser tab. */
+export function setProductName(name) {
+  if (name) {
+    productName = name;
+    if (current) {
+      const title = titleFor(current);
+      document.title = title ? `${title} · ${productName}` : productName;
+    }
+  }
+}
+
+/**
+ * Show the Developers group, or the one line saying which plan has it.
+ *
+ * Its four screens are for integrating with the API, which the Trial and
+ * Basic plans do not include; showing them anyway made each one a dead end.
+ */
+export function setDevelopersAvailable(available) {
+  const group = document.getElementById('nav-developers')?.closest('.nav-group');
+  const locked = document.getElementById('nav-developers-locked');
+  if (group) {
+    group.classList.toggle('d-none', !available);
+  }
+  if (locked) {
+    locked.classList.toggle('d-none', available);
+  }
+}
 
 /**
  * Register a section. Call at module load.
@@ -127,7 +158,7 @@ export function showSection(requested, { push = true, params = {} } = {}) {
 
   const title = titleFor(id);
   document.getElementById('page-title').textContent = title;
-  document.title = title ? `${title} · Support Dashboard` : 'Support Dashboard';
+  document.title = title ? `${title} · ${productName}` : productName;
 
   closeSidebar();
   current = id;

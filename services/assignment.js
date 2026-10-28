@@ -263,6 +263,13 @@ async function assign(conversation, operator, method = 'auto') {
     timestamp: new Date()
   });
 
+  // And in their bell, so it is still there if they were looking elsewhere.
+  require('./notification').notifyUser(operator.id, {
+    type: 'chat_assigned',
+    message: 'A conversation was assigned to you',
+    sessionId: conversation.sessionId
+  });
+
   logger.info('Conversation assigned', {
     sessionId: conversation.sessionId,
     operator: operator.displayName,

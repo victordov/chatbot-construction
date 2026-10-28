@@ -4,7 +4,7 @@
  */
 
 import { loadActiveChats } from './inbox.js';
-import { errorMessage, logger, setAuthToken, setStoredUser } from './utils.js';
+import { logger, setAuthToken, setStoredUser } from './utils.js';
 
 // Set up connection event handlers
 export function setupConnectionHandlers(socket) {
@@ -48,7 +48,9 @@ export function setupConnectionHandlers(socket) {
     logger.info(`Socket reconnected after ${attemptNumber} attempts`);
 
     // Reload active chats to ensure we have the latest data: anything that
-    // started or ended while we were away was never pushed to us.
+    // started or ended while we were away was never pushed to us. It also
+    // re-joins the rooms of the conversations the server says this person
+    // holds - and only those: the reconnected socket is in none of them.
     loadActiveChats(socket);
   });
 }

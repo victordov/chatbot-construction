@@ -18,6 +18,7 @@ const User = require('../models/user');
 const AuditLog = require('../models/audit-log');
 const usageService = require('../services/usage');
 const stripe = require('../services/stripe');
+const eventually = require('./eventually');
 
 describe('Stripe checkout and portal', () => {
   let app;
@@ -166,8 +167,7 @@ describe('Stripe checkout and portal', () => {
         .send({ plan: 'basic' });
 
       // audit.record is fire-and-forget; give it a moment to land.
-      await new Promise(resolve => setTimeout(resolve, 50));
-      const entry = await AuditLog.findOne({ company: acme._id, action: 'billing.checkout_started' });
+      const entry = await eventually(() => AuditLog.findOne({ company: acme._id, action: 'billing.checkout_started' }));
       expect(entry).not.toBeNull();
       expect(entry.details.planId).toBe('basic');
       expect(entry.actor.username).toBe('checkout-admin');

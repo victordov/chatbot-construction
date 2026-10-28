@@ -117,6 +117,8 @@ app.use(helmet({
 }));
 
 app.use(compression());
+// P2B: Meta signs a channel webhook's exact bytes, so they stay raw - the JSON parser below skips a body already read.
+app.use('/api/channels/webhook', express.raw({ type: () => true, limit: '1mb' }));
 app.use(express.json({
   limit: '1mb',
   // Stripe signs the bytes it sent, so a body that has been parsed and
@@ -200,8 +202,11 @@ async function corsPolicy(req, res, next) {
 
   try {
     // Tenant domains live in the database, so onboarding a customer no longer
-    // requires editing ALLOWED_DOMAINS and redeploying.
-    let allowed = await tenantService.isOriginAllowed(origin);
+    // requires editing ALLOWED_DOMAINS and redeploying. A request that names
+    // its tenant (the widget's `?key=`) is checked against that tenant's own
+    // domains only: a domain registered by somebody else proves nothing here.
+    const widgetKey = typeof req.query.key === 'string' && req.query.key ? req.query.key : null;
+    let allowed = await tenantService.isOriginAllowed(origin, widgetKey ? { widgetKey } : undefined);
 
     // A valid widget key is the higher-confidence signal - it is the thing the
     // tenant deliberately pasted onto their page, whereas the domain list is
@@ -219,8 +224,8 @@ async function corsPolicy(req, res, next) {
     // (or ALLOWED_DOMAINS names) is trusted with credentials, since that is
     // the list a stolen key cannot add itself to.
     let credentialed = allowed;
-    if (!allowed && typeof req.query.key === 'string' && req.query.key) {
-      allowed = Boolean(await tenantService.resolveCompanyId({ widgetKey: req.query.key }));
+    if (!allowed && widgetKey) {
+      allowed = Boolean(await tenantService.resolveCompanyId({ widgetKey }));
       credentialed = false;
     }
 
@@ -338,6 +343,12 @@ app.use(express.static(publicDir, {
       return;
     }
 
+    // The operator app's service worker controls the whole dashboard; said
+    // explicitly so moving the file cannot quietly shrink what it covers.
+    if (filePath === path.join(publicDir, 'admin', 'sw.js')) {
+      res.setHeader('Service-Worker-Allowed', '/admin/');
+    }
+
     // Everything else uses `no-cache`: it still revalidates cheaply via ETag
     // and returns a 304, but guarantees a deploy reaches users on their next
     // request. This covers the widget loader, whose URL is pasted into
@@ -373,6 +384,8 @@ app.get('/ready', (req, res) => {
 // should not be held to the per-address allowance meant for traffic that has
 // not said who it is.
 app.use('/api/v1', require('./routes/public-api'));
+// P2B: WhatsApp / Messenger / Instagram webhooks (signed, so ahead of the per-address limiter) and their settings.
+app.use('/api/channels', require('./routes/channels'));
 
 // Rate limiters were defined but never applied, leaving login open to
 // unlimited brute force and the chat endpoint open to flooding.
@@ -410,6 +423,18 @@ app.use('/api/contacts', contactRoutes);
 app.use('/api/email', emailRoutes);
 app.use('/api/api-keys', require('./routes/api-keys'));
 app.use('/api/actions', require('./routes/actions'));
+// Push notifications on an operator's own devices (P2C).
+app.use('/api/push', require('./routes/push'));
+// The installable operator app's manifest, named after the product (P2C).
+app.get('/admin/manifest.webmanifest', require('./routes/push').manifest);
+// Agencies: their clients, working in a client's dashboard, their brand (P2F).
+app.use('/api/agency', require('./routes/agency'));
+// P2E: tenants' remote MCP servers, whose tools the assistant may use.
+app.use('/api/mcp', require('./routes/mcp'));
+// Booking: a tenant's Cal.com, Calendly or Google Calendar, and what the bot booked in it.
+app.use('/api/booking', require('./routes/booking'));
+// P2D: the WordPress plugin and Shopify snippet the install tabs link to.
+app.use('/api/downloads', require('./routes/downloads'));
 
 app.get('/', (req, res) => {
   res.redirect('/admin/');
@@ -539,6 +564,14 @@ async function shutdown(signal) {
           }
         }
       });
+
+    // Workflow run counts are written in batches; the last batch would
+    // otherwise be lost with the process.
+    try {
+      await require('./services/runtime-registry').getRuntimeService().flushStats();
+    } catch (error) {
+      logger.warn('Could not write the last workflow statistics', { error: error.message });
+    }
 
     await mongoose.connection.close(false);
     logger.info('Shutdown complete');

@@ -658,7 +658,10 @@ async function runCapability(step, context) {
 
   const result = await connector.call(context.companyId, capabilityId, input, {
     simulate: context.simulate,
-    maxItems: parseInt(data.limit, 10) || undefined
+    maxItems: parseInt(data.limit, 10) || undefined,
+    // So a booking made through a connected calendar is recorded against
+    // this conversation, and its visitor can cancel it later.
+    sessionId: context.sessionId
   });
 
   if (result.simulated) {
@@ -694,20 +697,47 @@ async function runCapability(step, context) {
     variables[`result_${field}`] = String(fieldValue);
   });
 
+  const cards = { type: capability.returns.list || capability.returns.one, items };
+
+  // The editor stores this as the words "yes"/"no", and "no" is truthy, so
+  // every capability node used to offer buttons whether asked to or not.
+  if (!isEnabled(data.offerAsChoices)) {
+    // Rendered as cards by the widget rather than described in a sentence.
+    return { branch: 'success', variables, cards };
+  }
+
+  const choices = items.slice(0, 6).map((item, index) => {
+    const label = String(item.title || item.label || formatSlotLabel(item)).slice(0, 60);
+    return {
+      id: item.id !== undefined && item.id !== null ? item.id : `result_${index}`,
+      label,
+      value: item.id !== undefined && item.id !== null ? item.id : label
+    };
+  });
+
+  // Offering buttons and walking straight on meant the flow booked, or
+  // described, the first result before the visitor had tapped anything. It
+  // now stops here like an Offer Choices step, and the tap resumes it down
+  // the Found something output with the pick saved.
   return {
     branch: 'success',
     variables,
-    // Rendered as cards by the widget rather than described in a sentence.
-    cards: { type: capability.returns.list || capability.returns.one, items },
-    // The editor stores this as the words "yes"/"no", and "no" is truthy, so
-    // every capability node used to offer buttons whether asked to or not.
-    choices: isEnabled(data.offerAsChoices)
-      ? items.slice(0, 6).map(item => ({
-        id: item.id,
-        label: item.title || item.label || formatSlotLabel(item),
-        value: item.id
-      }))
-      : undefined
+    cards,
+    choices,
+    response: context.render(data.question || 'Which one would you like?'),
+    awaiting: {
+      nodeId: context.currentId,
+      variable: String(data.variable || 'selected').replace(/[^\w]/g, '_'),
+      kind: 'choice',
+      choices,
+      attempts: 0,
+      maxAttempts: MAX_ASK_ATTEMPTS,
+      // Every pick goes the same way; somebody who keeps typing something
+      // else is taken down the failure output, as for "nothing found".
+      next: 'success',
+      giveUp: 'error'
+    },
+    halt: true
   };
 }
 

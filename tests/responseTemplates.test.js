@@ -11,6 +11,7 @@ const ResponseTemplate = require('../models/response-template');
 const { ResponseTemplateService } = require('../services/responseTemplates');
 const { IntentClassifier } = require('../services/intent-classifier');
 const { EmbeddingService } = require('../services/embeddings');
+const eventually = require('./eventually');
 
 describe('ResponseTemplateService', () => {
   let service;
@@ -110,8 +111,10 @@ describe('ResponseTemplateService', () => {
       await service.match(acme._id, 'return an item');
 
       // Recorded fire-and-forget, so give it a moment to land.
-      await new Promise(resolve => setTimeout(resolve, 50));
-      const template = await ResponseTemplate.findOne({ name: 'Returns' });
+      const template = await eventually(async () => {
+        const found = await ResponseTemplate.findOne({ name: 'Returns' });
+        return found && found.useCount >= 1 && found;
+      });
       expect(template.useCount).toBe(1);
     });
   });

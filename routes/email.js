@@ -12,6 +12,7 @@ const router = express.Router();
 
 const Company = require('../models/company');
 const emailChannel = require('../services/email-channel');
+const lifecycle = require('../services/conversation-lifecycle');
 const socketManager = require('../socketManager');
 const { logger } = require('../services/logging');
 
@@ -25,7 +26,11 @@ router.use(express.urlencoded({ extended: true, limit: '10mb' }));
 router.use(express.json({ limit: '10mb' }));
 
 /**
- * POST /api/email/inbound/:companyId/:provider?secret=...
+ * POST /api/email/inbound/:companyId/:provider
+ *
+ * The secret goes in an `X-Inbound-Secret` header where the provider allows
+ * custom headers, which keeps it out of access logs; `?secret=` still works
+ * for providers that can only be given a URL.
  *
  * The company is in the path rather than inferred from the recipient address,
  * because the recipient is attacker-controlled and inferring a tenant from it
@@ -55,8 +60,8 @@ router.post('/inbound/:companyId/:provider?', async (req, res) => {
       return res.status(404).json({ error: 'Not found' });
     }
 
-    const provided = req.query.secret ||
-      req.get('x-inbound-secret') ||
+    const provided = req.get('x-inbound-secret') ||
+      req.query.secret ||
       (req.body && req.body.secret);
 
     if (!emailChannel.verifyInboundSecret(provided, company.emailChannel.inboundSecret)) {
@@ -79,15 +84,36 @@ router.post('/inbound/:companyId/:provider?', async (req, res) => {
       return res.status(202).json({ accepted: false });
     }
 
+    // Proof the forwarding works, for the settings screen. A retry counts:
+    // it is still mail arriving.
+    Company.updateOne({ _id: companyId }, { $set: { 'emailChannel.lastInboundAt': new Date() } })
+      .catch(error => logger.warn('Could not record the last inbound email', { error: error.message }));
+
+    if (result.duplicate) {
+      return res.json({ accepted: true, conversation: result.conversation.sessionId, duplicate: true });
+    }
+
+    const conversation = result.conversation;
+    const stored = conversation.messages[conversation.messages.length - 1];
+
     // Surface it in the operator queue exactly like a chat message.
     socketManager.emitToOperators(companyId, result.created ? 'new-chat' : 'new-message', {
-      sessionId: result.conversation.sessionId,
+      sessionId: conversation.sessionId,
       channel: 'email',
       message: parsed.text,
       sender: 'user',
       userName: parsed.from,
       subject: parsed.subject,
+      // The fields a chat's `new-chat` carries, so the queue treats both alike.
+      visitorName: parsed.from,
+      domain: conversation.domain,
+      preview: lifecycle.preview(parsed.text),
+      createdAt: conversation.startedAt,
       timestamp: new Date()
+    });
+
+    lifecycle.announceMessages(conversation, [stored], {
+      operators: (event, payload) => socketManager.emitToOperators(companyId, event, payload)
     });
 
     res.json({

@@ -68,6 +68,44 @@ function emitToSession(sessionId, event, payload) {
 }
 
 /**
+ * Room only the visitor's own connections join, alongside the session room.
+ *
+ * Operators who open a conversation join the session room too, so an event
+ * meant for the widget - "Ada has joined", "leave your email" - sent to the
+ * session room also reached every operator watching it, under an event name
+ * the dashboard uses for something else.
+ */
+function visitorRoom(sessionId) {
+  return `visitor:${sessionId}`;
+}
+
+/** Emit to the visitor's widget(s) on a session, and nobody else. */
+function emitToVisitor(sessionId, event, payload) {
+  try {
+    getIo().to(visitorRoom(sessionId)).emit(event, payload);
+    return true;
+  } catch (error) {
+    logger.warn(`Unable to emit "${event}" to the visitor on ${sessionId}`, { error: error.message });
+    return false;
+  }
+}
+
+/**
+ * Whether the visitor on a session has a connection open right now, on any
+ * process. Used to decide whether an operator's reply can be read in the chat
+ * or has to go by email.
+ */
+async function visitorConnected(sessionId) {
+  try {
+    const sockets = await getIo().in(visitorRoom(sessionId)).fetchSockets();
+    return sockets.length > 0;
+  } catch (error) {
+    // Sockets not initialised (tests, scripts): nobody is connected.
+    return false;
+  }
+}
+
+/**
  * Room one member of staff joins on connect (`websockets.js`), so anything
  * addressed to a person reaches that person.
  */
@@ -98,14 +136,50 @@ function emitToUser(userId, event, payload) {
   }
 }
 
+/**
+ * Close every socket one member of staff has open, on every process.
+ *
+ * For the moments a session must end now rather than at the next periodic
+ * check: an account deactivated, a password changed, a sign-out everywhere.
+ * Without this an operator removed from the team kept receiving the tenant's
+ * conversations until they happened to close the tab, because a socket is
+ * only authenticated when it connects.
+ *
+ * Each socket is told why first, so the dashboard can send the person to the
+ * sign-in page instead of showing "reconnecting" forever.
+ *
+ * @param {string} userId
+ * @param {string} [reason] e.g. 'deactivated', 'signed-out'
+ * @returns {boolean} whether the request went out
+ */
+function disconnectUser(userId, reason = 'signed-out') {
+  if (!userId) {
+    return false;
+  }
+
+  try {
+    const target = getIo();
+    target.to(userRoom(userId)).emit('session-expired', { reason });
+    target.in(userRoom(userId)).disconnectSockets(true);
+    return true;
+  } catch (error) {
+    logger.warn(`Unable to disconnect user ${userId}`, { error: error.message });
+    return false;
+  }
+}
+
 module.exports = {
   setIo,
   getIo,
   operatorRoom,
   userRoom,
+  visitorRoom,
   emitToOperators,
   emitToUser,
   broadcastToTenant,
   emitToSession,
+  emitToVisitor,
+  visitorConnected,
+  disconnectUser,
   GLOBAL_OPERATOR_ROOM
 };

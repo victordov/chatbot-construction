@@ -162,7 +162,14 @@ async function planLimit(req, fallback) {
     const limit = subscription.limitFor('apiRequestsPerMinute');
     // `null` is this codebase's "unlimited". express-rate-limit has no such
     // value - 0 blocks everything - so it becomes a number nobody reaches.
-    return limit === null ? Number.MAX_SAFE_INTEGER : limit;
+    if (limit === null) {
+      return Number.MAX_SAFE_INTEGER;
+    }
+    // A signed-in person using the dashboard is not a program: one page load
+    // is a dozen requests, and a trial admin clicking through setup must not
+    // meet "too many requests" on their first afternoon. The plan's number
+    // still governs the public API, which has its own per-key limiter.
+    return Math.max(limit, envInt('RATE_LIMIT_DASHBOARD_MIN', 300));
   } catch (error) {
     logger.error('Rate limit plan lookup failed; using the default allowance', {
       companyId: who.companyId,

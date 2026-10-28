@@ -14,12 +14,19 @@
  * The mapping from a Stripe price to one of our plans is configuration, not
  * code: `STRIPE_PRICE_<PLAN>` per plan, or a `planId` in the subscription's
  * metadata, which is what a manually created subscription will carry.
+ *
+ * Per-resolution billing adds a metered price (`STRIPE_PRICE_RESOLUTION`)
+ * attached to a Stripe Billing Meter whose event name is
+ * `STRIPE_RESOLUTION_EVENT` (default `resolutions`), and optionally a base
+ * fee price per plan (`STRIPE_PRICE_<PLAN>_PER_RESOLUTION`). Usage reaches the
+ * meter as meter events (POST /v1/billing/meter_events), one a day per
+ * company and month, sent by services/resolutions.js.
  */
 
 const crypto = require('crypto');
 const axios = require('axios');
 const mongoose = require('mongoose');
-const { PLANS } = require('../config/plans');
+const { PLANS, resolutionPricing } = require('../config/plans');
 const { logger } = require('./logging');
 
 /** How far out of date a signature may be. Stripe's own default. */
@@ -195,12 +202,39 @@ function planFor({ priceId, metadata = {} }) {
   return null;
 }
 
-/** The price id on a Stripe subscription object, if it has one. */
+/** Every price id on a Stripe subscription object. */
+function pricesOf(subscription) {
+  const items = subscription && subscription.items && Array.isArray(subscription.items.data)
+    ? subscription.items.data
+    : [];
+  return items.map(item => (item && item.price ? item.price.id : null)).filter(Boolean);
+}
+
+/**
+ * The price that names the plan on a Stripe subscription object, if it has
+ * one. A per-resolution subscription also carries the metered resolution
+ * price, which belongs to no plan, so that one is never the answer.
+ */
 function priceFrom(subscription) {
-  const item = subscription && subscription.items && Array.isArray(subscription.items.data)
-    ? subscription.items.data[0]
-    : null;
-  return item && item.price ? item.price.id : null;
+  const prices = pricesOf(subscription);
+  const metered = resolutionPrice();
+  return prices.find(price => price !== metered) || prices[0] || null;
+}
+
+/**
+ * Whether a Stripe subscription is billed per resolution: it carries the
+ * metered resolution price. Undefined when that price is not configured, so
+ * a deployment without metered billing never changes anyone's model.
+ */
+function pricingModelFrom(subscription, metadata = {}) {
+  if (metadata.pricingModel === 'per_resolution' || metadata.pricingModel === 'flat') {
+    return metadata.pricingModel;
+  }
+  const metered = resolutionPrice();
+  if (!metered || pricesOf(subscription).length === 0) {
+    return undefined;
+  }
+  return pricesOf(subscription).includes(metered) ? 'per_resolution' : 'flat';
 }
 
 function secondsToDate(seconds) {
@@ -272,6 +306,9 @@ function translate(event) {
       changes: {
         planId,
         status: 'active',
+        // Only when the checkout said so: a session carries no prices, and
+        // the subscription event that follows does.
+        pricingModel: ['flat', 'per_resolution'].includes(metadata.pricingModel) ? metadata.pricingModel : undefined,
         externalCustomerId: object.customer,
         externalSubscriptionId: object.subscription,
         eventAt
@@ -303,6 +340,7 @@ function translate(event) {
       changes: {
         planId: planFor({ priceId: priceFrom(object), metadata }),
         status: statusMap[object.status] || undefined,
+        pricingModel: pricingModelFrom(object, metadata),
         currentPeriodEnd: secondsToDate(object.current_period_end),
         externalCustomerId: object.customer,
         externalSubscriptionId: object.id,
@@ -356,8 +394,12 @@ function translate(event) {
 
 const STRIPE_API = 'https://api.stripe.com/v1';
 
-/** Plans a tenant can buy through Checkout, in catalogue order. Never the trial. */
-const PURCHASABLE_PLANS = ['basic', 'professional', 'enterprise'];
+/**
+ * Plans a tenant can buy through Checkout, in catalogue order. Never the
+ * trial. The agency plan only for a company a superadmin made an agency
+ * (routes/billing.js checks).
+ */
+const PURCHASABLE_PLANS = ['basic', 'professional', 'agency', 'enterprise'];
 
 /** Raised when Stripe is not configured well enough to take this payment. */
 class StripeNotConfiguredError extends Error {}
@@ -393,6 +435,60 @@ function checkoutPlans() {
   return PURCHASABLE_PLANS.filter(planId => Boolean(priceFor(planId)));
 }
 
+/** The metered price resolutions are billed at, or null. */
+function resolutionPrice() {
+  return process.env.STRIPE_PRICE_RESOLUTION || null;
+}
+
+/** The meter's event name; must match the Billing Meter set up in Stripe. */
+function resolutionEventName() {
+  return (process.env.STRIPE_RESOLUTION_EVENT || '').trim() || 'resolutions';
+}
+
+/**
+ * Whether resolutions can be reported to Stripe at all: a key and the
+ * metered price. Without both, per-resolution billing is shown on the
+ * billing screen and nothing is sent anywhere.
+ */
+function meteredBillingConfigured() {
+  return Boolean(secretKey() && resolutionPrice());
+}
+
+/**
+ * The Stripe prices a per-resolution checkout for a plan needs: the metered
+ * price always, and the plan's base-fee price when the base fee is not zero.
+ * Null when the plan has no per-resolution option or a price is missing.
+ */
+function resolutionPricesFor(planId) {
+  const pricing = resolutionPricing(planId);
+  if (!pricing || !meteredBillingConfigured() || !PURCHASABLE_PLANS.includes(planId)) {
+    return null;
+  }
+  const base = process.env[`STRIPE_PRICE_${planId.toUpperCase()}_PER_RESOLUTION`] || null;
+  if (pricing.baseFee > 0 && !base) {
+    return null;
+  }
+  return { base: pricing.baseFee > 0 ? base : null, metered: resolutionPrice() };
+}
+
+/** Plans that can be bought per resolution through Checkout right now. */
+function resolutionCheckoutPlans() {
+  return PURCHASABLE_PLANS.filter(planId => Boolean(resolutionPricesFor(planId)));
+}
+
+/**
+ * The first moment of next month, UTC, in seconds.
+ *
+ * A per-resolution subscription is anchored there so Stripe's billing
+ * periods are calendar months - the same months usage is counted in and the
+ * spending cap applies to. Otherwise an invoice running from the 15th to the
+ * 15th would hold the tail of one month's capped usage and the head of the
+ * next, and could come to nearly twice the cap.
+ */
+function nextMonthAnchor(now = new Date()) {
+  return Math.floor(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1) / 1000);
+}
+
 /**
  * Flatten a nested object into Stripe's form encoding:
  * `{ line_items: [{ price: 'p' }] }` becomes `line_items[0][price]=p`.
@@ -414,7 +510,7 @@ function formEncode(value, prefix, pairs = []) {
   return pairs;
 }
 
-async function stripePost(path, params, { idempotencyKey } = {}) {
+async function stripePost(path, params, { idempotencyKey, failure = 'Stripe could not start the payment' } = {}) {
   const headers = {
     Authorization: `Bearer ${secretKey()}`,
     'Content-Type': 'application/x-www-form-urlencoded'
@@ -437,7 +533,7 @@ async function stripePost(path, params, { idempotencyKey } = {}) {
       ? error.response.data.error.message
       : error.message;
     logger.error('Stripe request failed', { path, status, error: detail });
-    throw new StripeRequestError('Stripe could not start the payment', status);
+    throw new StripeRequestError(failure, status);
   }
 }
 
@@ -453,19 +549,34 @@ async function stripePost(path, params, { idempotencyKey } = {}) {
  *
  * @returns {Promise<{id: string, url: string}>}
  */
-async function createCheckoutSession({ companyId, planId, customerId, email, baseUrl }) {
-  const price = priceFor(planId);
-  if (!secretKey() || !price) {
+async function createCheckoutSession({ companyId, planId, customerId, email, baseUrl, pricingModel = 'flat', now }) {
+  const perResolution = pricingModel === 'per_resolution';
+  const price = perResolution ? null : priceFor(planId);
+  const resolutionPrices = perResolution ? resolutionPricesFor(planId) : null;
+
+  if (!secretKey() || (perResolution ? !resolutionPrices : !price)) {
     throw new StripeNotConfiguredError(`Checkout is not configured for the ${planId} plan`);
   }
 
-  const metadata = { companyId: String(companyId), planId };
+  // A metered price takes no quantity: Stripe counts it from meter events.
+  const lineItems = perResolution
+    ? [
+      ...(resolutionPrices.base ? [{ price: resolutionPrices.base, quantity: 1 }] : []),
+      { price: resolutionPrices.metered }
+    ]
+    : [{ price, quantity: 1 }];
+
+  const metadata = perResolution
+    ? { companyId: String(companyId), planId, pricingModel }
+    : { companyId: String(companyId), planId };
   const params = {
     mode: 'subscription',
-    line_items: [{ price, quantity: 1 }],
+    line_items: lineItems,
     client_reference_id: String(companyId),
     metadata,
-    subscription_data: { metadata },
+    subscription_data: perResolution
+      ? { metadata, billing_cycle_anchor: nextMonthAnchor(now) }
+      : { metadata },
     success_url: `${baseUrl}/admin/#billing?checkout=success`,
     cancel_url: `${baseUrl}/admin/#billing?checkout=cancelled`,
     allow_promotion_codes: 'true'
@@ -501,7 +612,115 @@ async function createPortalSession({ customerId, baseUrl }) {
   return { url: session.url };
 }
 
+/**
+ * A customer's invoices, newest first.
+ *
+ * Read straight from Stripe each time rather than mirrored here: they are
+ * Stripe's documents, Stripe hosts the PDF, and a copy would only be a copy
+ * that can be out of date.
+ *
+ * @returns {Promise<Array<{id, number, status, total, currency, created, hostedUrl, pdfUrl}>>}
+ */
+async function listInvoices(customerId, { limit = 24 } = {}) {
+  if (!secretKey()) {
+    throw new StripeNotConfiguredError('Stripe is not configured');
+  }
+
+  try {
+    const response = await axios.get(`${STRIPE_API}/invoices`, {
+      headers: { Authorization: `Bearer ${secretKey()}` },
+      params: { customer: customerId, limit: Math.min(100, Math.max(1, limit)) },
+      timeout: 15000
+    });
+
+    return ((response.data && response.data.data) || []).map(invoice => ({
+      id: invoice.id,
+      number: invoice.number || null,
+      status: invoice.status,
+      // Stripe counts in the currency's smallest unit.
+      total: Number.isFinite(invoice.total) ? invoice.total / 100 : null,
+      currency: invoice.currency ? String(invoice.currency).toUpperCase() : null,
+      created: secondsToDate(invoice.created),
+      periodStart: secondsToDate(invoice.period_start),
+      periodEnd: secondsToDate(invoice.period_end),
+      hostedUrl: invoice.hosted_invoice_url || null,
+      pdfUrl: invoice.invoice_pdf || null
+    }));
+  } catch (error) {
+    const status = error.response ? error.response.status : null;
+    const detail = error.response && error.response.data && error.response.data.error
+      ? error.response.data.error.message
+      : error.message;
+    logger.error('Stripe request failed', { path: '/invoices', status, error: detail });
+    throw new StripeRequestError('Stripe could not list the invoices', status);
+  }
+}
+
+/**
+ * Report usage to the resolution meter.
+ *
+ * `identifier` is Stripe's own deduplication key for meter events (unique
+ * within at least 24 hours) and goes as the Idempotency-Key as well, so a
+ * request retried because the answer was lost cannot count twice. A value
+ * may be negative: that is how Stripe takes a correction, and an invoice
+ * line never goes below zero.
+ *
+ * Retries a 409, a 429, a 5xx and a request that never got an answer a
+ * couple of times before giving up; the error carries `permanent` when
+ * Stripe refused the event outright, in which case nothing was recorded.
+ *
+ * @param {object} event
+ * @param {string} event.customerId the Stripe customer
+ * @param {number} event.value resolutions to add (or take away)
+ * @param {string} event.identifier at most 100 characters
+ * @param {number} [event.timestamp] seconds; Stripe accepts the last 35 days
+ * @param {object} [options]
+ * @param {number} [options.retries=2]
+ * @param {number} [options.retryDelayMs=500]
+ */
+async function reportMeterEvent({ customerId, value, identifier, timestamp }, { retries = 2, retryDelayMs = 500 } = {}) {
+  if (!meteredBillingConfigured()) {
+    throw new StripeNotConfiguredError('Metered billing is not configured');
+  }
+
+  const params = {
+    event_name: resolutionEventName(),
+    identifier,
+    timestamp,
+    payload: { stripe_customer_id: customerId, value: String(value) }
+  };
+
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await stripePost('/billing/meter_events', params, {
+        idempotencyKey: identifier,
+        failure: 'Stripe did not accept the usage report'
+      });
+    } catch (error) {
+      const status = error.status;
+      const transient = !status || status === 409 || status === 429 || status >= 500;
+      if (!transient) {
+        error.permanent = true;
+        throw error;
+      }
+      if (attempt >= retries) {
+        throw error;
+      }
+      await new Promise(resolve => setTimeout(resolve, retryDelayMs * (attempt + 1)));
+    }
+  }
+}
+
 module.exports = {
+  listInvoices,
+  reportMeterEvent,
+  meteredBillingConfigured,
+  resolutionPrice,
+  resolutionEventName,
+  resolutionPricesFor,
+  resolutionCheckoutPlans,
+  pricingModelFrom,
+  nextMonthAnchor,
   verifyEvent,
   translate,
   planFor,

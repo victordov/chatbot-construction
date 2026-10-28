@@ -114,7 +114,9 @@ describe('the assistant reports what it used', () => {
 
     const answer = await service.generateResponse('what is the returns policy?');
 
-    expect(answer).toMatch(/sorry/i);
+    // No apology text any more: the caller hands over instead (contract §3).
+    expect(answer).toBeNull();
+    expect(service.lastFailed).toBe(true);
     expect(service.lastPath).toBe('fallback');
     expect(service.lastSources).toEqual([]);
   });

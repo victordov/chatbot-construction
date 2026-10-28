@@ -139,9 +139,11 @@ describe('AIService tenant scoping', () => {
       expect(service.scope).toBeNull();
 
       // With no scope the check short-circuits, so no model call is made even
-      // though no client is configured.
+      // though no client is configured. It gets as far as the answer, which
+      // fails for want of a client - reported as a failure, not as text.
       const response = await service.generateResponse('tell me about anything', []);
-      expect(typeof response).toBe('string');
+      expect(response).toBeNull();
+      expect(service.lastFailed).toBe(true);
     });
 
     test('a configured scope is carried onto the service', async () => {

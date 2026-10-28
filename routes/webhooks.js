@@ -76,7 +76,25 @@ router.get('/deliveries', async (req, res) => {
       WebhookDelivery.countDocuments(filter)
     ]);
 
-    res.json({ deliveries, total, retentionDays: WebhookDelivery.RETENTION_DAYS });
+    // Which endpoint each went to, so a tenant with three endpoints can tell
+    // whose delivery failed without opening each one.
+    const hookIds = [...new Set(deliveries.map(delivery => String(delivery.webhook)))];
+    const hooks = await Webhook.find({ _id: { $in: hookIds }, ...companyFilter(req.user) })
+      .select('url description').lean();
+    const hookOf = new Map(hooks.map(hook => [String(hook._id), hook]));
+
+    res.json({
+      deliveries: deliveries.map(delivery => {
+        const hook = hookOf.get(String(delivery.webhook));
+        return {
+          ...delivery,
+          webhookUrl: hook ? hook.url : null,
+          webhookDescription: hook ? hook.description : null
+        };
+      }),
+      total,
+      retentionDays: WebhookDelivery.RETENTION_DAYS
+    });
   } catch (error) {
     logger.error('Failed to load webhook deliveries', { error: error.message });
     res.status(500).json({ error: 'Failed to load the deliveries' });
@@ -291,6 +309,55 @@ router.post('/:id/test', async (req, res) => {
   } catch (error) {
     logger.error('Failed to send test webhook', { error: error.message });
     res.status(500).json({ error: 'Failed to send the test' });
+  }
+});
+
+/**
+ * Send a failed delivery again, once the endpoint has been fixed.
+ *
+ * Only a delivery that has given up: one still pending will be retried on its
+ * own, and sending it by hand as well would deliver it twice.
+ */
+router.post('/:id/deliveries/:deliveryId/redeliver', async (req, res) => {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id) || !mongoose.Types.ObjectId.isValid(req.params.deliveryId)) {
+      return res.status(404).json({ error: 'Delivery not found' });
+    }
+
+    const hook = await Webhook.findOne({ _id: req.params.id, ...companyFilter(req.user) })
+      .select('+secret').lean();
+
+    if (!hook) {
+      return res.status(404).json({ error: 'Endpoint not found' });
+    }
+
+    const delivery = await WebhookDelivery.findOne({ _id: req.params.deliveryId, webhook: hook._id }).lean();
+
+    if (!delivery) {
+      return res.status(404).json({ error: 'Delivery not found' });
+    }
+
+    if (delivery.status === 'pending') {
+      return res.status(409).json({ error: 'This delivery is still being retried automatically' });
+    }
+
+    if (!hook.enabled) {
+      return res.status(409).json({ error: 'Turn the endpoint back on before sending to it again' });
+    }
+
+    const result = await webhookService.redeliver(hook, delivery);
+
+    audit.record({
+      req,
+      action: 'webhook.redelivered',
+      target: { type: 'webhook', id: String(hook._id), label: hook.url },
+      details: { event: delivery.event, originalDelivery: String(delivery._id), delivered: result.delivered }
+    });
+
+    res.json({ result });
+  } catch (error) {
+    logger.error('Failed to redeliver a webhook', { error: error.message });
+    res.status(500).json({ error: 'Failed to send it again' });
   }
 });
 

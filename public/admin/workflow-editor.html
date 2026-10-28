@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Workflow Editor · Chatbot Admin</title>
+    <title>Workflow editor</title>
     <link rel="stylesheet" href="/dist/workflow-editor.css">
 </head>
 <body>
@@ -50,8 +50,13 @@
                     <i data-feather="save"></i> Save
                 </button>
 
-                <button class="btn btn-sm btn-primary" id="wf-publish" title="Make this workflow live">
+                <button class="btn btn-sm btn-primary" id="wf-publish" title="Make the version on the canvas live">
                     <i data-feather="upload-cloud"></i> Publish
+                </button>
+
+                <!-- Shown only while the workflow is live. -->
+                <button class="btn btn-sm btn-outline-danger" id="wf-unpublish" title="Stop this workflow answering visitors" hidden>
+                    <i data-feather="pause-circle"></i> Unpublish
                 </button>
 
                 <div class="dropdown">

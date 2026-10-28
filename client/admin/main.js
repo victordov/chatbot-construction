@@ -15,11 +15,15 @@ import './tasks.js';
 import './knowledge.js';
 import './assistant.js';
 import './actions.js';
+import './mcp.js';
+import './booking.js';
 import './workflows.js';
 import './bot-test.js';
+import './gaps.js';
 // Channels
 import './widget.js';
 import './email-channel.js';
+import './channels-social.js';
 import './hours.js';
 // Team, Reports, Account
 import './operators.js';
@@ -28,6 +32,7 @@ import './analytics.js';
 import './billing.js';
 import './retention.js';
 import './audit.js';
+import './agency.js';
 // Developers
 import './connector.js';
 import './identity.js';
@@ -37,5 +42,7 @@ import './api-keys.js';
 import './companies.js';
 import './platform-usage.js';
 import './profile.js';
+// The installable app and push notifications on this device (P2C).
+import './push.js';
 
 import './core.js';

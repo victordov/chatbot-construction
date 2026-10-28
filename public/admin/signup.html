@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Start your free trial</title>
+    <link rel="stylesheet" href="/dist/base.css">
+    <link rel="stylesheet" href="/dist/auth.css">
+</head>
+<body>
+    <div class="container">
+        <div class="auth-container auth-wide">
+            <div class="text-center mb-4">
+                <h1 class="h3 mb-2 fw-normal" data-product-name>Support Desk</h1>
+                <p class="mb-0">Start a free trial. No card needed.</p>
+            </div>
+
+            <div id="signup-message" class="form-message text-center" role="alert" aria-live="assertive"></div>
+
+            <!-- Shown instead of the form when this service does not take
+                 sign-ups. -->
+            <div id="signup-closed" class="alert alert-info text-center" hidden>
+                This service is not taking new sign-ups. Ask whoever runs it for an invitation.
+                <div class="mt-2"><a href="/admin/login.html">Back to sign in</a></div>
+            </div>
+
+            <form id="signup-form" class="auth-form" novalidate>
+                <div class="form-floating mb-3">
+                    <input type="text" class="form-control" id="signup-company" name="organization"
+                           placeholder="Company name" autocomplete="organization" maxlength="100" required>
+                    <label for="signup-company">Company name</label>
+                </div>
+                <div class="form-floating mb-1">
+                    <input type="text" class="form-control" id="signup-website" name="website"
+                           placeholder="yourcompany.com" autocomplete="url" autocapitalize="none" spellcheck="false">
+                    <label for="signup-website">Website <span class="text-muted">(optional)</span></label>
+                </div>
+                <div class="form-text mb-3">
+                    We read it so your bot knows something from the start. You can add more later.
+                </div>
+                <div class="form-floating mb-3">
+                    <input type="text" class="form-control" id="signup-name" name="name"
+                           placeholder="Your name" autocomplete="name" maxlength="100">
+                    <label for="signup-name">Your name</label>
+                </div>
+                <div class="form-floating mb-3">
+                    <input type="email" class="form-control" id="signup-email" name="email"
+                           placeholder="you@yourcompany.com" autocomplete="email" autocapitalize="none" spellcheck="false" required>
+                    <label for="signup-email">Work email</label>
+                </div>
+                <div class="input-group mb-1">
+                    <div class="form-floating">
+                        <input type="password" class="form-control" id="signup-password" name="new-password"
+                               placeholder="Password" autocomplete="new-password" minlength="8" required>
+                        <label for="signup-password">Password</label>
+                    </div>
+                    <button class="btn btn-outline-secondary" type="button" data-toggle-password="signup-password"
+                            aria-label="Show password" aria-pressed="false">Show</button>
+                </div>
+                <div class="form-text mb-3">At least 8 characters.</div>
+
+                <button class="w-100 btn btn-lg btn-primary" type="submit" id="signup-submit">Start free trial</button>
+
+                <p class="auth-fineprint text-center mt-3 mb-0">
+                    We will email you a link to confirm your address. By signing up you agree to the
+                    <a href="/privacy-policy.html" target="_blank" rel="noopener">privacy policy</a>.
+                </p>
+                <div class="form-links text-center">
+                    Already have an account? <a href="/admin/login.html" id="signin-link">Sign in</a>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script src="/dist/signup.js"></script>
+</body>
+</html>

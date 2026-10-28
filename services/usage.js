@@ -86,14 +86,32 @@ async function record(companyId, increments = {}) {
 async function currentValue(companyId, meter) {
   switch (meter) {
   case 'operators':
-    return User.countDocuments({ company: companyId, isActive: true });
+    // Active operators, including those invited and not yet signed in.
+    // Company admins are not seats.
+    return User.countDocuments({ company: companyId, role: 'operator', isActive: true });
   case 'workflows':
-    return Workflow.countDocuments({ company: companyId, status: { $ne: 'archived' } });
+    // Only what is live counts; drafts and archived versions are free.
+    return Workflow.countDocuments({ company: companyId, status: 'published' });
   case 'knowledgeChunks':
     return KnowledgeChunk.countDocuments({ company: companyId });
-  case 'actions':
-    // Required lazily so this file's import graph stays what it was.
-    return require('../models/action').countDocuments({ company: companyId });
+  case 'actions': {
+    // Saved Actions and switched-on MCP tools share one allowance: both are a
+    // way for the bot to act in the tenant's systems. Required lazily so this
+    // file's import graph stays what it was.
+    const [saved, tools] = await Promise.all([
+      require('../models/action').countDocuments({ company: companyId }),
+      require('../models/mcp-server').aggregate([
+        { $match: { company: new (require('mongoose').Types.ObjectId)(String(companyId)) } },
+        { $unwind: '$tools' },
+        { $match: { 'tools.enabled': true } },
+        { $count: 'n' }
+      ]).then(([row]) => (row ? row.n : 0))
+    ]);
+    return saved + tools;
+  }
+  case 'resolutionSpend':
+    // Money, not a count: what this month's resolutions cost before the cap.
+    return require('./resolutions').currentSpend(companyId, await getSubscription(companyId));
   default: {
     const usageKey = METERS[meter] ? METERS[meter].usageKey : meter;
     const usage = await Usage.findOne({ company: companyId, period: Usage.currentPeriod() }).lean();
@@ -161,6 +179,88 @@ async function hasFeature(companyId, feature) {
   return subscription.isEntitled() && subscription.hasFeature(feature);
 }
 
+/** From this share of a limit on, the owner is told. */
+const WARN_AT_PERCENT = 80;
+
+/**
+ * Every meter's reading against its limit.
+ *
+ * `percentage` is capped at 100 for drawing a bar; `percent` is not, so a
+ * tenant at 130% on overage reads as over rather than as exactly full.
+ */
+async function meterReadings(companyId, subscription) {
+  // A meter in money (the spending cap) exists only for the tenant who set
+  // one; for everyone else it is not "unlimited", it is not there.
+  const applicable = Object.keys(METERS)
+    .filter(meter => !METERS[meter].money || subscription.limitFor(meter) !== null);
+
+  return Promise.all(
+    applicable.map(async meter => {
+      const limit = subscription.limitFor(meter);
+      const used = await currentValue(companyId, meter);
+      const percent = limit ? Math.round((used / limit) * 100) : null;
+
+      return {
+        meter,
+        label: METERS[meter].label,
+        resets: METERS[meter].resets,
+        ...(METERS[meter].money ? { money: true } : {}),
+        used,
+        limit,
+        // Unlimited meters have no meaningful percentage; the UI shows usage
+        // rather than a bar.
+        percentage: percent === null ? null : Math.min(100, percent),
+        percent
+      };
+    })
+  );
+}
+
+/**
+ * The meters at or past the warning line, fullest first.
+ *
+ * A limit of 0 is "not on this plan" rather than "full", so it is never a
+ * warning: a Basic tenant should not be told every day that they have used
+ * 100% of a feature they do not have.
+ */
+/**
+ * Meters that count what a company has rather than what it uses up. Having
+ * every seat filled, or the one live workflow a plan allows, is a choice the
+ * owner made, not something about to run out under their customers; only
+ * being over (after a downgrade) is worth a warning.
+ */
+const CAPACITY_METERS = new Set(['operators', 'workflows', 'actions']);
+
+function warningsFrom(meters) {
+  return meters
+    .filter(reading => reading.limit && reading.percent !== null && (
+      CAPACITY_METERS.has(reading.meter) ? reading.percent > 100 : reading.percent >= WARN_AT_PERCENT
+    ))
+    .map(reading => ({
+      meter: reading.meter,
+      label: reading.label,
+      used: reading.used,
+      limit: reading.limit,
+      percent: reading.percent,
+      resets: reading.resets,
+      ...(reading.money ? { money: true } : {})
+    }))
+    .sort((a, b) => b.percent - a.percent);
+}
+
+/**
+ * The meters a company is close to, or over, the limit on.
+ *
+ * @returns {Promise<Array<{meter, label, used, limit, percent, resets}>>}
+ */
+async function warnings(companyId) {
+  if (!companyId) {
+    return [];
+  }
+  const subscription = await getSubscription(companyId);
+  return warningsFrom(await meterReadings(companyId, subscription));
+}
+
 /**
  * A full picture of a company's plan and consumption, for the billing screen.
  */
@@ -168,23 +268,7 @@ async function summary(companyId) {
   const subscription = await getSubscription(companyId);
   const plan = getPlan(subscription.planId);
 
-  const meters = await Promise.all(
-    Object.keys(METERS).map(async meter => {
-      const limit = subscription.limitFor(meter);
-      const used = await currentValue(companyId, meter);
-
-      return {
-        meter,
-        label: METERS[meter].label,
-        resets: METERS[meter].resets,
-        used,
-        limit,
-        // Unlimited meters have no meaningful percentage; the UI shows usage
-        // rather than a bar.
-        percentage: limit ? Math.min(100, Math.round((used / limit) * 100)) : null
-      };
-    })
-  );
+  const meters = await meterReadings(companyId, subscription);
 
   const usage = await Usage.findOne({ company: companyId, period: Usage.currentPeriod() }).lean();
 
@@ -202,10 +286,14 @@ async function summary(companyId) {
       trialEndsAt: subscription.trialEndsAt,
       currentPeriodEnd: subscription.currentPeriodEnd,
       overageAllowed: subscription.overageAllowed,
-      entitled: subscription.isEntitled()
+      entitled: subscription.isEntitled(),
+      pricingModel: subscription.pricingModel || 'flat'
     },
+    // How the plan is paid for, the month's resolutions and the cap.
+    pricing: await require('./resolutions').summary(companyId, subscription),
     period: Usage.currentPeriod(),
     meters,
+    warnings: warningsFrom(meters),
     detail: {
       conversations: usage?.conversations || 0,
       messages: usage?.messages || 0,
@@ -218,34 +306,81 @@ async function summary(companyId) {
 }
 
 /**
+ * What one AI reply is assumed to cost the platform, for the superadmin's
+ * estimate. A rough figure on purpose: the real bill depends on the model,
+ * the prompt and the knowledge retrieved, and this is for spotting the tenant
+ * whose usage costs more than they pay, not for accounting.
+ */
+function aiCostPerReply() {
+  const value = parseFloat(process.env.AI_COST_PER_REPLY);
+  return Number.isFinite(value) && value >= 0 ? value : 0.002;
+}
+
+/**
  * Usage across every tenant for one period, for the superadmin view.
+ *
+ * Starts from the companies rather than from the usage rows, so a tenant who
+ * has not had a single conversation this month is listed - with zeros - rather
+ * than missing. That tenant is usually the one somebody needs to call.
  */
 async function allTenantUsage(period = Usage.currentPeriod()) {
-  return Usage.aggregate([
-    { $match: { period } },
-    { $lookup: { from: 'companies', localField: 'company', foreignField: '_id', as: 'companyDoc' } },
-    { $unwind: { path: '$companyDoc', preserveNullAndEmptyArrays: true } },
+  const Company = require('../models/company');
+  const now = new Date();
+  const costPerReply = aiCostPerReply();
+
+  const rows = await Company.aggregate([
     {
       $lookup: {
-        from: 'subscriptions', localField: 'company', foreignField: 'company', as: 'sub'
+        from: Usage.collection.name,
+        let: { companyId: '$_id' },
+        pipeline: [
+          { $match: { $expr: { $and: [{ $eq: ['$company', '$$companyId'] }, { $eq: ['$period', period] }] } } }
+        ],
+        as: 'usage'
+      }
+    },
+    { $unwind: { path: '$usage', preserveNullAndEmptyArrays: true } },
+    {
+      $lookup: {
+        from: Subscription.collection.name, localField: '_id', foreignField: 'company', as: 'sub'
       }
     },
     { $unwind: { path: '$sub', preserveNullAndEmptyArrays: true } },
     {
       $project: {
-        companyId: '$company',
-        companyName: '$companyDoc.name',
+        _id: 0,
+        companyId: '$_id',
+        companyName: '$name',
+        isActive: { $ne: ['$isActive', false] },
+        createdVia: { $ifNull: ['$createdVia', 'superadmin'] },
+        createdAt: 1,
         planId: { $ifNull: ['$sub.planId', 'trial'] },
-        status: { $ifNull: ['$sub.status', 'trialing'] },
-        conversations: 1,
-        messages: 1,
-        aiResponses: 1,
-        filesUploaded: 1,
-        limitHits: 1
+        storedStatus: { $ifNull: ['$sub.status', 'trialing'] },
+        trialEndsAt: '$sub.trialEndsAt',
+        overageAllowed: { $ifNull: ['$sub.overageAllowed', false] },
+        widgetSeenAt: '$widgetSeen.at',
+        widgetOrigin: '$widgetSeen.origin',
+        conversations: { $ifNull: ['$usage.conversations', 0] },
+        messages: { $ifNull: ['$usage.messages', 0] },
+        aiResponses: { $ifNull: ['$usage.aiResponses', 0] },
+        filesUploaded: { $ifNull: ['$usage.filesUploaded', 0] },
+        limitHits: { $ifNull: ['$usage.limitHits', 0] }
       }
     },
-    { $sort: { conversations: -1 } }
+    { $sort: { conversations: -1, companyName: 1 } }
   ]);
+
+  return rows.map(row => {
+    // The stored status of a lapsed trial is still `trialing`; say what it is.
+    const trialExpired = row.storedStatus === 'trialing' && row.trialEndsAt && new Date(row.trialEndsAt) < now;
+    const { storedStatus, ...rest } = row;
+    return {
+      ...rest,
+      status: trialExpired ? 'trial_expired' : storedStatus,
+      installed: Boolean(row.widgetSeenAt),
+      estimatedAiCost: Math.round(row.aiResponses * costPerReply * 100) / 100
+    };
+  });
 }
 
 /**
@@ -274,8 +409,12 @@ module.exports = {
   check,
   hasFeature,
   summary,
+  warnings,
+  warningsFrom,
+  WARN_AT_PERCENT,
   currentValue,
   allTenantUsage,
+  aiCostPerReply,
   recordLimitHit,
   getSubscription,
   invalidateSubscription

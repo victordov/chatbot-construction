@@ -172,6 +172,15 @@ describe('Operator tools', () => {
   });
 
   describe('transfer', () => {
+    // A transfer now needs the colleague to be there (see
+    // tests/ws2-operator-inbox.test.js), so Bob is connected for these.
+    let presence;
+    beforeEach(() => {
+      presence = jest.spyOn(require('../services/assignment'), 'connectedOperators')
+        .mockReturnValue([{ id: String(bob._id), username: 'optools-bob', displayName: 'optools-bob' }]);
+    });
+    afterEach(() => presence.mockRestore());
+
     test('hands the conversation to a colleague', async () => {
       const response = await request(app)
         .post('/api/admin/chat/optools-session/transfer')

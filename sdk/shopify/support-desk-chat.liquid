@@ -1,0 +1,70 @@
+{%- comment -%}
+  Support Desk Chat for Shopify themes.
+
+  Install (README.md in this folder has the details):
+    1. Online Store > Themes > ... > Edit code > Snippets > Add a new snippet
+       called "support-desk-chat", and paste this file into it.
+    2. Set the two values below. Both are in the install snippet under
+       Website widget in your dashboard. (A copy downloaded from the dashboard
+       has them filled in already.)
+    3. In layout/theme.liquid, just before </body>, add:
+         {% render 'support-desk-chat' %}
+    4. Add your shop's addresses (the myshopify.com one and your own domain)
+       under Allowed domains in the dashboard.
+
+  Recognising logged-in customers (optional). Liquid cannot sign anything, and
+  the identity secret must never be in a theme, so a server you control signs
+  for the customer. Choose one with sdc_identity:
+    'none'       the default: everyone chats as a guest.
+    'app_proxy'  recommended. Your app's App Proxy answers
+                 sdc_token_path with {"jwt": "..."}, a token signed with the
+                 identity secret for the logged-in customer. Tokens are
+                 fetched when the page loads and again when one expires.
+    'metafield'  your backend stores HMAC-SHA256(identity secret, customer
+                 id) in the customer metafield support_desk.user_hash. Simpler,
+                 but the hash never expires.
+{%- endcomment -%}
+{%- assign sdc_server_url = 'https://chat.example.com' -%}
+{%- assign sdc_widget_key = 'YOUR_WIDGET_KEY' -%}
+{%- assign sdc_identity = 'none' -%}
+{%- assign sdc_token_path = '/apps/support-desk/token' -%}
+
+<script
+  src="{{ sdc_server_url | escape }}/widget/js/widget-loader.js"
+  data-widget-key="{{ sdc_widget_key | escape }}"
+  data-server-url="{{ sdc_server_url | escape }}"
+  {%- if sdc_identity == 'metafield' and customer and customer.metafields.support_desk.user_hash.value != blank %}
+  data-user-id="{{ customer.id | escape }}"
+  data-user-hash="{{ customer.metafields.support_desk.user_hash.value | escape }}"
+  {%- endif %}
+  defer></script>
+
+{%- if sdc_identity == 'app_proxy' and customer %}
+<script>
+  (function (path) {
+    var tries = 0;
+    function signIn() {
+      if (tries >= 3 || !window.ChatWidget) { return; }
+      tries += 1;
+      fetch(path, { credentials: 'same-origin', headers: { Accept: 'application/json' } })
+        .then(function (response) { return response.ok ? response.json() : null; })
+        .then(function (result) {
+          if (result && result.jwt) { window.ChatWidget.identify({ jwt: result.jwt }); }
+        })
+        .catch(function () {});
+    }
+    // The loader above is deferred, so ChatWidget exists once the document
+    // has been parsed, not yet.
+    function start() {
+      if (!window.ChatWidget) { return; }
+      window.ChatWidget.on('identity-expired', signIn);
+      signIn();
+    }
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', start);
+    } else {
+      start();
+    }
+  })({{ sdc_token_path | json }});
+</script>
+{%- endif %}

@@ -412,6 +412,11 @@ body {
 .wf-problem.error   { color: #842029; }
 .wf-problem.warning { color: #664d03; }
 
+/* A problem about a step opens that step. */
+.wf-problem[data-problem-node] { cursor: pointer; }
+.wf-problem[data-problem-node]:hover,
+.wf-problem[data-problem-node]:focus-visible { background: #f8f9fa; }
+
 .wf-loading {
   position: absolute;
   inset: 0;
@@ -445,6 +450,11 @@ body {
   border-top: 1px solid var(--wf-border);
   padding-top: 1rem;
 }
+
+/* "When does this run?" */
+.wf-trigger { margin-top: 1rem; }
+.wf-trigger .form-check { margin-bottom: 0.4rem; }
+.wf-trigger .form-check-label .text-muted { font-size: 0.7rem; }
 
 .wf-properties .form-label { font-size: 0.78rem; font-weight: 600; margin-bottom: 0.2rem; }
 .wf-properties .form-text { font-size: 0.7rem; }

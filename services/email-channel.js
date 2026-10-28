@@ -314,6 +314,18 @@ async function receive(companyId, parsed) {
   await conversation.save();
   usageService.record(companyId, { messages: 1 });
 
+  if (created) {
+    // The same event a chat fires when it starts, so a tenant's CRM hears
+    // about every new conversation whichever door it came through.
+    require('./webhooks').dispatch(companyId, 'conversation.started', {
+      sessionId: conversation.sessionId,
+      channel: 'email',
+      domain: conversation.domain || null,
+      contactId: conversation.contact ? String(conversation.contact) : null,
+      startedAt: conversation.startedAt
+    });
+  }
+
   logger.info('Inbound email received', {
     companyId: String(companyId),
     conversation: conversation.sessionId,
@@ -344,6 +356,68 @@ function buildTransport() {
   });
 }
 
+const EMAIL_ADDRESS = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/** A display name that cannot break out of its quotes or start a new header. */
+function displayName(value) {
+  return String(value || '').replace(/["\\\r\n<>]/g, '').replace(/\s+/g, ' ').trim().slice(0, 120);
+}
+
+/**
+ * Who an outbound email is from, and where replies go.
+ *
+ * Mail used to go out `From:` the tenant's own address through our SMTP
+ * server. Unless the tenant had added us to their SPF record and DKIM, that
+ * is exactly what a forged email looks like, and their customers' providers
+ * treated it so: junk at best, rejected under DMARC at worst. So it now goes
+ * out from the platform's verified address under the tenant's name -
+ * "Acme Support (via Helpdesk)" - with `Reply-To` set to the tenant's support
+ * address, which is where the customer's answer should land anyway.
+ *
+ * A deployment that has verified its tenants' domains can set
+ * EMAIL_ALLOW_TENANT_FROM=true to send from the tenant's address as before.
+ *
+ * @returns {{from: string, address: string, replyTo: string|undefined}|null}
+ *          null when there is no address to send from at all
+ */
+function senderFor(company, settings = {}) {
+  const replyAs = displayName(settings.fromName || (company && company.name) || 'Support');
+  const supportAddress = [settings.inboundAddress, settings.fromAddress]
+    .find(value => value && EMAIL_ADDRESS.test(value));
+
+  if (String(process.env.EMAIL_ALLOW_TENANT_FROM) === 'true' && supportAddress) {
+    const own = settings.fromAddress && EMAIL_ADDRESS.test(settings.fromAddress)
+      ? settings.fromAddress
+      : supportAddress;
+    return {
+      from: `"${replyAs}" <${own}>`,
+      address: own,
+      replyTo: settings.inboundAddress || undefined
+    };
+  }
+
+  const platformAddress = [process.env.EMAIL_FROM, process.env.EMAIL_USER]
+    .find(value => value && EMAIL_ADDRESS.test(value));
+
+  if (!platformAddress) {
+    return null;
+  }
+
+  const via = displayName(process.env.PRODUCT_NAME || 'Support Desk');
+
+  return {
+    from: `"${replyAs} (via ${via})" <${platformAddress}>`,
+    address: platformAddress,
+    replyTo: supportAddress
+  };
+}
+
+/** A Message-ID on the domain the mail is sent from, so it threads back to us. */
+function newMessageId(fromAddress) {
+  const domain = String(fromAddress || '').split('@')[1] || 'localhost';
+  return `<${crypto.randomBytes(16).toString('hex')}@${domain}>`;
+}
+
 /**
  * Send an operator's reply out by email, keeping the thread intact.
  *
@@ -372,9 +446,14 @@ async function sendReply(conversation, body, operatorName) {
     return { sent: false, reason: 'no SMTP transport configured' };
   }
 
+  const sender = senderFor(company, settings);
+  if (!sender) {
+    logger.error('Cannot send email reply: no sender address (set EMAIL_FROM)');
+    return { sent: false, reason: 'no sender address configured (set EMAIL_FROM)' };
+  }
+
   // Our own Message-ID, recorded so the customer's reply threads back to us.
-  const messageId = `<${crypto.randomBytes(16).toString('hex')}@${
-    (settings.fromAddress || 'localhost').split('@')[1] || 'localhost'}>`;
+  const messageId = newMessageId(sender.address);
 
   const inReplyTo = conversation.email.lastMessageId ||
     conversation.email.messageIds[conversation.email.messageIds.length - 1];
@@ -387,16 +466,16 @@ async function sendReply(conversation, body, operatorName) {
 
   try {
     await transport.sendMail({
-      from: `"${settings.fromName || company.name}" <${settings.fromAddress || settings.inboundAddress}>`,
+      from: sender.from,
       to: conversation.email.from,
-      replyTo: settings.inboundAddress,
+      replyTo: sender.replyTo,
       subject,
       text,
       messageId,
       inReplyTo: inReplyTo ? `<${inReplyTo}>` : undefined,
       // Both headers, because clients differ over which they honour.
       references: conversation.email.messageIds.map(id => `<${id}>`).join(' ') || undefined,
-      headers: { 'X-Operator': operatorName || 'Support' }
+      headers: { 'X-Operator': displayName(operatorName) || 'Support' }
     });
 
     const bare = normaliseMessageId(messageId);
@@ -410,10 +489,269 @@ async function sendReply(conversation, body, operatorName) {
   }
 }
 
+/**
+ * The visitor's email address, from the best source there is.
+ *
+ * In order: the address they left for a follow-up, the one they typed into
+ * the pre-chat form, the sender of an email thread, and the contact record.
+ *
+ * @returns {Promise<string|null>}
+ */
+async function visitorEmail(conversation) {
+  if (!conversation) {
+    return null;
+  }
+
+  const candidates = [];
+
+  if (conversation.followUp && conversation.followUp.email) {
+    candidates.push(conversation.followUp.email);
+  }
+
+  const metadata = conversation.metadata;
+  if (metadata) {
+    candidates.push(typeof metadata.get === 'function' ? metadata.get('email') : metadata.email);
+  }
+
+  if (conversation.channel === 'email' && conversation.email && conversation.email.from) {
+    candidates.push(conversation.email.from);
+  }
+
+  const found = candidates.find(value => value && EMAIL_ADDRESS.test(String(value).trim()));
+  if (found) {
+    return String(found).trim().toLowerCase();
+  }
+
+  if (conversation.contact) {
+    try {
+      const Contact = require('../models/contact');
+      const contact = await Contact.findById(conversation.contact).select('email').lean();
+      if (contact && contact.email && EMAIL_ADDRESS.test(contact.email)) {
+        return contact.email.toLowerCase();
+      }
+    } catch (error) {
+      logger.warn('Could not read the contact for an email address', { error: error.message });
+    }
+  }
+
+  return null;
+}
+
+/** "> " in front of every line, for quoting what somebody wrote. */
+function quote(text, limit = 300) {
+  const value = String(text || '').trim();
+  const clipped = value.length > limit ? `${value.slice(0, limit - 1)}…` : value;
+  return clipped.split('\n').map(line => `> ${line}`).join('\n');
+}
+
+/**
+ * Answer, by email, a visitor who has left the chat.
+ *
+ * Most people do not keep a support tab open while somebody looks into their
+ * question. Without this an operator's careful answer sat in a transcript the
+ * visitor would only see if they happened to come back to the same browser.
+ *
+ * Works whether or not the tenant has switched on the inbound email channel:
+ * this is outbound only, through the platform's transport, under the tenant's
+ * name (see `senderFor`). Replies go to the tenant's support address when
+ * they have one; when a reply to an earlier follow-up does come back through
+ * the inbound channel it threads onto this conversation, because the
+ * Message-IDs sent are recorded on it.
+ *
+ * On success the message is added to the conversation as the operator's,
+ * with a transcript line saying where it went, and the conversation is saved.
+ *
+ * @param {object} conversation a mongoose document (a plain object is
+ *        reloaded)
+ * @param {string} text what the operator wrote
+ * @param {{id?: string, _id?: string, displayName?: string, username?: string}} operatorUser
+ * @returns {Promise<{sent: boolean, to?: string, reason?: string,
+ *                    messageId?: string}>}
+ */
+async function sendFollowUp(conversation, text, operatorUser = {}) {
+  const body = String(text || '').trim();
+
+  if (!conversation || !body) {
+    return { sent: false, reason: 'nothing to send' };
+  }
+
+  let doc = conversation;
+  if (typeof doc.save !== 'function') {
+    doc = await Conversation.findById(conversation._id);
+    if (!doc) {
+      return { sent: false, reason: 'conversation not found' };
+    }
+  }
+
+  const to = await visitorEmail(doc);
+  if (!to) {
+    return { sent: false, reason: 'there is no email address for this visitor' };
+  }
+
+  const transport = buildTransport();
+  if (!transport) {
+    logger.error('Cannot send a follow-up: no outbound email configured');
+    return { sent: false, reason: 'outbound email is not configured on this server (EMAIL_HOST)' };
+  }
+
+  const company = await Company.findById(doc.company).select('name emailChannel').lean();
+  const settings = (company && company.emailChannel) || {};
+  const sender = senderFor(company, settings);
+
+  if (!sender) {
+    return { sent: false, reason: 'no sender address is configured on this server (EMAIL_FROM)' };
+  }
+
+  const companyName = (company && company.name) || 'us';
+  const operatorName = operatorUser.displayName || operatorUser.username || 'Support';
+
+  if (!doc.email) {
+    doc.email = {};
+  }
+  if (!doc.email.subject) {
+    doc.email.subject = `Your conversation with ${companyName}`;
+  }
+
+  const messageIds = (doc.email.messageIds || []).filter(Boolean);
+  const lastQuestion = [...(doc.messages || [])].reverse().find(message => message.sender === 'user');
+
+  // The answer on top, the question it answers quoted underneath - the shape
+  // of every email reply, so it reads as one rather than as a notification.
+  const parts = [body];
+  if (settings.signature) {
+    parts.push(`--\n${settings.signature}`);
+  }
+  if (lastQuestion && lastQuestion.content) {
+    parts.push(`You asked:\n${quote(lastQuestion.content)}`);
+  }
+  if (!sender.replyTo) {
+    // Nowhere for a reply to go. Say so, rather than let them write into a
+    // mailbox nobody reads.
+    parts.push(doc.domain
+      ? `Replies to this email are not read. To continue, chat with us again at ${doc.domain}.`
+      : 'Replies to this email are not read. To continue, chat with us again on our website.');
+  }
+
+  const messageId = newMessageId(sender.address);
+
+  try {
+    await transport.sendMail({
+      from: sender.from,
+      to,
+      replyTo: sender.replyTo,
+      subject: messageIds.length ? `Re: ${doc.email.subject}` : doc.email.subject,
+      text: parts.join('\n\n'),
+      messageId,
+      inReplyTo: messageIds.length ? `<${messageIds[messageIds.length - 1]}>` : undefined,
+      references: messageIds.map(id => `<${id}>`).join(' ') || undefined,
+      headers: { 'X-Operator': displayName(operatorName) || 'Support' }
+    });
+  } catch (error) {
+    logger.error('Failed to send a follow-up email', { sessionId: doc.sessionId, error: error.message });
+    return { sent: false, reason: error.message };
+  }
+
+  const bare = normaliseMessageId(messageId);
+  const now = new Date();
+  const operatorId = operatorUser.id || operatorUser._id;
+
+  doc.email.messageIds = [...messageIds, bare];
+  doc.email.lastMessageId = bare;
+
+  doc.followUp = {
+    email: (doc.followUp && doc.followUp.email) || to,
+    requestedAt: doc.followUp ? doc.followUp.requestedAt : undefined,
+    lastSentAt: now
+  };
+
+  doc.messages.push({
+    content: body,
+    sender: 'operator',
+    operatorId: operatorId || undefined,
+    operatorName,
+    emailMessageId: bare,
+    timestamp: now
+  });
+  const reply = doc.messages[doc.messages.length - 1];
+
+  const lifecycle = require('./conversation-lifecycle');
+  const line = lifecycle.addSystemLine(doc, `Sent by email to ${to}`);
+
+  if (!doc.firstOperatorReplyAt) {
+    doc.firstOperatorReplyAt = now;
+  }
+  doc.operatorEverJoined = true;
+  doc.lastActivity = now;
+  await doc.save();
+
+  usageService.record(doc.company, { operatorMessages: 1, messages: 1 });
+
+  const socketManager = require('../socketManager');
+  lifecycle.announceMessages(doc, [reply, line], {
+    operators: (event, payload) => socketManager.emitToOperators(doc.company, event, payload)
+  });
+
+  logger.info('Follow-up sent by email', { sessionId: doc.sessionId, operator: operatorName });
+
+  return { sent: true, to, messageId: bare, replyId: String(reply._id) };
+}
+
+/**
+ * Send a test email to somebody, through exactly the path replies take.
+ *
+ * So an admin finds out the server cannot send mail, or that it lands in
+ * spam, before a customer's answer does.
+ *
+ * @returns {Promise<{sent: boolean, to?: string, from?: string,
+ *                    replyTo?: string, reason?: string}>}
+ */
+async function sendTest(companyId, to) {
+  if (!to || !EMAIL_ADDRESS.test(String(to))) {
+    return { sent: false, reason: 'your account has no valid email address to send to' };
+  }
+
+  const transport = buildTransport();
+  if (!transport) {
+    return { sent: false, reason: 'outbound email is not configured on this server (EMAIL_HOST)' };
+  }
+
+  const company = await Company.findById(companyId).select('name emailChannel').lean();
+  const settings = (company && company.emailChannel) || {};
+  const sender = senderFor(company, settings);
+
+  if (!sender) {
+    return { sent: false, reason: 'no sender address is configured on this server (EMAIL_FROM)' };
+  }
+
+  try {
+    await transport.sendMail({
+      from: sender.from,
+      to,
+      replyTo: sender.replyTo,
+      subject: 'Test email from your support desk',
+      messageId: newMessageId(sender.address),
+      text: [
+        'This is a test of the email your customers receive when the team replies to them.',
+        `It was sent from ${sender.address}${sender.replyTo ? `, and replies go to ${sender.replyTo}` : ''}.`,
+        'If it arrived in your spam folder, the sending domain\'s SPF and DKIM records need attention before customers rely on it.'
+      ].join('\n\n')
+    });
+  } catch (error) {
+    logger.error('Test email failed', { companyId: String(companyId), error: error.message });
+    return { sent: false, reason: error.message };
+  }
+
+  return { sent: true, to, from: sender.address, replyTo: sender.replyTo };
+}
+
 module.exports = {
   normaliseInbound,
   receive,
   sendReply,
+  sendFollowUp,
+  sendTest,
+  senderFor,
+  visitorEmail,
   findThread,
   verifyInboundSecret,
   // The workflow notify node sends through the same transport, so the two

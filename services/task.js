@@ -29,49 +29,114 @@ class TaskService {
   }
 
   /**
+   * The filter for a task list.
+   *
+   * Every filter combines with every other. Search used to be a separate path
+   * that ignored the rest, so searching "refund" on "My open tasks" returned
+   * everybody's tasks, done or not.
+   *
+   * @param {Object} filters
+   * @param {string|string[]} [filters.status] one status, or any of several
+   * @param {string|null} [filters.assignee] a user id, or null / 'unassigned'
+   *        for tasks nobody has
+   * @param {string} [filters.priority]
+   * @param {string} [filters.conversationId]
+   * @param {string} [filters.parentTaskId]
+   * @param {{before?: string, after?: string}} [filters.dueDate]
+   * @param {boolean} [filters.overdue] due before today and not completed
+   * @param {string} [filters.search] title, description or contact details
+   */
+  buildQuery(filters = {}, userCompanyId = null, userRole = null) {
+    const query = { ...companyScope(userCompanyId, userRole) };
+    const and = [];
+
+    if (Array.isArray(filters.status)) {
+      query.status = { $in: filters.status };
+    } else if (filters.status) {
+      query.status = filters.status;
+    }
+
+    if (filters.assignee === null || filters.assignee === 'unassigned') {
+      query.assignee = null;
+    } else if (filters.assignee) {
+      query.assignee = filters.assignee;
+    }
+
+    if (filters.priority) {
+      query.priority = filters.priority;
+    }
+
+    if (filters.conversationId) {
+      query.conversationId = filters.conversationId;
+    }
+
+    if (filters.parentTaskId) {
+      query.parentTaskId = filters.parentTaskId;
+    }
+
+    if (filters.dueDate) {
+      // Handle due date filtering (before, after, between)
+      if (filters.dueDate.before) {
+        query.dueDate = { ...query.dueDate, $lte: new Date(filters.dueDate.before) };
+      }
+
+      if (filters.dueDate.after) {
+        query.dueDate = { ...query.dueDate, $gte: new Date(filters.dueDate.after) };
+      }
+    }
+
+    if (filters.overdue) {
+      // Due on a day that has already finished. A task due today is not late
+      // yet, whatever time of day its date was stored at.
+      const startOfToday = new Date();
+      startOfToday.setHours(0, 0, 0, 0);
+      and.push({ dueDate: { $lt: startOfToday } }, { status: { $ne: 'completed' } });
+    }
+
+    if (filters.search) {
+      // Escape the term before building a regex: unescaped user input allows
+      // regex injection and a ReDoS pattern like `(a+)+$` against the database.
+      const searchRegex = new RegExp(escapeRegex(filters.search), 'i');
+      and.push({
+        $or: [
+          { title: searchRegex },
+          { description: searchRegex },
+          { 'contactInfo.name': searchRegex },
+          { 'contactInfo.email': searchRegex },
+          { 'contactInfo.phone': searchRegex }
+        ]
+      });
+    }
+
+    if (and.length) {
+      query.$and = and;
+    }
+
+    return query;
+  }
+
+  /** How many tasks match, for paging. */
+  async countTasks(filters = {}, userCompanyId = null, userRole = null) {
+    return Task.countDocuments(this.buildQuery(filters, userCompanyId, userRole));
+  }
+
+  /**
    * Get all tasks with optional filtering
-   * @param {Object} filters - Optional filters for tasks
+   * @param {Object} filters - Optional filters for tasks (see buildQuery), plus
+   *        `skip`, `limit` and `sort` ('due' for soonest due first)
    * @param {string} userCompanyId - User's company ID for filtering (null for super admin)
    * @param {string} userRole - User's role to determine access level
    * @returns {Promise<Array>} - Array of tasks
    */
   async getTasks(filters = {}, userCompanyId = null, userRole = null) {
     try {
-      const query = {};
+      const query = this.buildQuery(filters, userCompanyId, userRole);
 
-      Object.assign(query, companyScope(userCompanyId, userRole));
-
-      // Apply filters if provided
-      if (filters.status) {
-        query.status = filters.status;
-      }
-
-      if (filters.assignee) {
-        query.assignee = filters.assignee;
-      }
-
-      if (filters.priority) {
-        query.priority = filters.priority;
-      }
-
-      if (filters.conversationId) {
-        query.conversationId = filters.conversationId;
-      }
-
-      if (filters.parentTaskId) {
-        query.parentTaskId = filters.parentTaskId;
-      }
-
-      if (filters.dueDate) {
-        // Handle due date filtering (before, after, between)
-        if (filters.dueDate.before) {
-          query.dueDate = { ...query.dueDate, $lte: new Date(filters.dueDate.before) };
-        }
-
-        if (filters.dueDate.after) {
-          query.dueDate = { ...query.dueDate, $gte: new Date(filters.dueDate.after) };
-        }
-      }
+      // Soonest due first is how a to-do list is read; newest first is the
+      // default for everything else.
+      const sort = filters.sort === 'due'
+        ? { dueDate: 1, createdAt: -1 }
+        : { createdAt: -1 };
 
       // Get tasks with applied filters. `lean()` skips hydrating full mongoose
       // documents for a read-only list.
@@ -79,7 +144,8 @@ class TaskService {
         .populate('assignee', 'username email displayName')
         .populate('createdBy', 'username email displayName')
         .populate('company', 'name')
-        .sort({ createdAt: -1 })
+        .sort(sort)
+        .skip(filters.skip || 0)
         .limit(filters.limit || 500)
         .lean();
 
@@ -147,9 +213,9 @@ class TaskService {
     try {
       // Lookup assignee name for easier display later
       if (taskData.assignee) {
-        const user = await User.findById(taskData.assignee).select('username');
+        const user = await User.findById(taskData.assignee).select('username displayName');
         if (user) {
-          taskData.assigneeName = user.username;
+          taskData.assigneeName = user.displayName || user.username;
         }
       }
 
@@ -167,8 +233,9 @@ class TaskService {
 
       // Populate both fields in a single call
       await task.populate([
-        { path: 'assignee', select: 'username email' },
-        { path: 'createdBy', select: 'username email' },
+        { path: 'assignee', select: 'username email displayName' },
+        { path: 'createdBy', select: 'username email displayName' },
+        { path: 'parentTaskId', select: 'title' },
         { path: 'company', select: 'name' }
       ]);
 
@@ -202,6 +269,27 @@ class TaskService {
       // First get the original task to track changes
       const originalTask = await this.getTaskById(taskId, userCompanyId, userRole);
 
+      // Reassigning. The edit form always sent the assignee and this method
+      // never looked at it, so "Task updated" was reported while the task
+      // stayed with whoever had it. The caller has already checked the new
+      // assignee belongs to the company.
+      let newAssignee = null;
+      const reassigning = Object.prototype.hasOwnProperty.call(updateData, 'assignee');
+      if (reassigning) {
+        if (updateData.assignee) {
+          newAssignee = await User.findById(updateData.assignee).select('username displayName');
+          updateData.assigneeName = newAssignee ? (newAssignee.displayName || newAssignee.username) : null;
+        } else {
+          updateData.assignee = null;
+          updateData.assigneeName = null;
+        }
+      }
+      const previousAssignee = originalTask.assignee
+        ? String(originalTask.assignee._id || originalTask.assignee)
+        : null;
+      const assigneeChanged = reassigning &&
+        String(updateData.assignee || '') !== String(previousAssignee || '');
+
       // Add updatedAt timestamp
       updateData.updatedAt = new Date();
 
@@ -217,14 +305,17 @@ class TaskService {
         query,
         updateData,
         { new: true, runValidators: true }
-      ).populate('assignee', 'username email')
-        .populate('createdBy', 'username email')
+      ).populate('assignee', 'username email displayName')
+        .populate('createdBy', 'username email displayName')
         .populate('parentTaskId', 'title')
         .populate('company', 'name');
 
       if (!task) {
         throw new Error('Task not found');
       }
+
+      // Read by the route, which tells the new assignee.
+      task.$locals.assigneeChanged = assigneeChanged;
 
       // Log specific activities for important changes
       if (updatedByUser) {
@@ -234,6 +325,21 @@ class TaskService {
           company: updatedByUser.company,
           userKeys: Object.keys(updatedByUser)
         });
+
+        if (assigneeChanged) {
+          if (newAssignee) {
+            await this.activityService.logTaskAssigned(task, newAssignee, updatedByUser);
+          } else {
+            await this.activityService.logActivity({
+              taskId: task._id,
+              userId: updatedByUser.id,
+              userName: updatedByUser.displayName || updatedByUser.username,
+              action: 'task_unassigned',
+              details: 'Task unassigned',
+              company: task.company ? (task.company._id || task.company) : null
+            });
+          }
+        }
 
         // Log status change
         if (updateData.status && updateData.status !== originalTask.status) {
@@ -337,7 +443,7 @@ class TaskService {
    * @param {string} userName - User name for display purposes
    * @returns {Promise<Object>} - Updated task
    */
-  async assignTask(taskId, userId, userName) {
+  async assignTask(taskId, userId, userName, companyId = null) {
     try {
       const updateData = {
         assignee: userId,
@@ -345,12 +451,15 @@ class TaskService {
         updatedAt: new Date()
       };
 
-      const task = await Task.findByIdAndUpdate(
-        taskId,
+      // Scoped to the caller's company when there is one, so this cannot move
+      // another tenant's task even if a future caller forgets the route's check.
+      const filter = companyId ? { _id: taskId, company: companyId } : { _id: taskId };
+      const task = await Task.findOneAndUpdate(
+        filter,
         updateData,
         { new: true, runValidators: true }
-      ).populate('assignee', 'username email')
-        .populate('createdBy', 'username email')
+      ).populate('assignee', 'username email displayName')
+        .populate('createdBy', 'username email displayName')
         .populate('parentTaskId', 'title');
 
       if (!task) {
@@ -373,8 +482,8 @@ class TaskService {
   async getFollowUpTasks(parentTaskId) {
     try {
       const tasks = await Task.find({ parentTaskId })
-        .populate('assignee', 'username email')
-        .populate('createdBy', 'username email')
+        .populate('assignee', 'username email displayName')
+        .populate('createdBy', 'username email displayName')
         .sort({ createdAt: -1 });
 
       return tasks;
@@ -435,6 +544,11 @@ class TaskService {
 
       // Create the follow-up task
       const task = await this.createTask(taskData, createdByUser);
+
+      // The parent's history says a follow-up was raised from it.
+      if (createdByUser) {
+        await this.activityService.logFollowUpCreated(parentTask, task, createdByUser);
+      }
 
       return task;
     } catch (error) {

@@ -32,6 +32,11 @@ const options = {
     { in: 'client/workflow-editor/main.js', out: 'workflow-editor' },
     { in: 'client/styles/workflow-editor.css', out: 'workflow-editor' },
     { in: 'client/login.js', out: 'login' },
+    // The other pages before the dashboard: starting a trial and accepting
+    // an invitation, with the stylesheet the three of them share.
+    { in: 'client/signup.js', out: 'signup' },
+    { in: 'client/invite.js', out: 'invite' },
+    { in: 'client/styles/auth.css', out: 'auth' },
     { in: 'client/styles/base.css', out: 'base' }
   ],
   outdir: 'public/dist',

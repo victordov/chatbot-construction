@@ -25,6 +25,9 @@ const { canAccessCompany } = require('../utils/query');
 const { logger } = require('../services/logging');
 const usageService = require('../services/usage');
 const sessionToken = require('../services/session-token');
+const lifecycle = require('../services/conversation-lifecycle');
+const socketManager = require('../socketManager');
+const { notice } = require('../services/visitor-notices');
 // The layout on disk, the MIME allowlist and the size cap are owned by
 // services/uploads.js, so the operator attachment route, erasure and
 // retention all agree with this one about what a file is and where it lives.
@@ -39,12 +42,66 @@ if (!fs.existsSync(UPLOAD_ROOT)) {
 
 const upload = uploads.createUploadParser();
 
+/** What services/session-token.js issues: 32 bytes as hex. */
+const SESSION_TOKEN_FORMAT = /^[0-9a-f]{64}$/;
+
+/**
+ * Start the conversation an upload is the first sign of.
+ *
+ * A widget's session has no conversation until the visitor does something
+ * (websockets.js), and attaching a file is something. The visitor already
+ * holds the token their connection was given; it becomes this conversation's,
+ * exactly as a first message would make it. No token, no conversation - so
+ * this still cannot be used as an open file drop.
+ *
+ * @returns {Promise<{conversation?: object, created?: boolean,
+ *                    status?: number, body?: object}>}
+ */
+async function startForUpload(req, sessionId) {
+  const presented = req.body.sessionToken;
+  if (typeof presented !== 'string' || !SESSION_TOKEN_FORMAT.test(presented)) {
+    return { status: 404, body: { success: false, error: 'No conversation for this session' } };
+  }
+
+  const origin = req.get('Origin') || req.get('Referer');
+  const companyId = await tenantService.resolveCompanyId({ widgetKey: req.body.widgetKey, origin });
+
+  // Checked before anything is created: a conversation started only to be
+  // refused its first file would be counted for nothing.
+  if (companyId && !(await usageService.hasFeature(companyId, 'fileUploads'))) {
+    return {
+      status: 402,
+      body: { success: false, error: 'File uploads are not available on this plan', code: 'FEATURE_NOT_IN_PLAN' }
+    };
+  }
+
+  const result = await lifecycle.createConversation({
+    sessionId,
+    companyId,
+    domain: origin || undefined,
+    sessionTokenHash: sessionToken.hash(presented)
+  });
+
+  if (result.refused) {
+    const unavailable = notice('unavailable');
+    return { status: 403, body: { success: false, error: unavailable.message, ...unavailable } };
+  }
+
+  if (result.duplicate) {
+    // Started by the visitor's own message a moment ago; the token check
+    // below decides whether it is theirs.
+    return { conversation: await Conversation.findOne({ sessionId }).select('+sessionTokenHash'), created: false };
+  }
+
+  return { conversation: result.conversation, created: true };
+}
+
 /**
  * Upload a file against the caller's chat session.
  *
  * Unauthenticated by design - the uploader is a website visitor - but bound to
- * a session that must already have a conversation, so it cannot be used as an
- * open file drop.
+ * a session and the token issued for it, so it cannot be used as an open file
+ * drop.
  */
 router.post('/', upload.single('file'), async (req, res) => {
   try {
@@ -57,11 +114,17 @@ router.post('/', upload.single('file'), async (req, res) => {
       return res.status(400).json({ success: false, error: 'No active session' });
     }
 
-    const conversation = await Conversation.findOne({ sessionId }).select('+sessionTokenHash');
+    let conversation = await Conversation.findOne({ sessionId }).select('+sessionTokenHash');
+    let created = false;
+
     if (!conversation) {
-      // Requiring an existing conversation stops this being an anonymous
-      // upload endpoint for anyone who can guess the URL.
-      return res.status(404).json({ success: false, error: 'No conversation for this session' });
+      const started = await startForUpload(req, sessionId);
+      if (!started.conversation) {
+        return res.status(started.status || 404).json(started.body ||
+          { success: false, error: 'No conversation for this session' });
+      }
+      conversation = started.conversation;
+      created = started.created;
     }
 
     // A session id is not a credential: it appears in dashboard URLs and
@@ -105,10 +168,32 @@ router.post('/', upload.single('file'), async (req, res) => {
       fileName: originalName,
       timestamp: new Date()
     });
+    // A multipart field arrives as text; `{given, at, text}` as JSON text.
+    let consent = req.body.consent;
+    if (typeof consent === 'string' && consent.trim().startsWith('{')) {
+      try {
+        consent = JSON.parse(consent);
+      } catch {
+        consent = undefined;
+      }
+    }
+    lifecycle.recordConsent(conversation, consent);
+
     conversation.lastActivity = new Date();
     await conversation.save();
 
     usageService.record(companyId, { filesUploaded: 1, fileBytes: req.file.size });
+
+    // Operators see the file arrive as they see every other stored message;
+    // a conversation this upload started is announced like any other.
+    const emit = {
+      visitor: (event, payload) => socketManager.emitToVisitor(sessionId, event, payload),
+      operators: (event, payload) => socketManager.emitToOperators(companyId, event, payload)
+    };
+    lifecycle.announceMessages(conversation, [conversation.messages[conversation.messages.length - 1]], emit);
+    if (created) {
+      await lifecycle.announceStart(conversation, { preview: `[File uploaded: ${originalName}]`, emit });
+    }
 
     logger.info('File uploaded', {
       fileId,

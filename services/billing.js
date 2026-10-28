@@ -10,7 +10,7 @@
 const Subscription = require('../models/subscription');
 const Company = require('../models/company');
 const usageService = require('./usage');
-const { PLANS } = require('../config/plans');
+const { PLANS, resolutionPricing } = require('../config/plans');
 const { logger } = require('./logging');
 
 class UnknownPlanError extends Error {}
@@ -20,7 +20,7 @@ class UnknownCompanyError extends Error {}
  * Apply a change to a company's subscription.
  *
  * @param {string} companyId
- * @param {object} changes planId, status, overageAllowed, currentPeriodEnd,
+ * @param {object} changes planId, status, pricingModel, overageAllowed, currentPeriodEnd,
  *   limitOverrides, externalCustomerId, externalSubscriptionId, eventAt
  * @returns {Promise<{subscription: object, company: object, applied: boolean}>}
  *   `applied: false` means the change was older than one already recorded.
@@ -68,6 +68,15 @@ async function applySubscriptionChange(companyId, changes = {}) {
     if (changes.status !== 'trialing') {
       subscription.trialEndsAt = undefined;
     }
+  }
+
+  if (changes.pricingModel === 'flat' || changes.pricingModel === 'per_resolution') {
+    subscription.pricingModel = changes.pricingModel;
+  }
+  // A plan with no per-resolution option is paid for flat, whatever the
+  // tenant paid on before: per resolution means nothing on it.
+  if (subscription.pricingModel === 'per_resolution' && !resolutionPricing(subscription.planId)) {
+    subscription.pricingModel = 'flat';
   }
 
   if (changes.overageAllowed !== undefined) {

@@ -80,6 +80,30 @@ const SubscriptionSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   },
+  /**
+   * How the plan is paid for: a flat monthly price (everyone's default), or
+   * a base fee plus each conversation the bot resolved. Only a plan whose
+   * `pricing.options` include it can be per resolution (config/plans.js).
+   */
+  pricingModel: {
+    type: String,
+    enum: ['flat', 'per_resolution'],
+    default: 'flat'
+  },
+  /**
+   * The most a per-resolution tenant will pay for resolutions in one month,
+   * in the plan's currency. Set by the tenant on Plan & billing. Past it,
+   * resolutions stop being billed; the bot does not stop answering. Unset
+   * means no cap.
+   */
+  spendCap: { type: Number, min: 0 },
+  spendCapUpdatedAt: { type: Date },
+  /**
+   * The agency paying for this company's plan, when one is. A client an
+   * agency put on its own client plan is not the client's to pay for, and
+   * going back to a trial is what detaching from the agency means.
+   */
+  managedByAgency: { type: mongoose.Schema.Types.ObjectId, ref: 'Company' },
   externalCustomerId: { type: String, index: true },
   externalSubscriptionId: { type: String, index: true },
   /**
@@ -131,6 +155,12 @@ SubscriptionSchema.methods.effectiveStatus = function() {
  * plan's. `null` means unlimited.
  */
 SubscriptionSchema.methods.limitFor = function(meter) {
+  // The spending cap is the tenant's own limit, in money, and only means
+  // anything while they pay per resolution.
+  if (meter === 'resolutionSpend') {
+    return this.pricingModel === 'per_resolution' && Number.isFinite(this.spendCap) ? this.spendCap : null;
+  }
+
   if (this.limitOverrides && this.limitOverrides.has(meter)) {
     const override = this.limitOverrides.get(meter);
     // A negative override is the conventional way to say "unlimited" when the
@@ -171,7 +201,16 @@ SubscriptionSchema.statics.forCompany = async function(companyId) {
   let subscription = await this.findOne({ company: companyId });
 
   if (!subscription) {
-    subscription = await this.create({ company: companyId });
+    try {
+      subscription = await this.create({ company: companyId });
+    } catch (error) {
+      // Two first requests for a new tenant both found nothing and both
+      // created; the unique index lets one win, and the other reads it.
+      if (error && error.code === 11000) {
+        return this.findOne({ company: companyId });
+      }
+      throw error;
+    }
   }
 
   return subscription;

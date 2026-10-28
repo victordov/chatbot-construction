@@ -40,6 +40,14 @@ const WorkflowVersionSchema = new mongoose.Schema({
     data: { type: mongoose.Schema.Types.Mixed }
   }],
 
+  // When this version runs. Part of the snapshot so that publishing a
+  // version publishes the trigger it was saved with, not a later draft's.
+  trigger: {
+    type: { type: String, enum: ['always', 'intent', 'keywords'] },
+    description: { type: String },
+    keywords: [{ type: String }]
+  },
+
   // Compiled execution plan for this version
   compiledChain: {
     type: mongoose.Schema.Types.Mixed

@@ -213,6 +213,16 @@ async function eraseSubject(req, subject) {
     ]
   });
 
+  // Appointments booked through the bot say who came when; they go too.
+  const bookingsDeleted = await require('../services/booking').erase({
+    companyId: scope.company,
+    sessionIds: Array.from(sessionIds),
+    contactIds: subject.contactIds
+  }).catch(error => {
+    logger.warn('Could not erase bookings', { error: error.message });
+    return 0;
+  });
+
   const deletedConversations = await Conversation.deleteMany({ _id: { $in: conversationIds } });
   const deletedContacts = await Contact.deleteMany({ _id: { $in: subject.contactIds }, ...scope });
 
@@ -221,7 +231,8 @@ async function eraseSubject(req, subject) {
     contactsDeleted: deletedContacts.deletedCount || 0,
     filesDeleted,
     tasksAnonymized: tasks.modifiedCount || 0,
-    webhookDeliveriesDeleted: webhookDeliveries.deletedCount || 0
+    webhookDeliveriesDeleted: webhookDeliveries.deletedCount || 0,
+    bookingsDeleted
   };
 }
 

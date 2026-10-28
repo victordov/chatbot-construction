@@ -22,6 +22,7 @@ const safeHttp = require('../services/safe-http');
 const secrets = require('../services/secrets');
 const usageService = require('../services/usage');
 const WorkflowCompilerService = require('../services/workflow-compiler');
+const eventually = require('./eventually');
 
 const buildApp = () => {
   const app = express();
@@ -243,8 +244,10 @@ describe('Actions', () => {
         .set('x-auth-token', danaToken);
 
       // Audit writes are fire-and-forget.
-      await new Promise(resolve => setTimeout(resolve, 50));
-      const entries = await AuditLog.find({ 'target.id': String(body.action._id) }).lean();
+      const entries = await eventually(async () => {
+        const found = await AuditLog.find({ 'target.id': String(body.action._id) }).lean();
+        return found.length >= 3 && found;
+      });
       expect(entries.map(entry => entry.action).sort())
         .toEqual(['action.created', 'action.deleted', 'action.updated']);
       expect(JSON.stringify(entries)).not.toContain('sk_live_super_secret');
@@ -258,10 +261,21 @@ describe('Actions', () => {
       expect(response.status).toBe(403);
     });
 
-    test('a plan without actions is refused', async () => {
-      const response = await create(bobToken, orderAction());
-      expect(response.status).toBe(402);
-      expect(response.body.code).toBe('FEATURE_NOT_IN_PLAN');
+    test('a plan with no actions left is refused', async () => {
+      // Basic includes a few actions now (the trial teaches people to rely on
+      // them), so the refusal is the allowance running out rather than the
+      // feature being absent.
+      await Subscription.updateOne({ company: basicCo._id }, { $set: { limitOverrides: { actions: 0 } } });
+      usageService.invalidateSubscription(basicCo._id);
+
+      try {
+        const response = await create(bobToken, orderAction());
+        expect(response.status).toBe(402);
+        expect(response.body.code).toBe('PLAN_LIMIT_REACHED');
+      } finally {
+        await Subscription.updateOne({ company: basicCo._id }, { $unset: { limitOverrides: 1 } });
+        usageService.invalidateSubscription(basicCo._id);
+      }
     });
 
     test('one tenant cannot see, change, run or delete another\'s action', async () => {

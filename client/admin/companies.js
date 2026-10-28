@@ -1,14 +1,106 @@
 /**
  * Companies: the tenants, for whoever runs the platform.
+ *
+ * The list says what somebody running the platform needs at a glance: the
+ * plan and its state, whether the company signed itself up, whether its
+ * widget has ever been seen on a real website, and when anything last
+ * happened there.
  */
 
 import * as bootstrap from 'bootstrap';
 import { registerSection } from './nav.js';
-import { authToken, errorMessage, escapeHtml, getStoredUser, parseJsonResponse, showToast } from './utils.js';
+import {
+  api, authToken, confirmDialog, debounce, errorMessage, escapeHtml, formatRelativeTime, getStoredUser,
+  parseJsonResponse, showToast
+} from './utils.js';
+
+const STATUS_STYLE = {
+  active: ['success', 'Active'],
+  trialing: ['info text-dark', 'Trial'],
+  trial_expired: ['danger', 'Trial ended'],
+  past_due: ['warning text-dark', 'Payment overdue'],
+  cancelled: ['secondary', 'Cancelled'],
+  suspended: ['danger', 'Suspended']
+};
+
+let searchTerm = '';
+
+/**
+ * Which companies are agencies, and whose client each client is
+ * (routes/agency.js). An empty map when it cannot be read: the list is still
+ * worth showing without it.
+ */
+async function loadAgencyMap() {
+  try {
+    const { agencies, clients } = await api('/api/agency/companies');
+    return {
+      agencies: new Map(agencies.map(row => [String(row.id), row])),
+      clients: new Map(clients.map(row => [String(row.id), row]))
+    };
+  } catch (error) {
+    return { agencies: new Map(), clients: new Map() };
+  }
+}
+
+function agencyBadge(company, agencyMap) {
+  const agency = agencyMap.agencies.get(String(company._id));
+  if (agency) {
+    return `<div><span class="badge bg-primary">Agency</span> <span class="small text-muted">${agency.clients} of ${agency.clientLimit} clients</span></div>`;
+  }
+  const client = agencyMap.clients.get(String(company._id));
+  return client
+    ? `<div class="small text-muted">Client of ${escapeHtml(client.agencyName || 'an agency')}</div>`
+    : '';
+}
+
+function companyRow(company, agencyMap = { agencies: new Map(), clients: new Map() }) {
+  const [tone, words] = STATUS_STYLE[company.status] || ['secondary', company.status];
+  const isAgency = agencyMap.agencies.has(String(company._id));
+  const isClient = agencyMap.clients.has(String(company._id));
+  const createdDate = new Date(company.createdAt).toLocaleDateString();
+  const installed = company.installed
+    ? `<span class="badge bg-success" title="${escapeHtml(company.widgetOrigin || '')}">Seen ${escapeHtml(formatRelativeTime(company.widgetSeenAt))}</span>`
+    : '<span class="badge bg-light text-dark">Never</span>';
+
+  return `
+    <tr class="${company.isActive ? '' : 'text-muted'}">
+      <td>
+        <div class="fw-semibold">${escapeHtml(company.name)}</div>
+        <div class="small text-muted">${escapeHtml(company.website || '')}</div>
+        ${agencyBadge(company, agencyMap)}
+      </td>
+      <td><span class="badge bg-light text-dark">${escapeHtml(company.planId)}</span></td>
+      <td>
+        ${company.isActive
+    ? `<span class="badge bg-${tone}">${escapeHtml(words)}</span>`
+    : '<span class="badge bg-danger">Deactivated</span>'}
+      </td>
+      <td class="small">${company.createdVia === 'signup' ? 'Signed up' : 'Created here'}</td>
+      <td>${installed}</td>
+      <td class="small">${company.lastActivity ? escapeHtml(formatRelativeTime(company.lastActivity)) : '<span class="text-muted">Nothing yet</span>'}</td>
+      <td class="small">${escapeHtml(createdDate)}</td>
+      <td>
+        <div class="btn-group btn-group-sm">
+          <button class="btn btn-outline-primary view-company" data-id="${escapeHtml(company._id)}">View</button>
+          <button class="btn btn-outline-secondary edit-company" data-id="${escapeHtml(company._id)}">Edit</button>
+          <button class="btn ${company.isActive ? 'btn-outline-danger' : 'btn-outline-success'} toggle-company-status"
+                  data-id="${escapeHtml(company._id)}"
+                  data-name="${escapeHtml(company.name)}"
+                  data-status="${company.isActive}">
+            ${company.isActive ? 'Deactivate' : 'Reactivate'}
+          </button>
+          ${isClient ? '' : `
+          <button class="btn btn-outline-secondary toggle-company-agency" data-id="${escapeHtml(company._id)}"
+                  data-name="${escapeHtml(company.name)}" data-agency="${isAgency}">
+            ${isAgency ? 'Stop agency' : 'Make agency'}
+          </button>`}
+        </div>
+      </td>
+    </tr>`;
+}
 
 // Load all companies
-function loadAllCompanies() {
-  const token = authToken();
+async function loadAllCompanies() {
   const currentUser = getStoredUser() || {};
 
   // Only superadmins can see all companies
@@ -22,77 +114,40 @@ function loadAllCompanies() {
     return;
   }
 
-  fetch('/api/companies', {
-    method: 'GET',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-auth-token': token
+  const tableBody = document.getElementById('companies-table-body');
+  if (!tableBody) {
+    return;
+  }
+
+  try {
+    const query = searchTerm ? `?q=${encodeURIComponent(searchTerm)}` : '';
+    const [{ companies }, agencyMap] = await Promise.all([api(`/api/companies${query}`), loadAgencyMap()]);
+
+    if (!companies.length) {
+      tableBody.innerHTML = `<tr><td colspan="8" class="text-center text-muted py-4">${searchTerm
+        ? 'No company matches that search.'
+        : 'No companies yet. Create one, or turn on self-serve sign-up.'}</td></tr>`;
+      return;
     }
-  })
-    .then(parseJsonResponse)
-    .then(data => {
-      const tableBody = document.getElementById('companies-table-body');
-      if (!tableBody) {
-        return;
-      }
 
-      tableBody.innerHTML = '';
+    tableBody.innerHTML = companies.map(company => companyRow(company, agencyMap)).join('');
 
-      data.companies.forEach(company => {
-        const row = document.createElement('tr');
-
-        // Format date
-        const createdDate = new Date(company.createdAt).toLocaleDateString();
-
-        row.innerHTML = `
-          <td>${escapeHtml(company.name)}</td>
-          <td>${escapeHtml(company.description) || '-'}</td>
-          <td>${escapeHtml(company.website) || '-'}</td>
-          <td>
-            <span class="badge ${company.isActive ? 'bg-success' : 'bg-danger'}">
-              ${company.isActive ? 'Active' : 'Inactive'}
-            </span>
-          </td>
-          <td>${createdDate}</td>
-          <td>
-            <div class="btn-group">
-              <button class="btn btn-sm btn-primary view-company" 
-                      data-id="${escapeHtml(company._id)}">
-                View
-              </button>
-              <button class="btn btn-sm btn-secondary edit-company" 
-                      data-id="${escapeHtml(company._id)}">
-                Edit
-              </button>
-              <button class="btn btn-sm ${company.isActive ? 'btn-warning' : 'btn-success'} toggle-company-status" 
-                      data-id="${escapeHtml(company._id)}" 
-                      data-status="${company.isActive}">
-                ${company.isActive ? 'Deactivate' : 'Activate'}
-              </button>
-            </div>
-          </td>
-        `;
-
-        tableBody.appendChild(row);
-      });
-
-      // Add event listeners to buttons
-      document.querySelectorAll('.view-company').forEach(button => {
-        button.addEventListener('click', viewCompany);
-      });
-
-      document.querySelectorAll('.edit-company').forEach(button => {
-        button.addEventListener('click', openEditCompanyModal);
-      });
-
-      document.querySelectorAll('.toggle-company-status').forEach(button => {
-        button.addEventListener('click', toggleCompanyStatus);
-      });
-    })
-    .catch(error => {
-      console.error('Error loading companies:', error);
-      showToast(errorMessage(error, 'Failed to load companies'), 'danger');
+    tableBody.querySelectorAll('.view-company').forEach(button => {
+      button.addEventListener('click', viewCompany);
     });
+    tableBody.querySelectorAll('.edit-company').forEach(button => {
+      button.addEventListener('click', openEditCompanyModal);
+    });
+    tableBody.querySelectorAll('.toggle-company-status').forEach(button => {
+      button.addEventListener('click', toggleCompanyStatus);
+    });
+    tableBody.querySelectorAll('.toggle-company-agency').forEach(button => {
+      button.addEventListener('click', toggleCompanyAgency);
+    });
+  } catch (error) {
+    console.error('Error loading companies:', error);
+    showToast(errorMessage(error, 'Failed to load companies'), 'danger');
+  }
 }
 
 // Load a specific company
@@ -254,9 +309,9 @@ function loadCompanyUsers(companyId) {
           <td>${escapeHtml(user.email)}</td>
           <td>${user.role === 'company_admin' ? 'Admin' : 'Operator'}</td>
           <td>
-            <span class="badge ${user.isActive ? 'bg-success' : 'bg-danger'}">
-              ${user.isActive ? 'Active' : 'Inactive'}
-            </span>
+            ${user.invitePending
+    ? '<span class="badge bg-info text-dark">Invited</span>'
+    : `<span class="badge ${user.isActive ? 'bg-success' : 'bg-danger'}">${user.isActive ? 'Active' : 'Inactive'}</span>`}
           </td>
           <td>${createdDate}</td>
           <td>${lastLogin}</td>
@@ -312,78 +367,132 @@ function backToCompaniesList() {
   document.getElementById('company-detail-section').style.display = 'none';
 }
 
-// Create new company
-function createCompany() {
-  const name = document.getElementById('company-name').value;
+/**
+ * Create a company and invite its first admin.
+ *
+ * Their address is required: there is no made-up admin@<name>.com any more,
+ * and no generated password to copy out of a toast. The admin gets an
+ * invitation and chooses their own.
+ */
+async function createCompany() {
+  const name = document.getElementById('company-name').value.trim();
   const description = document.getElementById('company-description').value;
-  const website = document.getElementById('company-website').value;
-  const token = authToken();
+  const website = document.getElementById('company-website').value.trim();
+  const adminEmail = document.getElementById('company-admin-email').value.trim();
+  const adminName = document.getElementById('company-admin-name').value.trim();
 
   if (!name) {
     showToast('Company name is required', 'warning');
     return;
   }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(adminEmail)) {
+    showToast('Enter the email address of the company\'s first admin', 'warning');
+    return;
+  }
 
-  fetch('/api/companies', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-auth-token': token
-    },
-    body: JSON.stringify({ name, description, website })
-  })
-    .then(parseJsonResponse)
-    .then(data => {
-      if (data.company) {
-        showToast('Company created successfully', 'success');
+  const button = document.getElementById('create-company-btn');
+  button.disabled = true;
 
-        // Clear form and close modal
-        document.getElementById('create-company-form').reset();
-        bootstrap.Modal.getInstance(document.getElementById('createCompanyModal')).hide();
-
-        // Reload companies list
-        loadAllCompanies();
-      } else {
-        showToast(data.error || 'Failed to create company', 'danger');
-      }
-    })
-    .catch(error => {
-      console.error('Error creating company:', error);
-      showToast(errorMessage(error, 'Failed to create company'), 'danger');
+  try {
+    const data = await api('/api/companies', {
+      method: 'POST',
+      body: { name, description, website, adminEmail, adminName: adminName || undefined }
     });
+
+    showToast(data.message || 'Company created', data.inviteSent ? 'success' : 'warning', 8000);
+
+    const panel = document.getElementById('company-invite-link');
+    panel.innerHTML = data.inviteLink ? `
+      <div class="alert alert-warning alert-dismissible">
+        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Hide"></button>
+        <div class="fw-semibold mb-1">Send this invitation link to ${escapeHtml(adminEmail)} yourself.</div>
+        <code class="d-block p-2 bg-light text-dark rounded user-select-all text-break">${escapeHtml(data.inviteLink)}</code>
+      </div>` : '';
+
+    document.getElementById('create-company-form').reset();
+    bootstrap.Modal.getInstance(document.getElementById('createCompanyModal')).hide();
+    loadAllCompanies();
+  } catch (error) {
+    console.error('Error creating company:', error);
+    showToast(errorMessage(error, 'Failed to create company'), 'danger');
+  } finally {
+    button.disabled = false;
+  }
 }
 
-// Toggle company active status
-function toggleCompanyStatus(event) {
+/**
+ * Make a company an agency, or stop it being one. An agency's admins get a
+ * Clients screen, can add client companies and work in their dashboards,
+ * and on the Agency plan put their own brand on them. Stopping keeps the
+ * links to its clients, so switching it back restores them.
+ */
+async function toggleCompanyAgency(event) {
+  const button = event.currentTarget;
+  const makeAgency = button.dataset.agency !== 'true';
+  const name = button.dataset.name || 'this company';
+
+  const ok = await confirmDialog(makeAgency
+    ? {
+      title: `Make ${name} an agency?`,
+      message: 'Its admins can add client companies, open their dashboards and, on the Agency plan, put their own brand on them.',
+      confirmLabel: 'Make agency'
+    }
+    : {
+      title: `Stop ${name} being an agency?`,
+      message: 'Its admins lose the Clients screen and can no longer open their clients\' dashboards; the clients go back to our brand. The clients stay linked, so making it an agency again restores everything.',
+      confirmLabel: 'Stop agency',
+      danger: true
+    });
+  if (!ok) {
+    return;
+  }
+
+  try {
+    await api(`/api/agency/companies/${encodeURIComponent(button.dataset.id)}`, {
+      method: 'PATCH',
+      body: { isAgency: makeAgency }
+    });
+    showToast(makeAgency ? `${name} is now an agency.` : `${name} is no longer an agency.`, 'success');
+    loadAllCompanies();
+  } catch (error) {
+    showToast(errorMessage(error, 'Could not change the agency'), 'danger');
+  }
+}
+
+/**
+ * Switch a company off or on. Off means everyone in it is signed out and
+ * refused at sign-in, and the widget stops answering, so it is confirmed.
+ */
+async function toggleCompanyStatus(event) {
   const button = event.currentTarget;
   const companyId = button.dataset.id;
-  const currentStatus = button.dataset.status === 'true';
-  const newStatus = !currentStatus;
-  const token = authToken();
+  const name = button.dataset.name || 'this company';
+  const newStatus = button.dataset.status !== 'true';
 
-  fetch(`/api/companies/${escapeHtml(companyId)}`, {
-    method: 'PUT',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-auth-token': token
-    },
-    body: JSON.stringify({ isActive: newStatus })
-  })
-    .then(parseJsonResponse)
-    .then(data => {
-      if (data.company) {
-        showToast(`Company ${newStatus ? 'activated' : 'deactivated'} successfully`, 'success');
-        loadAllCompanies(); // Reload the companies list
-      } else {
-        showToast(data.error || 'Failed to update company status', 'danger');
-      }
-    })
-    .catch(error => {
-      console.error('Error updating company status:', error);
-      showToast(errorMessage(error, 'Failed to update company status'), 'danger');
+  if (!newStatus) {
+    const ok = await confirmDialog({
+      title: `Deactivate ${name}?`,
+      message: 'Everyone in it is signed out straight away and cannot sign in again until it is reactivated. Their data is kept.',
+      confirmLabel: 'Deactivate company',
+      danger: true
     });
-}
+    if (!ok) {
+      return;
+    }
+  }
 
+  try {
+    await api(`/api/companies/${encodeURIComponent(companyId)}`, {
+      method: 'PUT',
+      body: { isActive: newStatus }
+    });
+    showToast(`${name} ${newStatus ? 'reactivated' : 'deactivated'}`, 'success');
+    loadAllCompanies();
+  } catch (error) {
+    console.error('Error updating company status:', error);
+    showToast(errorMessage(error, 'Failed to update company status'), 'danger');
+  }
+}
 // Open edit company modal
 function openEditCompanyModal(event) {
   const companyId = event.currentTarget.dataset.id;
@@ -517,14 +626,27 @@ function openEditCompanyUserModal(event) {
     });
 }
 
-// Toggle company user status
-function toggleCompanyUserStatus(event) {
+// Toggle company user status. Deactivating signs the person out everywhere
+// and returns their chats to the queue, so it is confirmed first.
+async function toggleCompanyUserStatus(event) {
   const button = event.currentTarget;
   const userId = button.dataset.id;
   const companyId = button.dataset.companyId;
   const currentStatus = button.dataset.status === 'true';
   const newStatus = !currentStatus;
   const token = authToken();
+
+  if (!newStatus) {
+    const ok = await confirmDialog({
+      title: 'Deactivate this person?',
+      message: 'They are signed out everywhere straight away, and conversations they hold go back to the queue.',
+      confirmLabel: 'Deactivate',
+      danger: true
+    });
+    if (!ok) {
+      return;
+    }
+  }
 
   fetch(`/api/companies/${escapeHtml(companyId)}/users/${userId}/status`, {
     method: 'PATCH',
@@ -731,6 +853,12 @@ function saveCompanyUser() {
 
 // Initialize company management
 function setupCompanies() {
+  // Search as you type, without a query per keystroke.
+  document.getElementById('companies-search')?.addEventListener('input', debounce(event => {
+    searchTerm = event.target.value.trim();
+    loadAllCompanies();
+  }, 300));
+
   // Set up event listeners
   const createCompanyBtn = document.getElementById('create-company-btn');
   if (createCompanyBtn) {

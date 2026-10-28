@@ -5,8 +5,10 @@
  * rather than leaving them to whoever happens to be looking.
  */
 
+import { chatRecord, mergeChat, openConversation, refreshConversationControls } from './inbox.js';
+import { alertPerson } from './notifications.js';
 import { state } from './state.js';
-import { api, escapeHtml, showToast } from './utils.js';
+import { api, errorMessage, escapeHtml, logger, showToast } from './utils.js';
 
 let knownTags = [];
 let activeTagFilter = null;
@@ -68,10 +70,13 @@ async function saveTags(tags) {
 
     conversation.tags = result.tags;
     renderTags(result.tags);
+    if (chatRecord(conversation.sessionId)) {
+      mergeChat(conversation.sessionId, { tags: result.tags });
+    }
     // A new tag should be offered to the next person immediately.
     loadKnownTags();
   } catch (error) {
-    showToast(error.message, 'danger');
+    showToast(errorMessage(error, 'Could not save the tags'), 'danger');
   }
 }
 
@@ -149,7 +154,7 @@ function renderTagFilter() {
  * the socket, and a refetch would fight with it.
  */
 export function applyTagFilter() {
-  document.querySelectorAll('#active-chat-list .list-group-item').forEach(item => {
+  document.querySelectorAll('#active-chat-list .list-group-item[data-session-id]').forEach(item => {
     if (!activeTagFilter) {
       item.classList.remove('filtered-by-tag');
       return;
@@ -176,7 +181,7 @@ async function setAccepting(accepting) {
       accepting ? 'success' : 'secondary'
     );
   } catch (error) {
-    showToast(error.message, 'danger');
+    showToast(errorMessage(error, 'Could not change your availability'), 'danger');
     // Put the switch back: leaving it showing a state the server rejected is
     // worse than the failure itself, because the operator would believe they
     // had stopped receiving work.
@@ -184,6 +189,24 @@ async function setAccepting(accepting) {
     if (toggle) {
       toggle.checked = !accepting;
     }
+  }
+}
+
+/**
+ * Start the switch where the server has it. It used to start "on" for
+ * everybody, so somebody who switched off yesterday looked available while
+ * the queue skipped them.
+ */
+async function loadAvailability() {
+  const toggle = document.getElementById('accepting-chats-toggle');
+  if (!toggle) {
+    return;
+  }
+  try {
+    const { acceptingChats } = await api('/api/admin/me/availability');
+    toggle.checked = acceptingChats !== false;
+  } catch (error) {
+    logger.warn('Could not load availability', error);
   }
 }
 
@@ -204,6 +227,7 @@ export function setupTags(socket) {
   });
 
   loadKnownTags();
+  loadAvailability();
 
   if (socket) {
     socket.on('conversation-tagged', data => {
@@ -213,30 +237,43 @@ export function setupTags(socket) {
         renderTags(data.tags);
       }
 
-      const item = document.querySelector(
-        `#active-chat-list [data-session-id="${data.sessionId}"]`);
-      if (item) {
-        item.dataset.tags = (data.tags || []).join(',');
-        applyTagFilter();
+      // The row is drawn from the queue's record, so the record changes.
+      if (chatRecord(data.sessionId)) {
+        mergeChat(data.sessionId, { tags: data.tags || [] });
       }
     });
 
+    // The queue (or a colleague) gave this person a conversation. It used to
+    // say only "a conversation has been assigned to you" - which one, and
+    // where, was left to a hunt through the queue.
     socket.on('chat-assigned-to-you', data => {
-      showToast('A conversation has been assigned to you', 'info');
-      const item = document.querySelector(
-        `#active-chat-list [data-session-id="${data.sessionId}"]`);
-      if (item) {
-        item.classList.add('assigned-to-me');
+      const sessionId = data && data.sessionId;
+      if (!sessionId) {
+        return;
       }
+      const me = state.currentUser ? String(state.currentUser.id) : '';
+      const myName = state.currentUser ? (state.currentUser.displayName || state.currentUser.username) : '';
+      const record = chatRecord(sessionId);
+      if (record) {
+        mergeChat(sessionId, { operatorId: me, operatorName: myName });
+      }
+      if (state.currentConversation && state.currentConversation.sessionId === sessionId) {
+        state.currentConversation.operatorId = me;
+        state.currentConversation.operatorName = myName;
+        refreshConversationControls();
+      }
+
+      const name = (record && record.visitorName) || 'A visitor';
+      alertPerson({
+        kind: 'assignment',
+        key: `assignment:${sessionId}`,
+        title: `${name}'s conversation was assigned to you`,
+        open: () => openConversation(sessionId)
+      });
     });
 
-    // Somebody is waiting for a person. Louder than a new message, because
-    // they have explicitly asked and are now watching an empty chat window.
-    socket.on('operator-requested', data => {
-      if (data && data.sessionId) {
-        showToast('A visitor has asked to speak to someone', 'warning');
-      }
-    });
+    // "Somebody wants a person" is the inbox's (inbox.js), where the queue
+    // and the handover strip are.
   }
 }
 

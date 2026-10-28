@@ -115,6 +115,27 @@ const STRATEGY_PATTERNS = {
 };
 
 /**
+ * How the model says "that is not in my material".
+ *
+ * A reply that plainly says it does not know is the right answer, but the
+ * server cannot tell it from any other sentence - and it needs to, because an
+ * unanswered question is when a visitor should be offered a person and when
+ * the tenant should learn what their knowledge base is missing. So the model
+ * is asked to mark that case, and the assistant strips the mark before anyone
+ * sees it (services/ai.js).
+ *
+ * Only the assistant's strategy prompts carry the instruction. The workflow
+ * LLM node shares `wrapKnowledge` but not these, and nothing on that path
+ * would strip the marker.
+ */
+const NO_ANSWER_MARKER = '[[NO_ANSWER]]';
+
+const NO_ANSWER_INSTRUCTION =
+  `If the information available to you does not answer the question, start your reply with ${NO_ANSWER_MARKER} ` +
+  'and then say briefly and plainly that you do not have that information. Use the marker only in that case, ' +
+  'never when you are answering.';
+
+/**
  * Retrieved knowledge, delimited so the model reads it as material rather
  * than as instructions.
  *
@@ -182,8 +203,12 @@ class PromptEngineeringService {
     return populated.trim();
   }
 
+  /**
+   * The system prompt for a strategy, with the no-answer instruction after
+   * it so a tenant's persona cannot accidentally be read as overriding it.
+   */
   createSystemMessage(promptType, variables = {}) {
-    return this.getPromptStructure(promptType, variables);
+    return `${this.getPromptStructure(promptType, variables)}\n\n${NO_ANSWER_INSTRUCTION}`;
   }
 
   createPromptMessages(promptType, userQuery, messageHistory = [], variables = {}) {
@@ -245,5 +270,7 @@ module.exports = {
   PromptEngineeringService,
   wrapKnowledge,
   PROMPT_STRUCTURES,
-  DEFAULT_PERSONA
+  DEFAULT_PERSONA,
+  NO_ANSWER_MARKER,
+  NO_ANSWER_INSTRUCTION
 };

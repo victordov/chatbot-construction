@@ -170,14 +170,19 @@ describe('Plans and usage', () => {
   });
 
   describe('features', () => {
-    test('the basic plan excludes AI suggestions', async () => {
+    test('the basic plan keeps AI suggestions and a few actions, but not API access', async () => {
+      // The trial teaches people to use both; taking them away on the first
+      // paid plan read as a downgrade for paying.
       const subscription = await Subscription.forCompany(company._id);
       subscription.planId = 'basic';
       subscription.status = 'active';
       await subscription.save();
       usageService.invalidateSubscription(company._id);
 
-      expect(await usageService.hasFeature(company._id, 'aiSuggestions')).toBe(false);
+      expect(await usageService.hasFeature(company._id, 'aiSuggestions')).toBe(true);
+      expect(await usageService.hasFeature(company._id, 'actions')).toBe(true);
+      expect(subscription.limitFor('actions')).toBe(3);
+      expect(await usageService.hasFeature(company._id, 'apiAccess')).toBe(false);
     });
 
     test('the professional plan includes AI suggestions', async () => {

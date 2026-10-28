@@ -63,6 +63,13 @@ export interface BookSlotInput {
   notes?: string;
 }
 
+export interface CancelBookingInput {
+  /** The reference your bookSlot returned. */
+  reference: string;
+  /** The email it was booked under, when the visitor gave one. */
+  email?: string;
+}
+
 export interface CallContext {
   capability: string;
   raw: unknown;
@@ -78,6 +85,8 @@ export interface ConnectorMethods {
   getProduct?(input: GetProductInput, context: CallContext): Promise<Product> | Product;
   listSlots?(input: ListSlotsInput, context: CallContext): Promise<Slot[]> | Slot[];
   bookSlot?(input: BookSlotInput, context: CallContext): Promise<Booking> | Booking;
+  /** Cancel by reference. The platform has already checked the visitor may. */
+  cancelBooking?(input: CancelBookingInput, context: CallContext): Promise<Booking> | Booking;
 }
 
 export interface ConnectorOptions {

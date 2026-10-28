@@ -26,20 +26,23 @@ function renderKeys(keys) {
   const table = document.getElementById('api-keys-table');
 
   if (!keys.length) {
-    table.innerHTML = '<tr><td colspan="5" class="text-muted text-center py-3">No keys yet</td></tr>';
+    table.innerHTML = '<tr><td colspan="6" class="text-muted text-center py-3">No keys yet</td></tr>';
     return;
   }
+
+  const expired = key => !key.revokedAt && key.expiresAt && new Date(key.expiresAt) < new Date();
 
   table.innerHTML = keys.map(key => `
     <tr class="${key.active ? '' : 'text-muted'}">
       <td>${escapeHtml(key.name)}</td>
       <td><code>${escapeHtml(key.prefix)}…</code></td>
       <td class="small">${key.scopes.map(scope => escapeHtml(SCOPE_LABELS[scope] || scope)).join(', ')}</td>
-      <td class="small">${key.lastUsedAt ? new Date(key.lastUsedAt).toLocaleString() : 'Never'}</td>
+      <td class="small">${key.lastUsedAt ? escapeHtml(new Date(key.lastUsedAt).toLocaleString()) : 'Never'}</td>
+      <td class="small">${key.expiresAt ? escapeHtml(new Date(key.expiresAt).toLocaleDateString()) : 'Never'}</td>
       <td class="text-end">
         ${key.active
     ? `<button class="btn btn-sm btn-outline-danger" data-revoke="${escapeHtml(key.id)}">Revoke</button>`
-    : '<span class="badge bg-secondary">Revoked</span>'}
+    : `<span class="badge bg-secondary">${expired(key) ? 'Expired' : 'Revoked'}</span>`}
       </td>
     </tr>`).join('');
 
@@ -59,7 +62,7 @@ async function loadKeys() {
     renderKeys(keys);
   } catch (error) {
     document.getElementById('api-keys-table').innerHTML =
-      `<tr><td colspan="5" class="text-danger">${escapeHtml(error.message)}</td></tr>`;
+      `<tr><td colspan="6" class="text-danger">${escapeHtml(error.message)}</td></tr>`;
   }
 }
 
@@ -72,13 +75,23 @@ async function createKey() {
     return;
   }
 
+  // The end of the chosen day, in the admin's own timezone: "stops working
+  // on the 30th" should include the 30th.
+  const expiry = document.getElementById('api-key-expiry').value;
+  const expiresAt = expiry ? new Date(`${expiry}T23:59:59`).toISOString() : undefined;
+  if (expiresAt && new Date(expiresAt) <= new Date()) {
+    showToast('Choose a date in the future, or leave it empty', 'warning');
+    return;
+  }
+
   setLoading(button, true);
   try {
     const result = await api('/api/api-keys', {
       method: 'POST',
       body: JSON.stringify({
         name: document.getElementById('api-key-name').value || 'API key',
-        scopes
+        scopes,
+        expiresAt
       })
     });
 
@@ -95,6 +108,7 @@ async function createKey() {
       </div>`;
 
     document.getElementById('api-key-name').value = '';
+    document.getElementById('api-key-expiry').value = '';
     document.querySelectorAll('#api-key-scopes input:checked').forEach(input => {
       input.checked = false;
     });

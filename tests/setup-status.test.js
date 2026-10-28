@@ -69,7 +69,13 @@ describe('setup status', () => {
       chunk(busy._id, 'url:https://busy.test/', 'More home'),
       chunk(busy._id, 'file:prices.csv', 'Kettle: £25')
     ]);
-    await Conversation.create({ sessionId: `setup-${Date.now()}`, company: busy._id, messages: [] });
+    // One real conversation, and one empty one - the widget opened and closed
+    // again - which counts for nothing.
+    await Conversation.create({
+      sessionId: `setup-${Date.now()}`, company: busy._id,
+      messages: [{ content: 'Do you open on Saturdays?', sender: 'user' }]
+    });
+    await Conversation.create({ sessionId: `setup-empty-${Date.now()}`, company: busy._id, messages: [] });
     const busyAdminUser = await User.findOne({ username: 'setup-busy-admin' });
     await Workflow.create({
       name: 'Live', company: busy._id, status: 'published', publishedAt: new Date(),
@@ -108,6 +114,10 @@ describe('setup status', () => {
       allowedDomains: [],
       conversations: 0,
       widgetSeen: false,
+      widgetSeenAt: null,
+      widgetOrigin: null,
+      botTested: false,
+      botTestedAt: null,
       operators: 1,
       workflowPublished: false,
       emailChannel: false,
@@ -124,13 +134,41 @@ describe('setup status', () => {
       persona: true,
       allowedDomains: ['https://busy.test'],
       conversations: 1,
+      // No record of the widget loading, so a conversation is the evidence.
       widgetSeen: true,
+      widgetSeenAt: null,
+      widgetOrigin: null,
+      botTested: false,
+      botTestedAt: null,
       // The admin and the active operator; the deactivated one does not count.
       operators: 2,
       workflowPublished: true,
       emailChannel: true,
       businessHours: true
     });
+  });
+
+  test('installed and tried come from what the widget and Test your bot recorded', async () => {
+    const seenAt = new Date(Date.now() - 4 * 60 * 1000);
+    const testedAt = new Date(Date.now() - 60 * 60 * 1000);
+    await Company.updateOne({ _id: fresh._id }, {
+      $set: {
+        widgetSeen: { at: seenAt, origin: 'https://fresh.test', origins: ['https://fresh.test'] },
+        onboarding: { botTestedAt: testedAt }
+      }
+    });
+
+    try {
+      const response = await setup(freshAdmin);
+      expect(response.body.conversations).toBe(0);
+      expect(response.body.widgetSeen).toBe(true);
+      expect(new Date(response.body.widgetSeenAt).getTime()).toBe(seenAt.getTime());
+      expect(response.body.widgetOrigin).toBe('https://fresh.test');
+      expect(response.body.botTested).toBe(true);
+      expect(new Date(response.body.botTestedAt).getTime()).toBe(testedAt.getTime());
+    } finally {
+      await Company.updateOne({ _id: fresh._id }, { $unset: { widgetSeen: 1, onboarding: 1 } });
+    }
   });
 
   test('an operator may not read it', async () => {

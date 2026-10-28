@@ -4,14 +4,95 @@
 
 const Notification = require('../models/notification');
 const Task = require('../models/task');
-const User = require('../models/user');
+const socketManager = require('../socketManager');
+const push = require('./push');
 const { logger } = require('./logging');
+
+/** How many notifications the bell asks for at a time. */
+const DEFAULT_PAGE_SIZE = 20;
+const MAX_PAGE_SIZE = 100;
 
 class NotificationService {
   /**
-   * Get notifications for a user
+   * Tell one member of staff about something, in the bell and live.
+   *
+   * The one way anything raises a notification for a person: it is stored, so
+   * it is still there after a reload or for someone who was offline, and it is
+   * pushed to that person's own room so an open dashboard shows it at once.
+   * Deadline reminders used to be the only kind, and chat assignments and
+   * transfers lived only as toasts that vanished if nobody was looking.
+   *
+   * Never throws. A notification is a courtesy on top of something that has
+   * already happened - a transfer, an assignment - and failing to write it
+   * must not undo or fail that.
+   *
+   * @param {string|object} userId the recipient
+   * @param {object} details
+   * @param {string} details.type one of the Notification model's types
+   * @param {string} details.message what the bell shows
+   * @param {string} [details.sessionId] the conversation it is about
+   * @param {string} [details.taskId] the task it is about
+   * @param {string} [details.link] where clicking it goes, e.g.
+   *        `?section=active-chats&chat=<sessionId>`
+   * @returns {Promise<object|null>} the stored notification, or null
+   */
+  static async notifyUser(userId, details = {}) {
+    if (!userId || !details.type || !details.message) {
+      return null;
+    }
+
+    try {
+      const notification = await Notification.create({
+        userId,
+        type: details.type,
+        message: String(details.message).slice(0, 500),
+        taskId: details.taskId || undefined,
+        sessionId: details.sessionId || undefined,
+        link: details.link || NotificationService.defaultLink(details)
+      });
+
+      const payload = notification.toObject();
+      socketManager.emitToUser(userId, 'notification-created', { notification: payload });
+      // And to their phone, for the kinds worth one buzzing. Not awaited: a
+      // push service must not hold up whatever raised this.
+      push.notificationEvent(userId, payload);
+
+      return payload;
+    } catch (error) {
+      logger.error('Could not create a notification', {
+        type: details.type,
+        error: error.message
+      });
+      return null;
+    }
+  }
+
+  /** Where a notification about a conversation or a task should open. */
+  static defaultLink(details = {}) {
+    if (details.sessionId) {
+      return `?section=active-chats&chat=${encodeURIComponent(details.sessionId)}`;
+    }
+    if (details.taskId) {
+      return `?section=tasks&taskId=${encodeURIComponent(String(details.taskId))}`;
+    }
+    return undefined;
+  }
+
+  /** Instance form, for callers holding a service object. */
+  notifyUser(userId, details) {
+    return NotificationService.notifyUser(userId, details);
+  }
+
+  /**
+   * Get notifications for a user, newest first, a page at a time.
+   *
+   * Paged by time rather than by offset: new notifications arrive at the top
+   * while somebody is reading, and an offset would then repeat or skip rows
+   * on "Load more".
+   *
    * @param {string} userId - The user ID
-   * @param {Object} filters - Optional filters
+   * @param {Object} filters - Optional filters: `read`, `type`, `limit`, and
+   *        `before` (an ISO date; only older notifications are returned)
    * @returns {Promise<Array>} - Array of notifications
    */
   async getNotifications(userId, filters = {}) {
@@ -27,9 +108,22 @@ class NotificationService {
         query.type = filters.type;
       }
 
+      if (filters.before) {
+        const before = new Date(filters.before);
+        if (!Number.isNaN(before.getTime())) {
+          query.createdAt = { $lt: before };
+        }
+      }
+
+      const limit = Math.min(
+        Math.max(1, parseInt(filters.limit, 10) || DEFAULT_PAGE_SIZE),
+        MAX_PAGE_SIZE
+      );
+
       // Get notifications
       const notifications = await Notification.find(query)
-        .sort({ createdAt: -1 })
+        .sort({ createdAt: -1, _id: -1 })
+        .limit(limit)
         .populate('taskId', 'title dueDate status')
         .lean();
 
@@ -38,6 +132,11 @@ class NotificationService {
       logger.error('Error getting notifications', { error });
       throw error;
     }
+  }
+
+  /** How many of a user's notifications are unread, for the bell's badge. */
+  async unreadCount(userId) {
+    return Notification.countDocuments({ userId, read: false });
   }
 
   /**
@@ -231,5 +330,7 @@ class NotificationService {
     }
   }
 }
+
+NotificationService.DEFAULT_PAGE_SIZE = DEFAULT_PAGE_SIZE;
 
 module.exports = NotificationService;

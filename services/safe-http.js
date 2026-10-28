@@ -178,7 +178,10 @@ function request(url, options, body, timeoutMs, redirectsLeft = MAX_REDIRECTS) {
       method: options.method,
       headers: options.headers,
       lookup: activeLookup,
-      timeout: timeoutMs
+      timeout: timeoutMs,
+      // `timeout` is an idle timer, so a server trickling keep-alives never
+      // trips it. A caller that needs a hard deadline aborts through this.
+      ...(options.signal ? { signal: options.signal } : {})
     }, response => {
       const { statusCode, headers } = response;
 
@@ -204,10 +207,13 @@ function request(url, options, body, timeoutMs, redirectsLeft = MAX_REDIRECTS) {
         // Credentials are dropped when the redirect leaves the original host,
         // otherwise the tenant's API key is handed to whoever the redirect
         // names.
+        // A caller whose credential travels in a header of the tenant's
+        // choosing names it in `credentialHeaders`, so it is dropped too.
         const headersForNext = { ...options.headers };
+        const alsoSecret = (options.credentialHeaders || []).map(name => String(name).toLowerCase());
         if (next.host !== url.host) {
           Object.keys(headersForNext).forEach(name => {
-            if (/^(authorization|x-api-key|api-key|cookie)$/i.test(name)) {
+            if (/^(authorization|x-api-key|api-key|cookie)$/i.test(name) || alsoSecret.includes(name.toLowerCase())) {
               delete headersForNext[name];
             }
           });
@@ -237,6 +243,15 @@ function request(url, options, body, timeoutMs, redirectsLeft = MAX_REDIRECTS) {
         }
 
         chunks.push(chunk);
+
+        // A streamed response (server-sent events) need not end once the
+        // caller has what it came for. It says so, and the connection is
+        // closed rather than held open until the server gets round to it.
+        if (options.onData && options.onData(chunk, { statusCode, headers }) === true) {
+          response.destroy();
+          const buffer = Buffer.concat(chunks);
+          resolve({ statusCode, headers, body: options.asBuffer ? buffer : buffer.toString('utf8'), stoppedEarly: true });
+        }
       });
 
       response.on('end', () => {

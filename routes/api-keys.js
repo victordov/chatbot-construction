@@ -50,7 +50,24 @@ router.post('/', requireOwnCompanyAdmin, async (req, res) => {
       });
     }
 
-    const { name, scopes, expiresAt } = req.body;
+    const { name, scopes } = req.body;
+    let { expiresAt } = req.body;
+
+    // Optional, and in the future: a key that expired before it was made is a
+    // typo, and one that silently never expires is what the field exists to avoid.
+    if (expiresAt === '' || expiresAt === null) {
+      expiresAt = undefined;
+    }
+    if (expiresAt !== undefined) {
+      const when = new Date(expiresAt);
+      if (Number.isNaN(when.getTime()) || when <= new Date()) {
+        return res.status(400).json({ error: 'The expiry date must be in the future' });
+      }
+      if (when > new Date(Date.now() + 5 * 365 * 24 * 60 * 60 * 1000)) {
+        return res.status(400).json({ error: 'Choose an expiry within five years, or none' });
+      }
+      expiresAt = when;
+    }
 
     const unknown = (Array.isArray(scopes) ? scopes : [])
       .filter(scope => !apiKeyService.VALID_SCOPES.includes(scope));

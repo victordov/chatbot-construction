@@ -34,7 +34,8 @@ const CAPABILITY_METHODS = {
   searchCatalog: 'catalog.search',
   getProduct: 'catalog.get',
   listSlots: 'availability.slots',
-  bookSlot: 'availability.book'
+  bookSlot: 'availability.book',
+  cancelBooking: 'availability.cancel'
 };
 
 /**
@@ -169,7 +170,8 @@ const RETURNS = {
   'catalog.search': { list: 'Product' },
   'catalog.get': { one: 'Product' },
   'availability.slots': { list: 'Slot' },
-  'availability.book': { one: 'Booking' }
+  'availability.book': { one: 'Booking' },
+  'availability.cancel': { one: 'Booking' }
 };
 
 function shape(value, typeName) {

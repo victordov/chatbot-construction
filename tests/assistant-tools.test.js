@@ -23,6 +23,7 @@ const connector = require('../services/connector');
 const safeHttp = require('../services/safe-http');
 const secrets = require('../services/secrets');
 const { PromptEngineeringService } = require('../services/promptEngineering');
+const eventually = require('./eventually');
 
 /** A model that makes the tool calls it is told to, then answers. */
 function scriptedClient(script) {
@@ -285,8 +286,10 @@ describe('assistant tools', () => {
       expect(result.match(/<\/tool_result>/g)).toHaveLength(1);
       expect(Buffer.byteLength(result)).toBeLessThan(300 + 300);
 
-      await new Promise(resolve => setTimeout(resolve, 50));
-      const entries = await AuditLog.find({ action: 'assistant.tool_called', 'target.id': String(conversation._id) }).lean();
+      const entries = await eventually(async () => {
+        const found = await AuditLog.find({ action: 'assistant.tool_called', 'target.id': String(conversation._id) }).lean();
+        return found.length > 0 && found;
+      });
       expect(entries).toHaveLength(1);
       expect(entries[0].details).toMatchObject({ tool: 'order_status', status: 'ok' });
       expect(JSON.stringify(entries)).not.toMatch(/tok_secret|shipped/);
@@ -502,8 +505,12 @@ describe('assistant tools', () => {
 
       try {
         const reply = await replyService.generate({ conversation: await conversationFor(null), message: 'hello there', history: [] });
-        // No cards, choices or toolCalls: only what every assistant reply carries.
-        expect(reply).toEqual({ text: 'Plain answer.', source: 'assistant', path: 'assistant', sources: [] });
+        // No cards, choices or toolCalls: only what every assistant reply
+        // carries, which now includes the reply contract's three flags.
+        expect(reply).toEqual({
+          text: 'Plain answer.', source: 'assistant', path: 'assistant', sources: [],
+          failed: false, unanswered: false, metered: true
+        });
         expect(client.requests[0].tools).toBeUndefined();
       } finally {
         spy.mockRestore();

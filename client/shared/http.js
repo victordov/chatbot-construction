@@ -79,14 +79,24 @@ let redirecting = false;
  * no prompt: Send did nothing, notes silently failed to save, and the first
  * sign of trouble was a customer asking why nobody had replied.
  */
-export function sessionExpired() {
+export function sessionExpired(reason) {
   if (redirecting) {
     return;
   }
   redirecting = true;
   setAuthToken(null);
-  // `?expired=1` so the login page can say why they are back there.
-  window.location.href = '/admin/login.html?expired=1';
+  // `?expired=1` so the login page can say why they are back there, the
+  // server's reason when it gave one (a company switched off is not an
+  // expired session), and `next` so signing in again lands where they were.
+  const params = new URLSearchParams({ expired: '1' });
+  if (reason) {
+    params.set('reason', reason);
+  }
+  const here = `${window.location.pathname}${window.location.search}`;
+  if (here.startsWith('/admin/') && !here.startsWith('/admin/login.html')) {
+    params.set('next', here);
+  }
+  window.location.href = `/admin/login.html?${params.toString()}`;
 }
 
 /**
@@ -144,7 +154,7 @@ export async function apiFetch(path, options = {}) {
   // not an expired session.
   const isAuthCall = path.includes('/api/auth/login') || path.includes('/api/auth/verify');
   if (response.status === 401 && !isAuthCall) {
-    sessionExpired();
+    sessionExpired(response.headers.get('x-auth-reason'));
   }
 
   return response;

@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Join your team</title>
+    <link rel="stylesheet" href="/dist/base.css">
+    <link rel="stylesheet" href="/dist/auth.css">
+</head>
+<body>
+    <div class="container">
+        <div class="auth-container">
+            <div class="text-center mb-4">
+                <!-- An agency's logo, when the page wears its brand. -->
+                <img class="auth-brand-logo mb-3" data-brand-logo hidden alt="">
+                <h1 class="h3 mb-2 fw-normal" data-product-name>Support Desk</h1>
+                <p class="mb-0" id="invite-heading">Checking your invitation…</p>
+            </div>
+
+            <div id="invite-message" class="form-message text-center" role="alert" aria-live="assertive"></div>
+
+            <div id="invite-invalid" class="alert alert-warning text-center" hidden>
+                <span id="invite-invalid-text">This invitation is invalid, has expired, or has already been used.</span>
+                <div class="mt-2">Ask the person who invited you to send a new one, or
+                    <a href="/admin/login.html">sign in</a> if you have already set your password.</div>
+            </div>
+
+            <form id="invite-form" class="auth-form" novalidate hidden>
+                <div class="form-floating mb-3">
+                    <input type="email" class="form-control" id="invite-email" readonly>
+                    <label for="invite-email">Email</label>
+                </div>
+                <div class="form-floating mb-3">
+                    <input type="text" class="form-control" id="invite-name" autocomplete="name" maxlength="100">
+                    <label for="invite-name">Your name</label>
+                </div>
+                <div class="input-group mb-1">
+                    <div class="form-floating">
+                        <input type="password" class="form-control" id="invite-password" name="new-password"
+                               placeholder="Choose a password" autocomplete="new-password" minlength="8" required>
+                        <label for="invite-password">Choose a password</label>
+                    </div>
+                    <button class="btn btn-outline-secondary" type="button" data-toggle-password="invite-password"
+                            aria-label="Show password" aria-pressed="false">Show</button>
+                </div>
+                <div class="form-text mb-3" id="invite-length-hint">At least 8 characters.</div>
+                <button class="w-100 btn btn-lg btn-primary" type="submit" id="invite-submit">Join the team</button>
+            </form>
+        </div>
+    </div>
+
+    <script src="/dist/invite.js"></script>
+</body>
+</html>

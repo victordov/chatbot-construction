@@ -23,13 +23,33 @@ router.get('/', auth, operator, async (req, res) => {
     }
 
     if (req.query.type) {
-      filters.type = req.query.type;
+      filters.type = String(req.query.type);
     }
 
-    // Get notifications
-    const notifications = await notificationService.getNotifications(req.user.id, filters);
+    // A page at a time: the bell used to fetch every notification a person
+    // had ever had in one go.
+    filters.limit = req.query.limit;
+    if (req.query.before) {
+      filters.before = String(req.query.before);
+    }
 
-    res.json({ notifications });
+    const limit = Math.min(
+      Math.max(1, parseInt(req.query.limit, 10) || NotificationService.DEFAULT_PAGE_SIZE),
+      100
+    );
+
+    // Get notifications
+    const [notifications, unread] = await Promise.all([
+      notificationService.getNotifications(req.user.id, filters),
+      notificationService.unreadCount(req.user.id)
+    ]);
+
+    res.json({
+      notifications,
+      // A full page means there may be more; the bell offers "Load more".
+      hasMore: notifications.length >= limit,
+      unread
+    });
   } catch (error) {
     logger.error('Error getting notifications', { error });
     res.status(500).json({ error: 'Failed to get notifications' });

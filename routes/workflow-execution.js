@@ -5,7 +5,7 @@
 
 const express = require('express');
 const router = express.Router();
-const { auth: authenticate, admin, superadmin, operator } = require('../middleware/auth');
+const { auth: authenticate, admin, superadmin } = require('../middleware/auth');
 const { logger } = require('../services/logging');
 
 // Shared singletons: routes/workflow.js publishes into the same instances, so
@@ -37,6 +37,9 @@ function safeContext(context = {}) {
   if (context.state && typeof context.state === 'object') {
     clean.state = context.state;
   }
+  if (context.workflowId && /^[a-f0-9]{24}$/i.test(String(context.workflowId))) {
+    clean.workflowId = String(context.workflowId);
+  }
   clean.variables = stripReservedVariables(context.variables);
 
   return clean;
@@ -45,8 +48,14 @@ function safeContext(context = {}) {
 /**
  * Execute workflow for a user message
  * POST /api/workflow-execution/execute
+ *
+ * Admins only. It runs the tenant's live workflow for real - an Ask a
+ * Question step's tag, task and email included - so an operator or any other
+ * signed-in user must not be able to drive it with messages of their choosing.
+ * Body `context.workflowId` picks one of several live workflows; without it,
+ * the one that answers everything.
  */
-router.post('/execute', authenticate, async (req, res) => {
+router.post('/execute', authenticate, admin, async (req, res) => {
   try {
     const { message, chatHistory = [], context = {} } = req.body;
     const tenantId = String(req.user.company?.id || req.user.id);
@@ -202,8 +211,26 @@ router.post('/reload', authenticate, admin, async (req, res) => {
       });
     }
 
-    // Load the workflow
-    await runtimeServiceRef().loadWorkflow(tenantId, workflow);
+    // Only a live workflow is served, and at its live version: reloading a
+    // draft by id would have been a way to put unpublished work in front of
+    // visitors without publishing it.
+    if (workflow.status !== 'published') {
+      return res.status(409).json({
+        success: false,
+        error: 'That workflow is not live. Publish it first.'
+      });
+    }
+
+    const graph = await Workflow.liveGraph(workflow);
+    await runtimeServiceRef().loadWorkflow(tenantId, {
+      _id: workflow._id,
+      name: workflow.name,
+      version: graph.version,
+      publishedAt: workflow.publishedAt,
+      trigger: graph.trigger,
+      nodes: graph.nodes,
+      edges: graph.edges
+    });
 
     res.json({
       success: true,
